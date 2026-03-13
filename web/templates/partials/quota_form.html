@@ -1,0 +1,20 @@
+{{define "quota_form.html"}}
+<form hx-post="/vclusters/{{.VCluster.Name}}/settings" hx-target="#toast-container" class="space-y-3">
+    <div class="grid grid-cols-3 gap-3">
+        <div>
+            <label class="wf-form-label">CPU</label>
+            <input type="text" name="cpu" value="{{.VCluster.Quotas.CPU}}" class="wf-form-input mt-1">
+        </div>
+        <div>
+            <label class="wf-form-label">Memory</label>
+            <input type="text" name="memory" value="{{.VCluster.Quotas.Memory}}" class="wf-form-input mt-1">
+        </div>
+        <div>
+            <label class="wf-form-label">Storage</label>
+            <input type="text" name="storage" value="{{.VCluster.Quotas.Storage}}" class="wf-form-input mt-1">
+        </div>
+    </div>
+    <input type="hidden" name="velero_hour" value="{{printf "%02d:%02d" .VCluster.Velero.Hour .VCluster.Velero.Minute}}">
+    <button type="submit" class="btn btn-indigo btn-sm">Sauvegarder</button>
+</form>
+{{end}}

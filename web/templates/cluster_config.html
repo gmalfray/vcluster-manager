@@ -1,0 +1,390 @@
+{{define "content"}}
+<div class="mb-8">
+    <h1 class="text-2xl font-bold" style="font-family:'Outfit',sans-serif;color:var(--text);">Configuration</h1>
+    <p class="mt-1 text-sm" style="color:var(--text-muted);">Vue d'ensemble des integrations configurees (lecture seule, sauf clusters K8s)</p>
+</div>
+
+<!-- ========== Section vClusters ========== -->
+<div class="mb-10">
+    <h2 class="text-base font-semibold mb-5" style="font-family:'Outfit',sans-serif;color:var(--text-secondary);border-bottom:1px solid var(--border);padding-bottom:0.75rem;">
+        Gestion vClusters
+    </h2>
+
+    <!-- GitLab -->
+    <div class="wf-config-card mb-4">
+        <div class="wf-config-card-header">
+            <h3 class="wf-config-card-title">GitLab (fluxprod)</h3>
+            {{if .GitLabConfigured}}
+            <span class="wf-badge wf-badge-green">Configure</span>
+            {{else}}
+            <span class="wf-badge wf-badge-gray">Non configure</span>
+            {{end}}
+        </div>
+        <dl class="wf-dl">
+            <div class="wf-dl-row"><dt>URL</dt><dd><code>{{.GitLabURL}}</code></dd></div>
+            <div class="wf-dl-row"><dt>Project ID (fluxprod)</dt><dd><code>{{or .GitLabProjectID "—"}}</code></dd></div>
+            <div class="wf-dl-row"><dt>Group ID (ArgoCD)</dt><dd><code>{{or .GitLabGroupID "—"}}</code></dd></div>
+            <div class="wf-dl-row"><dt>FluxCD Deploy Key ID</dt><dd><code>{{.FluxCDDeployKey}}</code></dd></div>
+            <div class="wf-dl-row">
+                <dt>Token API</dt>
+                <dd>{{if .GitLabConfigured}}<span style="color:var(--green);">******</span>{{else}}<span style="color:var(--red);">Non defini</span>{{end}}</dd>
+            </div>
+        </dl>
+    </div>
+
+    <!-- Keycloak -->
+    <div class="wf-config-card mb-4">
+        <div class="wf-config-card-header">
+            <h3 class="wf-config-card-title">Keycloak</h3>
+            {{if .KeycloakConfigured}}
+            <span class="wf-badge wf-badge-green">Configure</span>
+            {{else}}
+            <span class="wf-badge wf-badge-gray">Non configure</span>
+            {{end}}
+        </div>
+        <dl class="wf-dl">
+            <div class="wf-dl-row"><dt>URL</dt><dd><code>{{.KeycloakURL}}</code></dd></div>
+            <div class="wf-dl-row"><dt>Realm</dt><dd><code>{{.KeycloakRealm}}</code></dd></div>
+            <div class="wf-dl-row"><dt>Client ID (Service Account)</dt><dd><code>{{or .KeycloakClientID "—"}}</code></dd></div>
+            <div class="wf-dl-row">
+                <dt>Client Secret</dt>
+                <dd>{{if .KeycloakConfigured}}<span style="color:var(--green);">******</span>{{else}}<span style="color:var(--red);">Non defini</span>{{end}}</dd>
+            </div>
+        </dl>
+    </div>
+
+    <!-- Helm Charts -->
+    <div class="wf-config-card mb-4">
+        <div class="wf-config-card-header">
+            <h3 class="wf-config-card-title">Helm Charts (platform-helm-charts)</h3>
+            {{if .HelmConfigured}}
+            <span class="wf-badge wf-badge-green">Configure</span>
+            {{else}}
+            <span class="wf-badge wf-badge-gray">Non configure</span>
+            {{end}}
+        </div>
+        <dl class="wf-dl">
+            <div class="wf-dl-row"><dt>GitLab Project ID</dt><dd><code>{{or .HelmChartsProjectID "—"}}</code></dd></div>
+        </dl>
+    </div>
+
+    <!-- Rancher -->
+    <div class="wf-config-card mb-4">
+        <div class="wf-config-card-header">
+            <h3 class="wf-config-card-title">Rancher</h3>
+            {{if .RancherConfigured}}
+            <span class="wf-badge wf-badge-green">Configure</span>
+            {{else}}
+            <span class="wf-badge wf-badge-gray">Non configure</span>
+            {{end}}
+        </div>
+        <dl class="wf-dl mb-4">
+            <div class="wf-dl-row"><dt>URL</dt><dd><code>{{or .RancherURL "—"}}</code></dd></div>
+            <div class="wf-dl-row">
+                <dt>Token API</dt>
+                <dd>{{if .RancherConfigured}}<span style="color:var(--green);">******</span>{{else}}<span style="color:var(--red);">Non defini</span>{{end}}</dd>
+            </div>
+        </dl>
+        {{if .RancherConfigured}}
+        <div style="border-top:1px solid var(--border-subtle);padding-top:1rem;">
+            <p class="text-xs font-semibold uppercase mb-3" style="color:var(--text-muted);">Activation par environnement</p>
+            <div class="space-y-3">
+                <div class="flex items-center gap-3">
+                    <label class="switch"><input type="checkbox" {{if .RancherEnabledPreprod}}checked{{end}} disabled><span class="switch-track"></span></label>
+                    <span class="text-sm" style="color:var(--text-secondary);">Preprod</span>
+                    <span class="text-xs" style="color:var(--text-muted);">(RANCHER_ENABLED_PREPROD={{if .RancherEnabledPreprod}}true{{else}}false{{end}})</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <label class="switch"><input type="checkbox" {{if .RancherEnabledProd}}checked{{end}} disabled><span class="switch-track"></span></label>
+                    <span class="text-sm" style="color:var(--text-secondary);">Prod</span>
+                    <span class="text-xs" style="color:var(--text-muted);">(RANCHER_ENABLED_PROD={{if .RancherEnabledProd}}true{{else}}false{{end}})</span>
+                </div>
+            </div>
+        </div>
+        {{end}}
+        <p class="mt-3 text-xs" style="color:var(--text-muted);">Appairage des vclusters avec Rancher (toggle dans la page detail de chaque vcluster).</p>
+    </div>
+
+    <!-- Vault -->
+    <div class="wf-config-card mb-4">
+        <div class="wf-config-card-header">
+            <h3 class="wf-config-card-title">Vault</h3>
+            {{if .VaultConfigured}}
+            <span class="wf-badge wf-badge-green">Configure</span>
+            {{else}}
+            <span class="wf-badge wf-badge-gray">Non configure</span>
+            {{end}}
+        </div>
+        <dl class="wf-dl">
+            <div class="wf-dl-row"><dt>URL</dt><dd><code>{{or .VaultAddr "—"}}</code></dd></div>
+            <div class="wf-dl-row">
+                <dt>Token API</dt>
+                <dd>{{if .VaultConfigured}}<span style="color:var(--green);">******</span>{{else}}<span style="color:var(--red);">Non defini</span>{{end}}</dd>
+            </div>
+        </dl>
+        <p class="mt-3 text-xs" style="color:var(--text-muted);">Configure automatiquement le backend Kubernetes auth Vault par vcluster a la creation.</p>
+    </div>
+
+    <!-- Velero -->
+    <div class="wf-config-card mb-4">
+        <div class="wf-config-card-header">
+            <h3 class="wf-config-card-title">Velero (backups)</h3>
+            {{if .VeleroS3URL}}
+            <span class="wf-badge wf-badge-green">Configure</span>
+            {{else}}
+            <span class="wf-badge wf-badge-gray">Partiellement configure</span>
+            {{end}}
+        </div>
+        <dl class="wf-dl mb-4">
+            <div class="wf-dl-row"><dt>Namespace</dt><dd><code>{{or .VeleroNamespace "velero-system"}}</code></dd></div>
+            <div class="wf-dl-row"><dt>Timezone cron</dt><dd><code>{{or .VeleroTimezone "UTC"}}</code></dd></div>
+        </dl>
+        {{if .User.isAdmin}}
+        <form hx-post="/config/velero" hx-target="#toast-container" hx-swap="beforeend"
+              style="border-top:1px solid var(--border-subtle);padding-top:1rem;">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="wf-form-label">Rétention par défaut</label>
+                    <input type="text" name="velero_ttl" value="{{.VeleroTTLText}}"
+                        placeholder="ex: 30j, 12h, 90m" class="wf-form-input mt-1" style="max-width:160px;">
+                    <p class="mt-1 text-xs" style="color:var(--text-muted);">j = jours, h = heures, m = minutes &mdash; valeur Velero : <code>{{or .VeleroDefaultTTL "720h0m0s"}}</code></p>
+                </div>
+                <div>
+                    <label class="wf-form-label">URL du serveur S3</label>
+                    <input type="text" name="velero_s3_url" value="{{.VeleroS3URL}}"
+                        placeholder="https://s3.example.com" class="wf-form-input mt-1">
+                </div>
+                <div>
+                    <label class="wf-form-label">Bucket preprod</label>
+                    <input type="text" name="velero_bucket_preprod" value="{{.VeleroBucketPreprod}}"
+                        placeholder="velero-preprod" class="wf-form-input mt-1">
+                </div>
+                <div>
+                    <label class="wf-form-label">Bucket prod</label>
+                    <input type="text" name="velero_bucket_prod" value="{{.VeleroBucketProd}}"
+                        placeholder="velero-prod" class="wf-form-input mt-1">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-indigo mt-4">Sauvegarder</button>
+        </form>
+        {{else}}
+        <dl class="wf-dl" style="border-top:1px solid var(--border-subtle);padding-top:1rem;">
+            <div class="wf-dl-row"><dt>Rétention par défaut</dt><dd><code>{{or .VeleroDefaultTTL "720h0m0s"}}</code>{{if .VeleroTTLText}} <span style="color:var(--text-muted);">({{.VeleroTTLText}})</span>{{end}}</dd></div>
+            <div class="wf-dl-row"><dt>URL S3</dt><dd><code>{{or .VeleroS3URL "—"}}</code></dd></div>
+            <div class="wf-dl-row"><dt>Bucket preprod</dt><dd><code>{{or .VeleroBucketPreprod "—"}}</code></dd></div>
+            <div class="wf-dl-row"><dt>Bucket prod</dt><dd><code>{{or .VeleroBucketProd "—"}}</code></dd></div>
+        </dl>
+        {{end}}
+    </div>
+
+    <!-- Clusters hôtes -->
+    <div class="mb-6">
+        <h3 class="text-base font-semibold mb-4" style="font-family:'Outfit',sans-serif;color:var(--text-secondary);">Clusters hotes</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {{range .Clusters}}
+            <div class="wf-config-card">
+                <div class="wf-config-card-header">
+                    <h4 class="wf-config-card-title">
+                        {{.Label}}
+                        <span class="text-sm font-normal" style="color:var(--text-muted);">({{.Env}})</span>
+                    </h4>
+                    {{if .Configured}}
+                    <span class="wf-badge wf-badge-cyan">{{.ConfigSource}}</span>
+                    {{else}}
+                    <span class="wf-badge wf-badge-gray">Non configure</span>
+                    {{end}}
+                </div>
+
+                <!-- Connectivite -->
+                <div class="mb-4">
+                    <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-muted);">Connectivite</div>
+                    <div id="health-{{.Env}}" hx-get="/api/clusters/{{.Env}}/health" hx-trigger="load" hx-swap="innerHTML">
+                        <span class="text-sm" style="color:var(--text-muted);">Verification...</span>
+                    </div>
+                </div>
+
+                {{if .Configured}}
+                <dl class="wf-dl mb-4" style="border-top:1px solid var(--border-subtle);padding-top:1rem;">
+                    <div class="wf-dl-row"><dt>Kubeconfig</dt><dd><code>{{or .Kubeconfig "—"}}</code></dd></div>
+                    {{if .SSHTarget}}
+                    <div class="wf-dl-row"><dt>Tunnel SSH</dt><dd><code>{{.SSHTarget}}</code></dd></div>
+                    {{end}}
+                    {{if .APIServerURL}}
+                    <div class="wf-dl-row"><dt>API Server</dt><dd><code class="truncate max-w-xs block" title="{{.APIServerURL}}">{{.APIServerURL}}</code></dd></div>
+                    {{end}}
+                </dl>
+                {{end}}
+
+                <!-- Formulaire -->
+                <form hx-post="/config/{{.Env}}" hx-swap="none" hx-encoding="multipart/form-data"
+                    style="border-top:1px solid var(--border-subtle);padding-top:1rem;">
+                    <div class="space-y-4">
+                        <div>
+                            <label class="wf-form-label">Nom d'affichage</label>
+                            <input type="text" name="cluster_label" value="{{.Label}}"
+                                class="wf-form-input mt-1" placeholder="ex: RKE2 Preprod NFrance">
+                        </div>
+                        <div>
+                            <label class="wf-form-label">Fichier kubeconfig</label>
+                            <input type="file" name="kubeconfig_file" accept=".yaml,.yml"
+                                class="mt-1 block w-full text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:font-medium"
+                                style="color:var(--text-muted);file:background:var(--surface2);file:color:var(--text-secondary);">
+                            <p class="mt-1 text-xs" style="color:var(--text-muted);">Fichier YAML du kubeconfig du cluster</p>
+                        </div>
+
+                        <div>
+                            <button type="button" onclick="document.getElementById('ssh-panel-{{.Env}}').classList.toggle('hidden')"
+                                class="flex items-center gap-1.5 text-sm font-medium" style="color:var(--text-secondary);">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" stroke="currentColor"/></svg>
+                                Tunnel SSH
+                                {{if .SSHTarget}}
+                                <span class="wf-badge wf-badge-green">actif</span>
+                                {{end}}
+                            </button>
+                            <div id="ssh-panel-{{.Env}}" class="{{if not .SSHTarget}}hidden {{end}}wf-ssh-panel mt-3">
+                                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                                    <div>
+                                        <label class="wf-form-label">Hote du tunnel</label>
+                                        <input type="text" name="ssh_target" value="{{.SSHTarget}}"
+                                            class="wf-form-input mt-1" placeholder="user@host:port">
+                                    </div>
+                                    <div>
+                                        <label class="wf-form-label">
+                                            Cle SSH
+                                            {{if .SSHKeyPath}}<span class="text-xs font-normal" style="color:var(--green);">(configuree)</span>{{end}}
+                                        </label>
+                                        <input type="file" name="ssh_key_file" accept=".pem,.key,*"
+                                            class="mt-1 block w-full text-sm" style="color:var(--text-muted);">
+                                        <p class="mt-1 text-xs" style="color:var(--text-muted);">Cle privee (id_rsa, id_ed25519...)</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex justify-between items-center pt-2">
+                            <button type="submit" class="btn btn-indigo btn-sm">Enregistrer</button>
+                            {{if .Configured}}
+                            <button type="button" hx-get="/api/clusters/{{.Env}}/health" hx-target="#health-{{.Env}}" hx-swap="innerHTML"
+                                class="btn btn-outline btn-sm">
+                                Tester la connexion
+                            </button>
+                            {{end}}
+                        </div>
+                    </div>
+                </form>
+            </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+
+<!-- ========== Section Application ========== -->
+<div class="mb-10">
+    <h2 class="text-base font-semibold mb-5" style="font-family:'Outfit',sans-serif;color:var(--text-secondary);border-bottom:1px solid var(--border);padding-bottom:0.75rem;">
+        Application
+    </h2>
+
+    <!-- Authentification -->
+    <div class="wf-config-card mb-4">
+        <div class="wf-config-card-header mb-4">
+            <h3 class="wf-config-card-title">Authentification</h3>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- OIDC -->
+            <div>
+                <div class="flex items-center gap-2 mb-3">
+                    <h4 class="text-sm font-semibold" style="color:var(--text-secondary);">OIDC (SSO)</h4>
+                    {{if .OIDCConfigured}}
+                    <span class="wf-badge wf-badge-green">Configure</span>
+                    {{else}}
+                    <span class="wf-badge wf-badge-gray">Non configure</span>
+                    {{end}}
+                </div>
+                <dl class="wf-dl">
+                    <div class="wf-dl-row"><dt>Client ID</dt><dd><code>{{or .OIDCClientID "—"}}</code></dd></div>
+                    <div class="wf-dl-row"><dt>Redirect URL</dt><dd><code class="truncate max-w-xs block" title="{{.OIDCRedirectURL}}">{{or .OIDCRedirectURL "—"}}</code></dd></div>
+                    <div class="wf-dl-row">
+                        <dt>Client Secret</dt>
+                        <dd>{{if .OIDCConfigured}}<span style="color:var(--green);">******</span>{{else}}<span style="color:var(--red);">Non defini</span>{{end}}</dd>
+                    </div>
+                </dl>
+            </div>
+            <!-- Auth locale -->
+            <div>
+                <div class="flex items-center gap-2 mb-3">
+                    <h4 class="text-sm font-semibold" style="color:var(--text-secondary);">Auth locale</h4>
+                    {{if .LocalAuthConfigured}}
+                    <span class="wf-badge wf-badge-green">Configure</span>
+                    {{else}}
+                    <span class="wf-badge wf-badge-gray">Non configure</span>
+                    {{end}}
+                </div>
+                <dl class="wf-dl">
+                    <div class="wf-dl-row">
+                        <dt>Admin password</dt>
+                        <dd>{{if .LocalAuthConfigured}}<span style="color:var(--green);">******</span>{{else}}<span style="color:var(--red);">Non defini</span>{{end}}</dd>
+                    </div>
+                    <div class="wf-dl-row">
+                        <dt>JWT Secret</dt>
+                        <dd>{{if .LocalAuthConfigured}}<span style="color:var(--green);">******</span>{{else}}<span style="color:var(--red);">Non defini</span>{{end}}</dd>
+                    </div>
+                </dl>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Variables d'environnement -->
+<div class="wf-env-section">
+    <h3 class="text-sm font-semibold mb-4" style="color:var(--text-secondary);">Variables d'environnement</h3>
+    <div class="wf-env-grid">
+        <div>
+            <div class="wf-env-group-label">GitLab</div>
+            <div class="wf-env-item">GITLAB_URL=https://gitlab.example.com</div>
+            <div class="wf-env-item">GITLAB_TOKEN=glpat-xxx</div>
+            <div class="wf-env-item">GITLAB_PROJECT_ID=123</div>
+            <div class="wf-env-item">GITLAB_ARGOCD_GROUP_ID=456</div>
+        </div>
+        <div>
+            <div class="wf-env-group-label">Keycloak</div>
+            <div class="wf-env-item">KEYCLOAK_URL=https://keycloak.example.com</div>
+            <div class="wf-env-item">KEYCLOAK_REALM=myrealm</div>
+            <div class="wf-env-item">KEYCLOAK_CLIENT_ID=vcluster-mgr</div>
+            <div class="wf-env-item">KEYCLOAK_CLIENT_SECRET=xxx</div>
+        </div>
+        <div>
+            <div class="wf-env-group-label">OIDC / Auth</div>
+            <div class="wf-env-item">OIDC_CLIENT_ID=vcluster-manager</div>
+            <div class="wf-env-item">OIDC_CLIENT_SECRET=xxx</div>
+            <div class="wf-env-item">OIDC_REDIRECT_URL=https://...</div>
+            <div class="wf-env-item">ADMIN_PASSWORD=xxx</div>
+            <div class="wf-env-item">JWT_SECRET=xxx</div>
+        </div>
+        <div>
+            <div class="wf-env-group-label">Rancher</div>
+            <div class="wf-env-item">RANCHER_URL=https://rancher.example.com</div>
+            <div class="wf-env-item">RANCHER_TOKEN=token-xxx:yyy</div>
+            <div class="wf-env-item">RANCHER_ENABLED_PREPROD=true</div>
+            <div class="wf-env-item">RANCHER_ENABLED_PROD=true</div>
+        </div>
+        <div>
+            <div class="wf-env-group-label">Vault</div>
+            <div class="wf-env-item">VAULT_ADDR=https://vault.example.com</div>
+            <div class="wf-env-item">VAULT_TOKEN=hvs.xxx</div>
+        </div>
+        <div>
+            <div class="wf-env-group-label">Clusters hotes / SSH</div>
+            <div class="wf-env-item">KUBECONFIG_PREPROD=/path/to/preprod.yaml</div>
+            <div class="wf-env-item">KUBECONFIG_PROD=/path/to/prod.yaml</div>
+            <div class="wf-env-item">CLUSTER_LABEL_PREPROD=Preprod</div>
+            <div class="wf-env-item">CLUSTER_LABEL_PROD=Prod</div>
+            <div class="wf-env-item">SSH_TUNNEL_PREPROD=user@bastion:22226</div>
+            <div class="wf-env-item">SSH_TUNNEL_PROD=user@bastion:22226</div>
+            <div class="wf-env-item">SSH_KEY_PATH=/root/.ssh/id_rsa</div>
+        </div>
+    </div>
+    <p class="text-xs mt-4" style="color:var(--text-muted);">
+        Les variables sont chargees au demarrage. Modifier une variable necessite un redemarrage de l'application.
+    </p>
+</div>
+{{end}}

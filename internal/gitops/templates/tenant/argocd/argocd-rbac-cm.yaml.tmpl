@@ -1,0 +1,7 @@
+apiVersion: v1
+data:
+  policy.csv: |
+{{.PolicyLines}}  policy.default: {{.DefaultPolicy}}
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm

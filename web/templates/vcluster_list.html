@@ -1,0 +1,229 @@
+{{define "content"}}
+<style>
+.vcm-vis-toggle { display:none; align-items:center; gap:5px; font-size:.75rem;
+                  color:var(--text-muted); margin-top:8px; pointer-events:none; }
+a.wf-vc-card[data-name] { cursor:grab; }
+a.wf-vc-card[data-name]:active { cursor:grabbing; }
+a.wf-vc-card[data-name].vcm-dragging { opacity:.4; }
+.vcm-edit-mode .vcm-vis-toggle { display:flex; }
+.vcm-edit-mode a.wf-vc-card { cursor:pointer; outline:2px solid var(--border); text-decoration:none; }
+.vcm-edit-mode a.wf-vc-card:hover { outline-color:var(--indigo); }
+.vcm-edit-mode a.wf-vc-card.vcm-card-hidden { opacity:.45; outline-color:var(--red); }
+.vcm-edit-mode a.wf-vc-card.vcm-card-hidden .vcm-vis-label,
+.vcm-edit-mode a.wf-vc-card.vcm-card-hidden .vcm-vis-icon { color:var(--red); }
+</style>
+
+<div class="mb-8 flex justify-between items-end">
+    <div>
+        <h1 class="text-2xl font-bold" style="font-family: 'Outfit', sans-serif; color: var(--text);">
+            vClusters &mdash; {{.EnvLabel}}
+            <span class="text-base font-normal ml-1" style="color:var(--text-muted);">({{.Env}})</span>
+        </h1>
+        <p class="mt-1 text-sm" style="color:var(--text-muted);">{{len .VClusters}} vcluster(s)</p>
+    </div>
+    <div class="flex gap-2">
+        <a href="/vclusters?env=preprod"
+            class="px-4 py-2 rounded-lg text-sm font-medium transition-colors {{if eq .Env "preprod"}}btn btn-indigo{{else}}btn btn-outline{{end}}">
+            {{.PreprodLabel}}
+        </a>
+        <a href="/vclusters?env=prod"
+            class="px-4 py-2 rounded-lg text-sm font-medium transition-colors {{if eq .Env "prod"}}btn btn-indigo{{else}}btn btn-outline{{end}}">
+            {{.ProdLabel}}
+        </a>
+        <button id="vcm-edit-btn" onclick="vcmToggleEdit()" class="btn btn-outline btn-sm">&#9881; Dashboard</button>
+    </div>
+</div>
+
+<div class="wf-vc-grid" id="vcm-grid">
+    {{range .VClusters}}
+    {{$pending := hasKey $.PendingNames .Name}}
+    {{$mrChanged := hasKey $.MRChangedNames .Name}}
+    {{$deleting := hasKey $.DeletingNames .Name}}
+
+    {{if $deleting}}
+    <div class="wf-vc-card wf-vc-card-deleting">
+        <div class="wf-vc-card-header">
+            <h3 class="wf-vc-card-name" style="color:var(--red);">{{.Name}}</h3>
+            <span class="wf-badge wf-badge-red animate-pulse">Suppression</span>
+        </div>
+        <div class="wf-vc-card-footer">
+            <span hx-get="/api/vclusters/{{.Name}}/status?env={{$.Env}}&deleting=true"
+                hx-trigger="load, every 30s" hx-swap="innerHTML">
+                <span style="color:var(--red);" class="text-sm animate-pulse">Reconciliation...</span>
+            </span>
+        </div>
+    </div>
+    {{else}}
+    <a href="/vclusters/{{.Name}}?env={{$.Env}}"
+        class="wf-vc-card {{if $pending}}wf-vc-card-pending{{else if $mrChanged}}wf-vc-card-mr-changed{{end}}"
+        data-name="{{.Name}}" data-vcm-env="{{$.Env}}">
+        <div class="wf-vc-card-header">
+            <h3 class="wf-vc-card-name">{{.Name}}</h3>
+            <div class="flex gap-1.5 flex-wrap justify-end">
+                {{if $pending}}
+                <span class="wf-badge wf-badge-amber">MR en attente</span>
+                {{else if $mrChanged}}
+                <span class="wf-badge wf-badge-amber">Modif. en MR</span>
+                {{end}}
+                {{if .ArgoCD}}
+                <span class="wf-badge wf-badge-green">ArgoCD</span>
+                {{end}}
+            </div>
+        </div>
+
+        <dl class="wf-vc-card-body">
+            {{if not .NoQuotas}}
+            <div class="wf-vc-row">
+                <dt>CPU</dt>
+                <dd>{{.Quotas.CPU}}</dd>
+            </div>
+            <div class="wf-vc-row">
+                <dt>Memory</dt>
+                <dd>{{.Quotas.Memory}}</dd>
+            </div>
+            <div class="wf-vc-row">
+                <dt>Storage</dt>
+                <dd>{{.Quotas.Storage}}</dd>
+            </div>
+            {{else}}
+            <div class="wf-vc-row">
+                <dt style="color:var(--text-muted);">Quotas</dt>
+                <dd style="color:var(--text-muted);">disabled</dd>
+            </div>
+            {{end}}
+            <div class="wf-vc-row">
+                <dt>Backup</dt>
+                <dd>{{printf "%02d:%02d" .Velero.Hour .Velero.Minute}}</dd>
+            </div>
+            {{if .ArgoCD}}
+            <div class="wf-vc-row">
+                <dt>RBAC</dt>
+                <dd>{{join .RBACGroups ", "}}</dd>
+            </div>
+            {{end}}
+        </dl>
+
+        <div class="wf-vc-card-footer">
+            {{if $pending}}
+            <span class="text-sm" style="color:var(--amber);">Merge preprod → master pour deployer</span>
+            {{else if $mrChanged}}
+            <a href="{{$.PendingMRURL}}" target="_blank" class="text-sm hover:underline" style="color:var(--amber);" onclick="event.stopPropagation()">Modif. en attente dans la MR &rarr;</a>
+            {{else}}
+            <div hx-get="/api/vclusters/{{.Name}}/status?env={{$.Env}}{{if .K8sVersionConfig}}&configVersion={{.K8sVersionConfig}}{{else if $.DefaultK8sVersion}}&configVersion={{$.DefaultK8sVersion}}{{end}}"
+                hx-trigger="load, every 30s" hx-swap="innerHTML">
+                <span class="text-sm" style="color:var(--text-muted);">Loading status...</span>
+            </div>
+            {{end}}
+            <div class="vcm-vis-toggle">
+                <span class="vcm-vis-icon">&#128065;</span>
+                <span class="vcm-vis-label">Visible dans le dashboard</span>
+            </div>
+        </div>
+    </a>
+    {{end}}
+    {{end}}
+</div>
+
+<script>
+const VCM_KEY = 'vcm_dashboard_prefs';
+const vcmPrefs = () => JSON.parse(localStorage.getItem(VCM_KEY)||'{}');
+const vcmSave  = p  => localStorage.setItem(VCM_KEY, JSON.stringify(p));
+
+let vcmEditMode = false;
+
+document.addEventListener('DOMContentLoaded', () => {
+    vcmInitVisState();
+    vcmApplyListOrder();
+    vcmInitDrag();
+    document.querySelectorAll('a.wf-vc-card[data-name]').forEach(card => {
+        card.addEventListener('click', e => {
+            if (vcmEditMode) {
+                e.preventDefault();
+                vcmToggleCard(card.dataset.name, card.dataset.vcmEnv);
+            }
+        });
+    });
+});
+
+function vcmToggleEdit() {
+    vcmEditMode = !vcmEditMode;
+    const btn = document.getElementById('vcm-edit-btn');
+    btn.innerHTML = vcmEditMode ? '&#10003; Termin&eacute;' : '&#9881; Dashboard';
+    btn.classList.toggle('btn-indigo', vcmEditMode);
+    btn.classList.toggle('btn-outline', !vcmEditMode);
+    document.getElementById('vcm-grid').classList.toggle('vcm-edit-mode', vcmEditMode);
+}
+
+function vcmToggleCard(name, env) {
+    const key = name + ':' + env;
+    const p = vcmPrefs(); p.hidden = p.hidden || [];
+    const isHidden = p.hidden.includes(key);
+    p.hidden = isHidden ? p.hidden.filter(k => k !== key) : [...new Set([...p.hidden, key])];
+    vcmSave(p);
+    vcmApplyCardState(name, env, !isHidden);
+}
+
+function vcmApplyCardState(name, env, isHidden) {
+    const card = document.querySelector(`a.wf-vc-card[data-name="${name}"][data-vcm-env="${env}"]`);
+    if (!card) return;
+    card.classList.toggle('vcm-card-hidden', isHidden);
+    const icon  = card.querySelector('.vcm-vis-icon');
+    const label = card.querySelector('.vcm-vis-label');
+    if (icon)  icon.textContent  = isHidden ? '🚫' : '👁';
+    if (label) label.textContent = isHidden ? 'Masqué du dashboard' : 'Visible dans le dashboard';
+}
+
+function vcmInitVisState() {
+    const hidden = (vcmPrefs().hidden || []);
+    document.querySelectorAll('a.wf-vc-card[data-name]').forEach(card => {
+        const isHidden = hidden.includes(card.dataset.name + ':' + card.dataset.vcmEnv);
+        vcmApplyCardState(card.dataset.name, card.dataset.vcmEnv, isHidden);
+    });
+}
+
+// Drag & drop reorder
+let vcmDragSrc = null;
+function vcmInitDrag() {
+    document.querySelectorAll('a.wf-vc-card[data-name]').forEach(card => {
+        card.setAttribute('draggable', 'true');
+        card.addEventListener('dragstart', e => {
+            vcmDragSrc = card;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', card.dataset.name);
+            setTimeout(() => card.classList.add('vcm-dragging'), 0);
+        });
+        card.addEventListener('dragend', () => {
+            card.classList.remove('vcm-dragging');
+            vcmSaveListOrder();
+        });
+        card.addEventListener('dragover', e => {
+            e.preventDefault();
+            if (!vcmDragSrc || vcmDragSrc === card) return;
+            const rect = card.getBoundingClientRect();
+            const after = e.clientX > rect.left + rect.width / 2;
+            card.closest('#vcm-grid').insertBefore(vcmDragSrc, after ? card.nextSibling : card);
+        });
+    });
+}
+
+function vcmSaveListOrder() {
+    const env = '{{.Env}}';
+    const names = [...document.querySelectorAll('#vcm-grid a.wf-vc-card[data-name]')]
+        .map(c => c.dataset.name);
+    const p = vcmPrefs(); p.order = p.order || {};
+    p.order[env] = names;
+    vcmSave(p);
+}
+
+function vcmApplyListOrder() {
+    const env = '{{.Env}}';
+    const order = (vcmPrefs().order || {})[env];
+    if (!order) return;
+    const grid = document.getElementById('vcm-grid');
+    order.forEach(name => {
+        const card = grid.querySelector(`a.wf-vc-card[data-name="${name}"]`);
+        if (card) grid.appendChild(card);
+    });
+}
+</script>
+{{end}}

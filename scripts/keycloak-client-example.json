@@ -1,0 +1,22 @@
+{
+  "clientId": "vcluster-manager",
+  "name": "vCluster Manager",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": false,
+  "standardFlowEnabled": true,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "redirectUris": [
+    "https://vcluster-manager.example.com/auth/callback"
+  ],
+  "webOrigins": [
+    "https://vcluster-manager.example.com"
+  ],
+  "defaultClientScopes": [
+    "openid",
+    "profile",
+    "email",
+    "groups"
+  ]
+}

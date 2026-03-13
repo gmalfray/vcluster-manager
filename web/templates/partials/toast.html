@@ -1,0 +1,13 @@
+{{define "toast.html"}}
+<div class="wf-toast wf-toast-{{.Level}} mb-2"
+    x-data="{show: true}"
+    x-show="show"
+    x-init="setTimeout(() => show = false, 5000)">
+    <div class="flex items-start gap-3">
+        <div class="flex-1">
+            <p class="text-sm font-medium" style="color:var(--text);">{{.Message}}</p>
+        </div>
+        <button onclick="this.closest('.wf-toast').remove()" class="text-sm leading-none opacity-60 hover:opacity-100" style="color:var(--text);">&times;</button>
+    </div>
+</div>
+{{end}}

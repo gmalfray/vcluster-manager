@@ -1,0 +1,53 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../../../../lib/tenant-template/argocd/base
+
+patches:
+  - path: argo-cd-cm.yaml
+  - path: argocd-rbac-cm.yaml
+  - target:
+      kind: Secret
+      name: app-manifests-base
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: app-manifests-{{.Name}}
+      - op: replace
+        path: /stringData/url
+        value: {{.GitLabSSHBase}}/app-manifests-{{.Name}}.git
+  - target:
+      kind: Application
+      name: app-manifests-base
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: 1-app-manifests-{{.Name}}
+      - op: replace
+        path: /spec/source/repoURL
+        value: {{.GitLabSSHBase}}/app-manifests-{{.Name}}.git
+      - op: replace
+        path: /spec/source/targetRevision
+        value: master
+      - op: replace
+        path: /spec/source/path
+        value: {{.Env}}
+  - target:
+      kind: Ingress
+      name: argocd-server
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: {{.ArgoCDHost}}
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: {{.ArgoCDHost}}
+      - op: replace
+        path: /spec/tls/0/secretName
+        value: {{.TLSSecret}}
+{{- if .ArgoCDVersion}}
+images:
+  - name: quay.io/argoproj/argocd
+    newTag: {{.ArgoCDVersion}}
+{{- end}}

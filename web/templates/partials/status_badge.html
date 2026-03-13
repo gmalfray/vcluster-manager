@@ -1,0 +1,104 @@
+{{define "status_badge.html"}}
+{{if .Deleting}}
+<span class="wf-badge wf-badge-red animate-pulse">Suppression en cours...</span>
+{{else}}
+<div class="space-y-3 text-sm">
+
+    <!-- Flux status tags -->
+    <div>
+        <div class="text-xs font-semibold uppercase mb-1.5" style="color:var(--text-muted);">Flux</div>
+        <div class="flex flex-wrap gap-1.5">
+            <span class="wf-status-tag {{if eq .HelmRelease "Ready"}}ready{{else if eq .HelmRelease "N/A"}}na{{else}}notready{{end}}">
+                HelmRelease: {{.HelmRelease}}
+            </span>
+            <span class="wf-status-tag {{if eq .Kustomization "Ready"}}ready{{else if eq .Kustomization "N/A"}}na{{else}}notready{{end}}">
+                Kustomization: {{.Kustomization}}
+            </span>
+            {{if .K8sVersion}}
+            {{if and .ConfigVersion (ne .ConfigVersion .K8sVersion)}}
+            <span class="wf-status-tag pending">
+                K8s: {{.K8sVersion}} &rarr; {{.ConfigVersion}}
+            </span>
+            {{else}}
+            <span class="wf-status-tag" style="background:var(--indigo-dim);color:var(--indigo);border:1px solid var(--indigo-border);">
+                K8s: {{.K8sVersion}}
+            </span>
+            {{end}}
+            {{else if .ConfigVersion}}
+            <span class="wf-status-tag" style="background:var(--indigo-dim);color:var(--indigo);border:1px solid var(--indigo-border);">
+                K8s: {{.ConfigVersion}}
+            </span>
+            {{end}}
+        </div>
+    </div>
+
+    <!-- Vault setup status -->
+    {{if .VaultEnabled}}
+    <div>
+        <div class="text-xs font-semibold uppercase mb-1.5" style="color:var(--text-muted);">Vault</div>
+        <div class="flex flex-wrap gap-1.5 items-center">
+            {{if eq .VaultStatus "done"}}
+            <span class="wf-status-tag ready">Auth: Ready</span>
+            {{else if eq .VaultStatus "waiting"}}
+            <span class="wf-status-tag pending animate-pulse">Auth: En attente vault-webhook...</span>
+            {{else if eq .VaultStatus "configuring"}}
+            <span class="wf-status-tag pending animate-pulse">Auth: Configuration...</span>
+            {{else if eq .VaultStatus "error"}}
+            <span class="wf-status-tag notready" title="{{.VaultMessage}}">Auth: Erreur</span>
+            {{else}}
+            <span class="wf-status-tag na">Auth: Inconnu</span>
+            {{end}}
+            {{if and (ne .VaultStatus "waiting") (ne .VaultStatus "configuring")}}
+            <button hx-post="/api/vclusters/{{.VClusterName}}/vault-setup-retry?env={{.VClusterEnv}}"
+                    hx-target="#toast-container" hx-swap="beforeend"
+                    class="text-xs px-2 py-0.5 rounded" style="background:var(--surface2);color:var(--text-muted);border:1px solid var(--border-subtle);"
+                    title="Relancer le setup Vault auth">
+                ↺
+            </button>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
+    <!-- Resource quota progress bars -->
+    {{if or .CPUUsage .MemoryUsage .StorageUsage}}
+    <div>
+        <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-muted);">Quotas</div>
+        <div class="wf-quota-inline">
+            {{if .CPUUsage}}
+            <div class="wf-quota-inline-row">
+                <span class="wf-quota-inline-label">CPU</span>
+                <span class="wf-quota-inline-val">{{.CPUUsage}}</span>
+                <div class="wf-quota-inline-bar">
+                    <div class="wf-quota-inline-fill {{if gt .CPUPercent 90}}high{{else if gt .CPUPercent 70}}mid{{else}}low{{end}}"
+                         style="width:{{.CPUPercent}}%"></div>
+                </div>
+            </div>
+            {{end}}
+            {{if .MemoryUsage}}
+            <div class="wf-quota-inline-row">
+                <span class="wf-quota-inline-label">MEM</span>
+                <span class="wf-quota-inline-val">{{.MemoryUsage}}</span>
+                <div class="wf-quota-inline-bar">
+                    <div class="wf-quota-inline-fill {{if gt .MemoryPercent 90}}high{{else if gt .MemoryPercent 70}}mid{{else}}low{{end}}"
+                         style="width:{{.MemoryPercent}}%"></div>
+                </div>
+            </div>
+            {{end}}
+            {{if .StorageUsage}}
+            <div class="wf-quota-inline-row">
+                <span class="wf-quota-inline-label">STOR</span>
+                <span class="wf-quota-inline-val">{{.StorageUsage}}</span>
+                <div class="wf-quota-inline-bar">
+                    <div class="wf-quota-inline-fill {{if gt .StoragePercent 90}}high{{else if gt .StoragePercent 70}}mid{{else}}low{{end}}"
+                         style="width:{{.StoragePercent}}%"></div>
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
+</div>
+{{end}}
+{{end}}

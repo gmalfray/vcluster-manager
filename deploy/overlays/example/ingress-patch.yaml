@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vcluster-manager
+  namespace: vcluster-manager
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  rules:
+    - host: vcluster-manager.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vcluster-manager
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - vcluster-manager.example.com
+      secretName: vcluster-manager-tls

@@ -1,0 +1,165 @@
+{{define "content"}}
+<div class="mb-8">
+    <h1 class="text-2xl font-bold" style="font-family:'Outfit',sans-serif;color:var(--text);">Nouveau vCluster</h1>
+    <p class="mt-1 text-sm" style="color:var(--text-muted);">Cree un nouveau vcluster via GitOps</p>
+</div>
+
+<form hx-post="/vclusters/new" hx-target="#toast-container" hx-indicator="#page-loading-overlay" data-loading-text="Création du vCluster en cours..." class="wf-card max-w-2xl space-y-6">
+
+    <!-- Nom -->
+    <div>
+        <label for="name" class="wf-form-label">Nom du vCluster</label>
+        <input type="text" name="name" id="name" required
+               pattern="[a-z][a-z0-9-]*"
+               placeholder="monitoring"
+               class="wf-form-input mt-1">
+        <p class="mt-1 text-xs" style="color:var(--text-muted);">Minuscules, commence par une lettre, uniquement [a-z0-9-]</p>
+    </div>
+
+    <!-- Scope -->
+    <div>
+        <label class="wf-form-label mb-2">Environnement</label>
+        <div class="flex flex-wrap items-center gap-5 mt-1">
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="scope" value="preprod" class="h-4 w-4" style="accent-color:var(--indigo);">
+                <span class="text-sm" style="color:var(--text-secondary);">Preprod uniquement</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="scope" value="prod" class="h-4 w-4" style="accent-color:var(--indigo);">
+                <span class="text-sm" style="color:var(--text-secondary);">Prod uniquement (MR)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="scope" value="both" checked class="h-4 w-4" style="accent-color:var(--indigo);">
+                <span class="text-sm" style="color:var(--text-secondary);">Preprod + MR prod</span>
+            </label>
+        </div>
+        <p class="mt-1 text-xs" style="color:var(--text-muted);">La prod necessite une merge request sur master</p>
+    </div>
+
+    <!-- ArgoCD toggle -->
+    <div class="wf-form-section">
+        <div class="wf-form-section-legend">ArgoCD</div>
+        <div class="flex items-center gap-3">
+            <label class="switch">
+                <input type="checkbox" name="argocd" id="argocd"
+                       onchange="
+                           document.getElementById('argocd-options').classList.toggle('hidden', !this.checked);
+                           if (this.checked) { document.getElementById('fluxcd').checked = false; document.getElementById('fluxcd-options').classList.add('hidden'); }
+                       ">
+                <span class="switch-track"></span>
+            </label>
+            <label for="argocd" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Activer ArgoCD</label>
+        </div>
+        <div id="argocd-options" class="hidden mt-3 pl-14 space-y-3" style="border-left:2px solid var(--indigo-border);">
+            <div>
+                <label for="rbac_groups" class="wf-form-label">Groupes RBAC</label>
+                <input type="text" name="rbac_groups" id="rbac_groups" value="it"
+                       placeholder="it, usinelogiciel"
+                       class="wf-form-input mt-1">
+                <p class="mt-1 text-xs" style="color:var(--text-muted);">Separes par des virgules</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- FluxCD toggle -->
+    <div class="wf-form-section">
+        <div class="wf-form-section-legend">FluxCD Bootstrap</div>
+        <div class="flex items-center gap-3">
+            <label class="switch">
+                <input type="checkbox" name="fluxcd_enabled" id="fluxcd"
+                       onchange="
+                           document.getElementById('fluxcd-options').classList.toggle('hidden', !this.checked);
+                           if (this.checked) { document.getElementById('argocd').checked = false; document.getElementById('argocd-options').classList.add('hidden'); }
+                       ">
+                <span class="switch-track"></span>
+            </label>
+            <label for="fluxcd" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Activer FluxCD Bootstrap</label>
+        </div>
+        <p class="text-xs mt-1" style="color:var(--text-muted);">
+            Deploie FluxCD dans le vcluster via un Pod bootstrap. La cle SSH doit etre dans le secret <code>flux-git-ssh</code>.
+        </p>
+        <div id="fluxcd-options" class="hidden mt-3 pl-14 space-y-3" style="border-left:2px solid var(--cyan-border, rgba(34,211,238,0.3));">
+            <div>
+                <label for="fluxcd_repo_url" class="wf-form-label">URL du repo Git (SSH)</label>
+                <input type="text" name="fluxcd_repo_url" id="fluxcd_repo_url"
+                       placeholder="ssh://git@gitlab.example.com:22/..."
+                       class="wf-form-input mt-1">
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label for="fluxcd_branch" class="wf-form-label">Branch</label>
+                    <input type="text" name="fluxcd_branch" id="fluxcd_branch"
+                           placeholder="master"
+                           class="wf-form-input mt-1">
+                </div>
+                <div>
+                    <label for="fluxcd_path" class="wf-form-label">Path</label>
+                    <input type="text" name="fluxcd_path" id="fluxcd_path"
+                           placeholder="clusters/mon-cluster"
+                           class="wf-form-input mt-1">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backup -->
+    <div class="wf-form-section">
+        <div class="wf-form-section-legend">Backup Velero</div>
+        <div class="space-y-3">
+            <div class="flex items-center gap-3">
+                <label class="switch">
+                    <input type="checkbox" name="velero_enabled" id="velero_enabled" checked
+                           onchange="document.getElementById('velero-options').classList.toggle('hidden')">
+                    <span class="switch-track"></span>
+                </label>
+                <label for="velero_enabled" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Activer le backup Velero</label>
+            </div>
+            <div id="velero-options">
+                <label for="velero_hour" class="wf-form-label">Heure de backup (HH:MM)</label>
+                <input type="text" name="velero_hour" id="velero_hour"
+                       pattern="[0-9]{1,2}:[0-9]{2}"
+                       placeholder="03:00"
+                       class="wf-form-input mt-1 max-w-xs">
+                {{if .UsedSlots}}
+                <p class="mt-1 text-xs" style="color:var(--text-muted);">Creneaux utilises : {{join .UsedSlots ", "}}</p>
+                {{end}}
+            </div>
+        </div>
+    </div>
+
+    <!-- Quotas -->
+    <div class="wf-form-section">
+        <div class="wf-form-section-legend">Resource Quotas</div>
+        <div class="space-y-3">
+            <div class="flex items-center gap-3">
+                <label class="switch">
+                    <input type="checkbox" name="no_quotas" id="no_quotas"
+                           onchange="document.getElementById('quota-options').classList.toggle('hidden')">
+                    <span class="switch-track"></span>
+                </label>
+                <label for="no_quotas" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Desactiver les resource quotas</label>
+            </div>
+            <div id="quota-options" class="grid grid-cols-3 gap-4">
+                <div>
+                    <label for="cpu" class="wf-form-label">CPU</label>
+                    <input type="text" name="cpu" id="cpu" value="8" class="wf-form-input mt-1">
+                </div>
+                <div>
+                    <label for="memory" class="wf-form-label">Memory</label>
+                    <input type="text" name="memory" id="memory" value="32Gi" class="wf-form-input mt-1">
+                </div>
+                <div>
+                    <label for="storage" class="wf-form-label">Storage</label>
+                    <input type="text" name="storage" id="storage" value="500Gi" class="wf-form-input mt-1">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn btn-indigo">Creer le vCluster</button>
+        <a href="/" class="btn btn-outline">Annuler</a>
+    </div>
+</form>
+{{end}}

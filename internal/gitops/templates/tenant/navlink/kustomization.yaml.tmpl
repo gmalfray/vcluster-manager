@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../../../../lib/tenant-template/argocd/navlink
+
+patches:
+  - target:
+      kind: NavLink
+      name: link-argocd
+    patch: |-
+      - op: replace
+        path: /spec/label
+        value: "ArgoCD {{.Name}} {{.EnvLabel}}"
+      - op: replace
+        path: /spec/toURL
+        value: "{{.ArgoCDURL}}"

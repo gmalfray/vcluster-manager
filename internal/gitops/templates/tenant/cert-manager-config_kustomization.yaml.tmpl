@@ -1,0 +1,28 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager-config-{{.Name}}
+  namespace: vcluster-{{.Name}}
+spec:
+  kubeConfig:
+    secretRef:
+      name: vc-vcluster-{{.Name}}-int
+      key: config
+  dependsOn:
+    - name: cert-manager-{{.Name}}
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  path: ./lib/tenant-template/cert-manager/config
+  prune: true
+  timeout: 5m
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+    substitute:
+      VCLUSTER_DOMAIN: "{{.Domain}}"
+      VCLUSTER_WILDCARD_SECRET: "{{.WildcardSecret}}"
+      VAULT_KUBERNETES_AUTH_PATH: "kubernetes-vcluster-{{.Name}}-{{.Env}}"

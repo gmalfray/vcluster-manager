@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vcluster-manager-config
+  namespace: vcluster-manager
+data:
+  # GitLab
+  GITLAB_URL: "https://gitlab.example.com"
+  GITLAB_SSH_URL: "ssh://git@gitlab.example.com:22"
+  GITLAB_PROJECT_ID: "42"           # ID of your GitOps repo (fluxprod)
+  GITLAB_HELM_PROJECT_ID: "43"      # ID of your helm-charts repo
+  GITLAB_ARGOCD_GROUP_ID: "10"      # ID of the GitLab group for ArgoCD app-manifests repos
+  GITLAB_ARGOCD_PATH: "ops/argocd"  # Path prefix for ArgoCD repos in GitLab
+
+  # Keycloak / OIDC
+  KEYCLOAK_URL: "https://keycloak.example.com"
+  KEYCLOAK_REALM: "myrealm"
+  KEYCLOAK_CLIENT_ID: "vcluster-manager"
+  OIDC_CLIENT_ID: "vcluster-manager"
+  OIDC_REDIRECT_URL: "https://vcluster-manager.example.com/auth/callback"
+
+  # Domains
+  BASE_DOMAIN_PREPROD: "preprod.example.com"
+  BASE_DOMAIN_PROD: "example.com"
+
+  # TLS secrets (wildcard certs pre-existing in host clusters)
+  TLS_SECRET_PREPROD: "wildcard-preprod-example-com-tls"
+  TLS_SECRET_PROD: "wildcard-example-com-tls"
+
+  # Admin groups (comma-separated OIDC groups with admin access)
+  ADMIN_GROUPS: "platform-admins,ops"
+
+  # vCluster defaults
+  DEFAULT_CPU: "8"
+  DEFAULT_MEMORY: "32Gi"
+  DEFAULT_STORAGE: "500Gi"
+  DEFAULT_RBAC_GROUP: "developers"
+
+  # Rancher (optional — set to true to enable pairing per environment)
+  RANCHER_URL: "https://rancher.example.com"
+  RANCHER_ENABLED_PREPROD: "false"
+  RANCHER_ENABLED_PROD: "false"
+
+  # Vault (optional)
+  VAULT_ADDR: "https://vault.example.com"

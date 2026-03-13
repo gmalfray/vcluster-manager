@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vcluster-manager-config
+  namespace: vcluster-manager
+data:
+  # Server
+  LISTEN_ADDR: ":8080"
+  DATA_DIR: "/app/data"
+
+  # GitLab
+  GITLAB_URL: "https://gitlab.example.com"
+  GITLAB_SSH_URL: "ssh://git@gitlab.example.com:22"
+  GITLAB_ARGOCD_PATH: "ops/argocd"
+  # Les variables suivantes sont env-spécifiques : les définir dans l'overlay de chaque env
+  # GITLAB_PROJECT_ID, GITLAB_ARGOCD_GROUP_ID, GITLAB_HELM_PROJECT_ID
+  # KEYCLOAK_CLIENT_ID, OIDC_CLIENT_ID, OIDC_REDIRECT_URL, VAULT_ADDR
+  # RANCHER_URL, RANCHER_ENABLED_PREPROD, RANCHER_ENABLED_PROD
+
+  # Keycloak
+  KEYCLOAK_URL: "https://keycloak.example.com"
+  KEYCLOAK_REALM: "myrealm"
+
+  # Domains
+  BASE_DOMAIN_PREPROD: "preprod.example.com"
+  BASE_DOMAIN_PROD: "example.com"
+
+  # TLS secrets (wildcard secrets pre-existing in host clusters)
+  TLS_SECRET_PREPROD: "wildcard-preprod-example-com-tls"
+  TLS_SECRET_PROD: "wildcard-example-com-tls"
+
+  # vCluster defaults
+  DEFAULT_CPU: "8"
+  DEFAULT_MEMORY: "32Gi"
+  DEFAULT_STORAGE: "500Gi"
+  VELERO_TIMEZONE: "Europe/Paris"
+  VCLUSTER_POD_SECURITY: "privileged"
+  ARGOCD_DEFAULT_POLICY: "role:readonly"
+
+  # Cluster labels
+  CLUSTER_LABEL_PREPROD: "Preprod"
+  CLUSTER_LABEL_PROD: "Prod"
+
+  # SSH
+  SSH_KEY_PATH: "/root/.ssh/id_rsa"
+
+  # Rancher (valeurs par défaut — surcharger dans l'overlay)
+  RANCHER_ENABLED_PREPROD: "false"
+  RANCHER_ENABLED_PROD: "false"
+
+  # Notifications webhook (optionnel)
+  # WEBHOOK_URL contient une URL sensible (token inclus) : mettre dans le Secret, pas ici.
+  # Ajouter WEBHOOK_URL dans vcluster-manager-secrets si besoin.

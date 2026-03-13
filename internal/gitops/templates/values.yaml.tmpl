@@ -1,0 +1,55 @@
+# Configuration spécifique pour vcluster-{{.Name}} {{.Env}}
+
+{{if .VeleroEnabled}}veleroBackup:
+  enabled: true
+  targetNamespace: vcluster-{{.Name}}
+  schedule: "{{.VeleroSchedule}}"
+  ttl: "{{.VeleroTTL}}"
+{{else}}veleroBackup:
+  enabled: false
+{{end}}vcluster:
+  controlPlane:
+    ingress:
+      enabled: true
+      host: "{{.APIHost}}"
+      annotations:
+        nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+        nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+        nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    proxy:
+      extraSANs:
+        - vcluster-{{.Name}}.vcluster-{{.Name}}.svc.cluster.local
+        - {{.APIHost}}
+{{- if .K8sVersion}}
+    distro:
+      k8s:
+        version: "{{.K8sVersion}}"
+{{- end}}
+  exportKubeConfig:
+    additionalSecrets:
+      - name: vc-vcluster-{{.Name}}-int
+        server: https://vcluster-{{.Name}}.vcluster-{{.Name}}.svc.cluster.local:443
+      - name: vc-vcluster-{{.Name}}-ext
+        server: https://{{.APIHost}}
+  policies:
+    podSecurityStandard: {{.PodSecurity}}
+{{- if .NoQuotas}}
+    resourceQuota:
+      enabled: false
+    limitRange:
+      enabled: false
+{{- else}}
+    resourceQuota:
+      quota:
+        requests.cpu: {{.CPU}}
+        requests.memory: {{.Memory}}
+        requests.storage: "{{.Storage}}"
+{{- end}}
+{{- if and .FluxCD .FluxCDRepoURL}}
+
+fluxcd:
+  enabled: true
+  repoURL: "{{.FluxCDRepoURL}}"
+  branch: "{{.FluxCDBranch}}"
+  path: "{{.FluxCDPath}}"
+{{- end}}

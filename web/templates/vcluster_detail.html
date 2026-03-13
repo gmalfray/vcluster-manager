@@ -1,0 +1,506 @@
+{{define "content"}}
+<!-- Header -->
+<div class="mb-6">
+    <div class="flex justify-between items-start mb-3">
+        <div>
+            <h1 class="text-2xl font-bold" style="font-family:'Outfit',sans-serif;color:var(--text);">
+                vcluster-{{.VCluster.Name}}
+            </h1>
+            <p class="mt-1 text-sm" style="color:var(--text-muted);">
+                {{.EnvLabel}} ({{.Env}}) &mdash;
+                <span style="font-family:'JetBrains Mono',monospace;font-size:0.8em;">{{.APIHost}}</span>
+            </p>
+        </div>
+        <div class="flex flex-col items-end gap-3">
+            {{if not .Pending}}
+            <div class="flex items-center gap-4">
+                <div id="protection-toggle"
+                     hx-get="/api/vclusters/{{.VCluster.Name}}/protection-status?env={{.Env}}"
+                     hx-trigger="load"
+                     hx-swap="innerHTML">
+                    <span class="text-xs" style="color:var(--text-muted);">Chargement...</span>
+                </div>
+                {{if .User.isAdmin}}
+                <div id="rancher-toggle"
+                     hx-get="/api/vclusters/{{.VCluster.Name}}/rancher-status?env={{.Env}}"
+                     hx-trigger="load"
+                     hx-swap="innerHTML">
+                    <span class="text-xs" style="color:var(--text-muted);">Chargement...</span>
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+            <div class="flex gap-2 flex-wrap justify-end">
+                {{if .ArgoURL}}
+                <a href="{{.ArgoURL}}" target="_blank" class="btn btn-outline btn-sm" style="color:var(--purple);border-color:var(--purple);">
+                    ArgoCD UI
+                </a>
+                {{end}}
+                {{if .VCluster.ArgoCD}}
+                {{if .AppManifestsExists}}
+                <a href="https://gitlab.example.com/ops/argocd/app-manifests-{{.VCluster.Name}}" target="_blank"
+                   class="btn btn-outline btn-sm" style="color:var(--indigo);border-color:var(--indigo);">
+                    App Manifests
+                </a>
+                {{else if .User.isAdmin}}
+                <button hx-post="/api/vclusters/{{.VCluster.Name}}/create-repo?env={{.Env}}"
+                        hx-target="#toast-container" hx-swap="beforeend"
+                        hx-confirm="Creer le repo app-manifests-{{.VCluster.Name}} sur GitLab ?"
+                        class="btn btn-outline btn-sm" style="color:var(--red);border-color:var(--red);">
+                    Creer le repo
+                </button>
+                {{end}}
+                {{end}}
+                {{if .User.isAdmin}}
+                {{if not .Pending}}
+                <a href="/api/vclusters/{{.VCluster.Name}}/kubeconfig?env={{.Env}}" class="btn btn-outline btn-sm">
+                    Kubeconfig
+                </a>
+                {{end}}
+                <a href="/vclusters/{{.VCluster.Name}}/delete?env={{.Env}}" class="btn btn-danger btn-sm">
+                    Supprimer
+                </a>
+                {{end}}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Alert banners -->
+{{if .Pending}}
+<div class="wf-alert wf-alert-amber mb-6">
+    <svg class="flex-shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" stroke="currentColor"/></svg>
+    <div class="flex flex-col gap-2 flex-1">
+        <span class="text-sm">
+            Ce vcluster n'est pas encore deploye en production.
+            Les modifications sont appliquees directement sur la branche preprod.
+        </span>
+        {{if .PendingMRURL}}
+        <a href="{{.PendingMRURL}}" target="_blank"
+           class="inline-flex items-center gap-1 text-sm font-medium"
+           style="color:var(--amber);text-decoration:underline;">
+            Voir la MR preprod &rarr; master
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="currentColor"/></svg>
+        </a>
+        {{else if .User.isAdmin}}
+        <button hx-post="/api/vclusters/{{.VCluster.Name}}/create-prod-mr"
+                hx-target="#toast-container" hx-swap="beforeend"
+                hx-confirm="Créer la MR preprod → master pour déployer {{.VCluster.Name}} en production ?"
+                class="btn btn-sm" style="background:var(--amber-dim);color:var(--amber);border:1px solid rgba(251,191,36,0.3);width:fit-content;">
+            Créer la MR prod &rarr;
+        </button>
+        {{end}}
+    </div>
+</div>
+{{else if .ProdDeployed}}
+    {{if .HasPendingMRChange}}
+    <div class="wf-alert wf-alert-amber mb-6">
+        <svg class="flex-shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor"/></svg>
+        <span class="text-sm">
+            Des modifications sont en attente dans la
+            <a href="{{.PendingMRURL}}" target="_blank" class="font-medium underline">MR preprod → master</a>.
+            Elles seront appliquees en production apres le merge.
+        </span>
+    </div>
+    {{else}}
+    <div class="wf-alert wf-alert-cyan mb-6">
+        <svg class="flex-shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor"/></svg>
+        <span class="text-sm">Vue production. Les modifications seront appliquees via merge request.</span>
+    </div>
+    {{end}}
+{{end}}
+
+<!-- Main grid -->
+<div class="wf-detail-grid">
+
+    <!-- Status -->
+    <div class="wf-card">
+        <h2 class="wf-card-title">Status</h2>
+        {{if .Pending}}
+        <span class="wf-badge wf-badge-amber">Non deploye</span>
+        {{else}}
+        <div hx-get="/api/vclusters/{{.VCluster.Name}}/status?env={{.Env}}{{if .VCluster.K8sVersionConfig}}&configVersion={{.VCluster.K8sVersionConfig}}{{end}}"
+            hx-trigger="load, every 30s" hx-swap="innerHTML">
+            <span class="text-sm" style="color:var(--text-muted);">Loading...</span>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Configuration -->
+    <div class="wf-card">
+        <h2 class="wf-card-title">Configuration</h2>
+        <dl class="wf-dl">
+            <div class="wf-dl-row">
+                <dt>ArgoCD</dt>
+                <dd>{{if .VCluster.ArgoCD}}<span class="wf-badge wf-badge-green">Actif</span>{{else}}<span class="wf-badge wf-badge-gray">Inactif</span>{{end}}</dd>
+            </div>
+            {{if .VCluster.ArgoCD}}
+            <div class="wf-dl-row">
+                <dt>Groupes RBAC</dt>
+                <dd>{{join .VCluster.RBACGroups ", "}}</dd>
+            </div>
+            {{end}}
+            <div class="wf-dl-row">
+                <dt>FluxCD</dt>
+                <dd>{{if .VCluster.FluxCD.Enabled}}<span class="wf-badge wf-badge-green">Actif</span>{{else}}<span class="wf-badge wf-badge-gray">Inactif</span>{{end}}</dd>
+            </div>
+            {{if .VCluster.FluxCD.Enabled}}
+            <div class="wf-dl-row">
+                <dt>Repo FluxCD</dt>
+                <dd style="font-family:'JetBrains Mono',monospace;font-size:0.8em;">{{.VCluster.FluxCD.RepoURL}}</dd>
+            </div>
+            <div class="wf-dl-row">
+                <dt>Branch / Path</dt>
+                <dd><code>{{.VCluster.FluxCD.Branch}} / {{.VCluster.FluxCD.Path}}</code></dd>
+            </div>
+            {{end}}
+            {{if .VCluster.K8sVersionConfig}}
+            <div class="wf-dl-row">
+                <dt>Version K8s (config)</dt>
+                <dd><code>{{.VCluster.K8sVersionConfig}}</code></dd>
+            </div>
+            {{end}}
+            {{if .VCluster.ArgoCD}}
+            <div class="wf-dl-row">
+                <dt>Version ArgoCD</dt>
+                <dd>{{if .VCluster.ArgoCDVersion}}<code>{{.VCluster.ArgoCDVersion}}</code>{{else}}<span style="color:var(--text-muted);">Global</span>{{end}}</dd>
+            </div>
+            {{end}}
+            <div class="wf-dl-row">
+                <dt>Backup</dt>
+                <dd>{{if .VCluster.Velero.Enabled}}{{printf "%02d:%02d" .VCluster.Velero.Hour .VCluster.Velero.Minute}}{{else}}<span style="color:var(--text-muted);">Desactive</span>{{end}}</dd>
+            </div>
+            {{if .VCluster.Velero.Enabled}}
+            <div class="wf-dl-row">
+                <dt>Retention backup</dt>
+                <dd>
+                    {{if .VCluster.Velero.TTL}}
+                    <code>{{.VCluster.Velero.TTL}}</code>
+                    {{if .VeleroTTLText}}<span style="color:var(--text-muted);font-size:0.8em;">({{.VeleroTTLText}})</span>{{end}}
+                    {{else}}<span style="color:var(--text-muted);">defaut</span>{{end}}
+                </dd>
+            </div>
+            {{end}}
+            {{if not .VCluster.NoQuotas}}
+            <div class="wf-dl-row" style="border-top:1px solid var(--border-subtle);padding-top:0.75rem;margin-top:0.25rem;">
+                <dt class="text-xs font-semibold uppercase" style="color:var(--text-muted);">Quotas de ressources</dt>
+                <dd></dd>
+            </div>
+            <div class="wf-dl-row">
+                <dt>CPU</dt>
+                <dd><code>{{.VCluster.Quotas.CPU}}</code></dd>
+            </div>
+            <div class="wf-dl-row">
+                <dt>Memory</dt>
+                <dd><code>{{.VCluster.Quotas.Memory}}</code></dd>
+            </div>
+            <div class="wf-dl-row">
+                <dt>Storage</dt>
+                <dd><code>{{.VCluster.Quotas.Storage}}</code></dd>
+            </div>
+            {{else}}
+            <div class="wf-dl-row">
+                <dt>Quotas</dt>
+                <dd style="color:var(--text-muted);">disabled</dd>
+            </div>
+            {{end}}
+        </dl>
+    </div>
+
+    {{if .User.isAdmin}}
+    <!-- Edit Settings (full width) -->
+    <div class="wf-card wf-detail-full">
+        <h2 class="wf-card-title">Modifier les parametres</h2>
+        <form hx-post="/vclusters/{{.VCluster.Name}}/settings?env={{.Env}}" hx-target="#toast-container" class="space-y-5">
+
+            <!-- Kubernetes -->
+            <div class="wf-form-section">
+                <div class="wf-form-section-legend">Kubernetes</div>
+                <div>
+                    <label class="wf-form-label">Version K8s</label>
+                    <div class="flex items-center gap-2 mt-1 max-w-md">
+                        <select id="detail-k8s-select"
+                            onchange="var ci=document.getElementById('detail-k8s-custom'),hi=document.getElementById('detail-k8s-hidden');if(this.value==='custom'){ci.classList.remove('hidden');ci.focus();hi.value=ci.value;}else if(this.value===''){hi.value='';ci.classList.add('hidden');ci.value='';}else{ci.classList.add('hidden');ci.value='';hi.value=this.value;}"
+                            class="wf-form-select">
+                            <option value="">Defaut du chart</option>
+                            {{range .K8sVersions}}
+                            <option value="{{.}}">{{.}}</option>
+                            {{end}}
+                            <option value="custom">Autre (custom)</option>
+                        </select>
+                        <input type="text" id="detail-k8s-custom" placeholder="ex: 1.32.0"
+                            onchange="document.getElementById('detail-k8s-hidden').value=this.value;"
+                            oninput="document.getElementById('detail-k8s-hidden').value=this.value;"
+                            class="hidden wf-form-input" style="width:130px;">
+                        <input type="hidden" name="k8s_version" id="detail-k8s-hidden" value="{{.VCluster.K8sVersionConfig}}">
+                    </div>
+                    <p class="mt-1 text-xs" style="color:var(--text-muted);">Laisser sur "Defaut du chart" pour utiliser la version par defaut</p>
+                    <script>
+                        (function () {
+                            var sel = document.getElementById('detail-k8s-select'), val = '{{.VCluster.K8sVersionConfig}}';
+                            if (!val) { sel.value = ''; return; }
+                            for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === val) { sel.value = val; return; } }
+                            sel.value = 'custom';
+                            var ci = document.getElementById('detail-k8s-custom'); ci.classList.remove('hidden'); ci.value = val;
+                        })();
+                    </script>
+                </div>
+            </div>
+
+            <!-- Quotas -->
+            <div class="wf-form-section">
+                <div class="wf-form-section-legend">Quotas</div>
+                <div class="space-y-3">
+                    <div class="flex items-center gap-3">
+                        <label class="switch">
+                            <input type="checkbox" id="detail-quotas-toggle"
+                                {{if not .VCluster.NoQuotas}}checked{{end}}
+                                onchange="
+                                    document.getElementById('quota-fields').classList.toggle('hidden', !this.checked);
+                                    document.getElementById('no_quotas_hidden').value = this.checked ? '' : 'on';
+                                ">
+                            <span class="switch-track"></span>
+                        </label>
+                        <label for="detail-quotas-toggle" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Active</label>
+                    </div>
+                    <input type="hidden" name="no_quotas" id="no_quotas_hidden" value="{{if .VCluster.NoQuotas}}on{{end}}">
+                    <div id="quota-fields" {{if .VCluster.NoQuotas}}class="hidden"{{end}}>
+                        <div class="grid grid-cols-3 gap-4">
+                            <div>
+                                <label for="cpu" class="wf-form-label">CPU</label>
+                                <input type="text" name="cpu" id="cpu" value="{{.VCluster.Quotas.CPU}}" class="wf-form-input mt-1">
+                            </div>
+                            <div>
+                                <label for="memory" class="wf-form-label">Memory</label>
+                                <input type="text" name="memory" id="memory" value="{{.VCluster.Quotas.Memory}}" class="wf-form-input mt-1">
+                            </div>
+                            <div>
+                                <label for="storage" class="wf-form-label">Storage</label>
+                                <input type="text" name="storage" id="storage" value="{{.VCluster.Quotas.Storage}}" class="wf-form-input mt-1">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backup -->
+            <div class="wf-form-section">
+                <div class="wf-form-section-legend">Backup Velero</div>
+                <div class="space-y-3">
+                    <div class="flex items-center gap-3">
+                        <label class="switch">
+                            <input type="checkbox" name="velero_enabled" id="detail-velero-toggle"
+                                {{if .VCluster.Velero.Enabled}}checked{{end}}
+                                onchange="document.getElementById('velero-hour-edit').classList.toggle('hidden')">
+                            <span class="switch-track"></span>
+                        </label>
+                        <label for="detail-velero-toggle" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Active</label>
+                    </div>
+                    <div id="velero-hour-edit" {{if not .VCluster.Velero.Enabled}}class="hidden"{{end}}>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="velero_hour" class="wf-form-label">Heure (HH:MM)</label>
+                                <input type="text" name="velero_hour" id="velero_hour"
+                                    value="{{printf "%02d:%02d" .VCluster.Velero.Hour .VCluster.Velero.Minute}}"
+                                    class="wf-form-input mt-1">
+                            </div>
+                            <div>
+                                <label for="velero_ttl" class="wf-form-label">Rétention</label>
+                                <input type="text" name="velero_ttl" id="velero_ttl"
+                                    value="{{.VeleroTTLText}}"
+                                    placeholder="ex: 30j, 12h, 90m"
+                                    class="wf-form-input mt-1" style="max-width:160px;">
+                                <p class="mt-1 text-xs" style="color:var(--text-muted);">j = jours, h = heures, m = minutes — vide = défaut ({{.DefaultVeleroTTL}})</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ArgoCD -->
+            <div class="wf-form-section">
+                <div class="wf-form-section-legend">ArgoCD</div>
+                <div class="space-y-3">
+                    <input type="hidden" name="argocd" id="argocd_hidden" value="{{if .VCluster.ArgoCD}}on{{else}}off{{end}}">
+                    <div class="flex items-center gap-3">
+                        <label class="switch">
+                            <input type="checkbox" id="detail-argocd-toggle"
+                                {{if .VCluster.ArgoCD}}checked{{end}}
+                                onchange="
+                                    document.getElementById('argocd_hidden').value = this.checked ? 'on' : 'off';
+                                    var dr = document.getElementById('argocd-delete-repo');
+                                    if (dr) { dr.classList.toggle('hidden', this.checked); if (this.checked) document.getElementById('delete_repo').checked = false; }
+                                    document.getElementById('argocd-options').classList.toggle('hidden', !this.checked);
+                                    if (this.checked) {
+                                        document.getElementById('detail-fluxcd-toggle').checked = false;
+                                        document.getElementById('fluxcd_hidden').value = 'off';
+                                        document.getElementById('fluxcd-options').classList.add('hidden');
+                                    }
+                                ">
+                            <span class="switch-track"></span>
+                        </label>
+                        <label for="detail-argocd-toggle" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Activer ArgoCD</label>
+                    </div>
+                    {{if .VCluster.ArgoCD}}
+                    <div id="argocd-delete-repo" class="pl-14 hidden">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" name="delete_repo" id="delete_repo"
+                                class="h-4 w-4 rounded" style="border-color:var(--red);accent-color:var(--red);">
+                            <span class="text-sm" style="color:var(--red);">Supprimer aussi le repo app-manifests-{{.VCluster.Name}}</span>
+                        </label>
+                    </div>
+                    {{end}}
+                    {{if .Pending}}
+                    <p class="text-xs pl-14" style="color:var(--text-muted);">Modifier ArgoCD avant deploiement recree tous les fichiers du vcluster.</p>
+                    {{end}}
+                    <div id="argocd-options" {{if not .VCluster.ArgoCD}}class="hidden"{{end}}>
+                    <div class="space-y-3 pt-3" style="border-top:1px solid var(--border-subtle);">
+                        <div>
+                            <label for="rbac_groups" class="wf-form-label">Groupes RBAC</label>
+                            <input type="text" name="rbac_groups" id="rbac_groups" value="{{join .VCluster.RBACGroups ", "}}"
+                                class="wf-form-input mt-1 max-w-md">
+                        </div>
+                        <div>
+                            <label class="wf-form-label">Version ArgoCD</label>
+                            <div class="flex items-center gap-2 mt-1 max-w-md">
+                                <select id="detail-argocd-select"
+                                    onchange="var ci=document.getElementById('detail-argocd-custom'),hi=document.getElementById('detail-argocd-hidden');if(this.value==='custom'){ci.classList.remove('hidden');ci.focus();hi.value=ci.value;}else if(this.value===''){hi.value='';ci.classList.add('hidden');ci.value='';}else{ci.classList.add('hidden');ci.value='';hi.value=this.value;}"
+                                    class="wf-form-select">
+                                    <option value="">Global (defaut)</option>
+                                    {{range .ArgoCDVersions}}
+                                    <option value="{{.}}">{{.}}</option>
+                                    {{end}}
+                                    <option value="custom">Autre (custom)</option>
+                                </select>
+                                <input type="text" id="detail-argocd-custom" placeholder="ex: v3.3.0"
+                                    onchange="document.getElementById('detail-argocd-hidden').value=this.value;"
+                                    oninput="document.getElementById('detail-argocd-hidden').value=this.value;"
+                                    class="hidden wf-form-input" style="width:130px;">
+                                <input type="hidden" name="argocd_version" id="detail-argocd-hidden" value="{{.VCluster.ArgoCDVersion}}">
+                            </div>
+                            <p class="mt-1 text-xs" style="color:var(--text-muted);">Laisser sur "Global" pour utiliser la version du template de base</p>
+                            <script>
+                                (function () {
+                                    var sel = document.getElementById('detail-argocd-select'), val = '{{.VCluster.ArgoCDVersion}}';
+                                    if (!val) { sel.value = ''; return; }
+                                    for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === val) { sel.value = val; return; } }
+                                    sel.value = 'custom';
+                                    var ci = document.getElementById('detail-argocd-custom'); ci.classList.remove('hidden'); ci.value = val;
+                                })();
+                            </script>
+                        </div>
+                    </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- FluxCD -->
+            <div class="wf-form-section">
+                <div class="wf-form-section-legend">FluxCD Bootstrap</div>
+                <div class="space-y-3">
+                    <input type="hidden" name="fluxcd" id="fluxcd_hidden" value="{{if .VCluster.FluxCD.Enabled}}on{{else}}off{{end}}">
+                    <div class="flex items-center gap-3">
+                        <label class="switch">
+                            <input type="checkbox" id="detail-fluxcd-toggle"
+                                {{if .VCluster.FluxCD.Enabled}}checked{{end}}
+                                onchange="
+                                    document.getElementById('fluxcd_hidden').value = this.checked ? 'on' : 'off';
+                                    document.getElementById('fluxcd-options').classList.toggle('hidden', !this.checked);
+                                    if (this.checked) {
+                                        document.getElementById('detail-argocd-toggle').checked = false;
+                                        document.getElementById('argocd_hidden').value = 'off';
+                                        document.getElementById('argocd-options').classList.add('hidden');
+                                        var dr = document.getElementById('argocd-delete-repo');
+                                        if (dr) { dr.classList.add('hidden'); }
+                                    }
+                                ">
+                            <span class="switch-track"></span>
+                        </label>
+                        <label for="detail-fluxcd-toggle" class="wf-form-label cursor-pointer" style="margin-bottom:0;">Activer FluxCD Bootstrap</label>
+                    </div>
+                    <p class="text-xs pl-14" style="color:var(--text-muted);">
+                        Deploie FluxCD dans le vcluster via un Pod bootstrap. La cle SSH doit exister dans le secret <code>flux-git-ssh</code> du namespace.
+                    </p>
+                    <div id="fluxcd-options" {{if not .VCluster.FluxCD.Enabled}}class="hidden"{{end}}>
+                    <div class="space-y-3 pt-3" style="border-top:1px solid var(--border-subtle);">
+                        <div>
+                            <label for="fluxcd_repo_url" class="wf-form-label">URL du repo Git (SSH)</label>
+                            <input type="text" name="fluxcd_repo_url" id="fluxcd_repo_url"
+                                value="{{.VCluster.FluxCD.RepoURL}}"
+                                placeholder="ssh://git@gitlab.example.com:22/..."
+                                class="wf-form-input mt-1">
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="fluxcd_branch" class="wf-form-label">Branch</label>
+                                <input type="text" name="fluxcd_branch" id="fluxcd_branch"
+                                    value="{{.VCluster.FluxCD.Branch}}"
+                                    placeholder="master"
+                                    class="wf-form-input mt-1">
+                            </div>
+                            <div>
+                                <label for="fluxcd_path" class="wf-form-label">Path</label>
+                                <input type="text" name="fluxcd_path" id="fluxcd_path"
+                                    value="{{.VCluster.FluxCD.Path}}"
+                                    placeholder="clusters/mon-cluster"
+                                    class="wf-form-input mt-1">
+                            </div>
+                        </div>
+                    </div>
+                    </div>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-indigo">Sauvegarder</button>
+        </form>
+    </div>
+    {{end}}
+
+    {{if and .VCluster.ArgoCD (not .Pending)}}
+    <!-- ArgoCD Apps (full width) -->
+    <div class="wf-card wf-detail-full"
+         hx-get="/api/vclusters/{{.VCluster.Name}}/apps?env={{.Env}}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <span class="text-sm" style="color:var(--text-muted);">Chargement des applications...</span>
+    </div>
+    {{end}}
+
+    {{if and .VCluster.Velero.Enabled (not .Pending)}}
+    <!-- Velero Backups (full width) -->
+    <div class="wf-card wf-detail-full">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="wf-card-title" style="margin-bottom:0;">Backups Velero</h2>
+            <div class="flex items-center gap-2">
+                {{if .User.isAdmin}}
+                <button
+                    hx-post="/api/vclusters/{{.VCluster.Name}}/velero/backup?env={{.Env}}"
+                    hx-target="#velero-toast-area"
+                    hx-swap="innerHTML"
+                    class="btn btn-xs" style="background:var(--primary);color:#fff;border-color:var(--primary);"
+                    onclick="return confirm('Déclencher un backup manuel pour {{.VCluster.Name}} ?')">
+                    + Backup maintenant
+                </button>
+                {{end}}
+                <button
+                    hx-get="/api/vclusters/{{.VCluster.Name}}/velero/backups?env={{.Env}}"
+                    hx-target="#velero-backup-list"
+                    hx-swap="innerHTML"
+                    class="btn btn-outline btn-xs">
+                    ↻ Rafraîchir
+                </button>
+            </div>
+        </div>
+        <div id="velero-toast-area" class="mb-2"></div>
+        <div id="velero-backup-list"
+             hx-get="/api/vclusters/{{.VCluster.Name}}/velero/backups?env={{.Env}}"
+             hx-trigger="load, veleroBackupsRefresh from:body"
+             hx-swap="innerHTML">
+            <span class="text-sm" style="color:var(--text-muted);">Chargement des backups...</span>
+        </div>
+    </div>
+    {{end}}
+
+
+</div>
+{{end}}

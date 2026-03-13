@@ -1,0 +1,23 @@
+{{define "flux_summary.html"}}
+{{if eq .Total 0}}
+<div class="wf-stat-value" style="color:var(--text-muted);font-size:1.5rem;">—</div>
+<div class="wf-stat-sub">Non disponible</div>
+{{else}}
+<div class="wf-stat-value" style="color:{{if eq .Ready .Total}}var(--green){{else if gt .Ready 0}}var(--amber){{else}}var(--red){{end}};">
+    {{.Ready}}<span style="font-size:1.2rem;font-weight:400;color:var(--text-muted);">/{{.Total}}</span>
+</div>
+<div class="wf-stat-sub">HelmReleases Ready</div>
+<div class="mt-2 flex gap-1.5 flex-wrap">
+    {{if gt .PreprodTotal 0}}
+    <span class="wf-stat-pill" style="background:var(--surface3);color:var(--text-secondary);">
+        pp {{.PreprodReady}}/{{.PreprodTotal}}
+    </span>
+    {{end}}
+    {{if gt .ProdTotal 0}}
+    <span class="wf-stat-pill" style="background:var(--surface3);color:var(--text-secondary);">
+        prod {{.ProdReady}}/{{.ProdTotal}}
+    </span>
+    {{end}}
+</div>
+{{end}}
+{{end}}
