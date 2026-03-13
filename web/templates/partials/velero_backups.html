@@ -1,0 +1,214 @@
+{{define "velero_backups.html"}}
+{{if .Error}}
+<div class="wf-alert wf-alert-red">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor"/></svg>
+    <span class="text-sm">{{.Error}}</span>
+</div>
+{{else if not .Backups}}
+<p class="text-sm" style="color:var(--text-muted);">Aucun backup Velero trouvé pour ce vcluster.</p>
+{{else}}
+<div class="overflow-x-auto">
+    <table class="w-full text-sm" id="velero-backups-table">
+        <thead>
+            <tr style="border-bottom:1px solid var(--border-subtle);">
+                <th class="text-left py-2 pr-4 font-semibold cursor-pointer select-none velero-sort-th" data-col="0" style="color:var(--text-muted);">Nom <span class="sort-icon">↕</span></th>
+                <th class="text-left py-2 pr-4 font-semibold cursor-pointer select-none velero-sort-th" data-col="1" style="color:var(--text-muted);">État <span class="sort-icon">↕</span></th>
+                <th class="text-left py-2 pr-4 font-semibold cursor-pointer select-none velero-sort-th" data-col="2" style="color:var(--text-muted);">Début <span class="sort-icon">↓</span></th>
+                <th class="text-left py-2 pr-4 font-semibold cursor-pointer select-none velero-sort-th" data-col="3" style="color:var(--text-muted);">Éléments <span class="sort-icon">↕</span></th>
+                <th class="text-left py-2 pr-4 font-semibold cursor-pointer select-none velero-sort-th" data-col="4" style="color:var(--text-muted);">TTL <span class="sort-icon">↕</span></th>
+                <th class="text-left py-2 font-semibold" style="color:var(--text-muted);">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {{range .Backups}}
+        <tr style="border-bottom:1px solid var(--border-subtle);{{if eq .Phase "Completed"}}cursor:pointer;{{end}}"
+            class="hover:bg-gray-50"
+            {{if eq .Phase "Completed"}}
+            hx-get="/api/vclusters/{{$.Name}}/velero/backups/{{.Name}}/content?env={{$.Env}}"
+            hx-target="#velero-content-panel"
+            hx-swap="innerHTML"
+            hx-trigger="click[!closest('button')]"
+            {{end}}>
+            <td class="py-2 pr-4 font-mono text-xs" data-sort="{{.Name}}">{{.Name}}</td>
+            <td class="py-2 pr-4" data-sort="{{if .Phase}}{{.Phase}}{{end}}">
+                {{if eq .Phase "Completed"}}
+                <span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full" style="background:rgba(34,197,94,0.1);color:#16a34a;">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+                    Terminé
+                </span>
+                {{else if eq .Phase "Failed"}}
+                <span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full" style="background:rgba(239,68,68,0.1);color:#dc2626;">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/></svg>
+                    Échec
+                </span>
+                {{else if eq .Phase "InProgress"}}
+                <span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full" style="background:rgba(59,130,246,0.1);color:#2563eb;">
+                    <svg class="animate-spin" width="10" height="10" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    En cours
+                </span>
+                {{else if eq .Phase "PartiallyFailed"}}
+                <span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full" style="background:rgba(245,158,11,0.1);color:#d97706;">
+                    ⚠ Partiel
+                </span>
+                {{else}}
+                <span class="text-xs" style="color:var(--text-muted);">{{if .Phase}}{{.Phase}}{{else}}—{{end}}</span>
+                {{end}}
+            </td>
+            <td class="py-2 pr-4 text-xs" style="color:var(--text-muted);" data-sort="{{.StartTime}}">
+                {{if .StartTime}}{{.StartTime | formatDate}}{{else}}—{{end}}
+            </td>
+            <td class="py-2 pr-4 text-xs" data-sort="{{.TotalItems}}">
+                {{if .TotalItems}}{{.ItemsBackedUp}}/{{.TotalItems}}{{else}}—{{end}}
+            </td>
+            <td class="py-2 pr-4 text-xs font-mono" data-sort="{{.TTL}}">{{if .TTL}}{{.TTL}}{{else}}—{{end}}</td>
+            <td class="py-2">
+                <div class="flex items-center gap-2">
+                    {{if eq .Phase "Completed"}}
+                    <button
+                        hx-get="/api/vclusters/{{$.Name}}/velero/backups/{{.Name}}/content?env={{$.Env}}"
+                        hx-target="#velero-content-panel"
+                        hx-swap="innerHTML"
+                        class="btn btn-outline btn-xs">
+                        Contenu
+                    </button>
+                    {{if $.User.isAdmin}}
+                    <button type="button"
+                        onclick="toggleRestoreForm(this, '{{.Name}}')"
+                        class="btn btn-xs" style="background:var(--amber);color:#fff;border-color:var(--amber);">
+                        Restaurer
+                    </button>
+                    {{end}}
+                    {{end}}
+                    {{if $.User.isAdmin}}
+                    {{if or (eq .Phase "Failed") (eq .Phase "PartiallyFailed")}}
+                    <button type="button"
+                        hx-delete="/api/vclusters/{{$.Name}}/velero/backups/{{.Name}}?env={{$.Env}}"
+                        hx-target="#velero-toast-area"
+                        hx-swap="innerHTML"
+                        hx-confirm="Supprimer le backup {{.Name}} ?"
+                        class="btn btn-xs" style="background:#dc2626;color:#fff;border-color:#dc2626;">
+                        Supprimer
+                    </button>
+                    {{end}}
+                    {{end}}
+                </div>
+            </td>
+        </tr>
+        {{if $.User.isAdmin}}
+        <tr id="restore-form-{{.Name}}" style="display:none;">
+            <td colspan="6" style="padding:0.5rem 0 0.75rem 0;">
+                <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:0.75rem 1rem;" class="flex items-center gap-3 flex-wrap">
+                    <span class="text-xs font-medium" style="color:var(--text-muted);">Namespace cible :</span>
+                    <div class="flex items-center gap-1">
+                        <span class="text-xs" style="color:var(--text-muted);">vcluster-</span>
+                        <input id="restore-target-{{.Name}}" type="text" value="{{$.Name}}"
+                            placeholder="nom-du-vcluster"
+                            class="text-xs px-2 py-1 rounded font-mono"
+                            style="background:var(--surface);border:1px solid var(--border-subtle);color:var(--text-primary);width:160px;" />
+                    </div>
+                    <span class="text-xs" style="color:var(--text-muted);">— même nom = restauration in-place, nouveau nom = nouveau namespace</span>
+                    <button type="button"
+                        onclick="submitRestore('{{.Name}}', '{{$.Name}}', '{{$.Env}}')"
+                        class="btn btn-xs" style="background:var(--amber);color:#fff;border-color:var(--amber);">
+                        Confirmer
+                    </button>
+                    <button type="button"
+                        onclick="toggleRestoreForm(null, '{{.Name}}')"
+                        class="btn btn-xs btn-outline text-xs">
+                        Annuler
+                    </button>
+                </div>
+            </td>
+        </tr>
+        {{end}}
+        {{end}}
+        </tbody>
+    </table>
+</div>
+<div id="velero-content-panel" class="mt-4"></div>
+{{if .ActiveRestores}}
+<div class="mt-4 flex flex-col gap-2">
+{{range .ActiveRestores}}
+<div class="p-3 rounded flex items-center gap-3"
+     style="border:1px solid var(--border-subtle);background:var(--surface-raised);"
+     hx-get="/api/vclusters/{{$.Name}}/velero/restore/{{.Name}}/status?env={{$.Env}}"
+     hx-trigger="load delay:3s"
+     hx-swap="outerHTML"
+     hx-target="this">
+    <svg class="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:var(--indigo);flex-shrink:0;"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+    <div>
+        <p class="text-sm font-medium" style="color:var(--indigo);">Restauration en cours…</p>
+        <p class="text-xs" style="color:var(--text-muted);">Restore : <code class="font-mono">{{.Name}}</code> — Phase : {{.Phase}}</p>
+    </div>
+</div>
+{{end}}
+</div>
+{{end}}
+<div id="velero-restore-status" class="mt-4"></div>
+<script>
+(function() {
+    var table = document.getElementById('velero-backups-table');
+    if (!table) return;
+    var sortState = {col: 2, asc: false}; // default: Début desc
+    table.querySelectorAll('th.velero-sort-th').forEach(function(th) {
+        th.addEventListener('click', function() {
+            var col = parseInt(th.dataset.col);
+            if (sortState.col === col) {
+                sortState.asc = !sortState.asc;
+            } else {
+                sortState.col = col;
+                sortState.asc = true;
+            }
+            sortTable(col, sortState.asc);
+            table.querySelectorAll('th.velero-sort-th').forEach(function(h) {
+                h.querySelector('.sort-icon').textContent = '↕';
+            });
+            th.querySelector('.sort-icon').textContent = sortState.asc ? '↑' : '↓';
+        });
+    });
+    function sortTable(col, asc) {
+        var tbody = table.querySelector('tbody');
+        // Only sort data rows (skip restore-form rows)
+        var rows = Array.from(tbody.querySelectorAll('tr')).filter(function(r) {
+            return !r.id.startsWith('restore-form-');
+        });
+        rows.sort(function(a, b) {
+            var av = (a.querySelectorAll('td')[col] || {}).dataset && a.querySelectorAll('td')[col].dataset.sort || '';
+            var bv = (b.querySelectorAll('td')[col] || {}).dataset && b.querySelectorAll('td')[col].dataset.sort || '';
+            var an = parseFloat(av), bn = parseFloat(bv);
+            var cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);
+            return asc ? cmp : -cmp;
+        });
+        // Re-insert each data row followed by its form row
+        rows.forEach(function(r) {
+            tbody.appendChild(r);
+            var backupName = r.querySelector('td[data-sort]') && r.querySelector('td').dataset.sort;
+            if (backupName) {
+                var formRow = document.getElementById('restore-form-' + backupName);
+                if (formRow) tbody.appendChild(formRow);
+            }
+        });
+    }
+})();
+
+function toggleRestoreForm(btn, backupName) {
+    var row = document.getElementById('restore-form-' + backupName);
+    if (!row) return;
+    row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+function submitRestore(backupName, vcName, env) {
+    var select = document.getElementById('restore-target-' + backupName);
+    var target = select ? select.value : vcName;
+    var url = '/api/vclusters/' + vcName + '/velero/restore?env=' + env + '&backup=' + encodeURIComponent(backupName) + '&target=' + encodeURIComponent(target);
+    var label = target === vcName ? 'vcluster-' + target + ' (in-place)' : 'vcluster-' + target;
+    if (!confirm('Restaurer le backup ' + backupName + ' dans ' + label + ' ?')) return;
+    // Hide form row
+    var row = document.getElementById('restore-form-' + backupName);
+    if (row) row.style.display = 'none';
+    // HTMX request
+    htmx.ajax('POST', url, {target: '#velero-restore-status', swap: 'innerHTML'});
+}
+</script>
+{{end}}
+{{end}}

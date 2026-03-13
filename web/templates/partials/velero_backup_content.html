@@ -1,0 +1,16 @@
+{{define "velero_backup_content.html"}}
+{{if .Error}}
+<div class="wf-alert wf-alert-red mt-2">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor"/></svg>
+    <span class="text-sm">{{.Error}}</span>
+</div>
+{{else}}
+<div class="mt-3 rounded" style="border:1px solid var(--border-subtle);">
+    <div class="flex items-center justify-between px-4 py-2" style="background:var(--surface-raised);border-bottom:1px solid var(--border-subtle);">
+        <span class="text-xs font-semibold" style="color:var(--text-muted);">Contenu du backup : <code class="font-mono">{{.BackupName}}</code></span>
+        <button onclick="document.getElementById('velero-content-panel').innerHTML=''" class="text-xs" style="color:var(--text-muted);">✕ Fermer</button>
+    </div>
+    <pre class="p-4 overflow-auto text-xs font-mono" style="max-height:400px;color:var(--text);background:var(--surface);">{{.Content}}</pre>
+</div>
+{{end}}
+{{end}}

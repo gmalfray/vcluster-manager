@@ -1,0 +1,116 @@
+{{define "apps_list.html"}}
+<div class="flex items-center gap-3 mb-4">
+    <h2 class="wf-card-title" style="margin:0;">Applications ArgoCD</h2>
+    {{if eq .AppsSource "live"}}
+    <span class="text-xs px-2 py-0.5 rounded-full font-medium" style="background:rgba(34,197,94,0.1);color:#16a34a;">live</span>
+    {{else if eq .AppsSource "repo"}}
+    <span class="text-xs px-2 py-0.5 rounded-full font-medium" style="background:rgba(245,158,11,0.1);color:#d97706;" title="Lecture depuis app-manifests (vcluster inaccessible)">repo</span>
+    {{end}}
+</div>
+
+{{if not .Apps}}
+<p class="text-sm" style="color:var(--text-muted);">Aucune Application ArgoCD trouvée.</p>
+{{else}}
+<div class="wf-info-grid">
+    {{range .Apps}}
+    <div class="wf-info-card accent-purple" style="gap:10px;{{if .Migrating}}background:repeating-linear-gradient(-45deg,var(--surface),var(--surface) 10px,rgba(168,85,247,0.07) 10px,rgba(168,85,247,0.07) 20px);border-color:rgba(168,85,247,0.5);{{end}}">
+        <!-- Header -->
+        <div class="wf-info-card-header">
+            <div class="wf-banner-icon purple">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" stroke="currentColor"/></svg>
+            </div>
+            <span class="wf-info-card-title" style="font-size:0.75rem;text-transform:none;letter-spacing:0;">{{.Name}}</span>
+            {{if .Migrating}}
+            <span style="margin-left:auto;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:999px;background:rgba(168,85,247,0.15);color:#a855f7;white-space:nowrap;">
+                ⟳ {{.MigratingLabel}}
+            </span>
+            {{end}}
+        </div>
+        <!-- Details -->
+        <div class="wf-info-card-versions">
+            {{if .Namespace}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">NS</span>
+                <span class="wf-info-card-version-val">{{.Namespace}}</span>
+            </div>
+            {{end}}
+            {{if .Project}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Projet</span>
+                <span class="wf-info-card-version-val">{{.Project}}</span>
+            </div>
+            {{end}}
+            {{if .SourcePath}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Path</span>
+                <span class="wf-info-card-version-val" style="word-break:break-all;">{{.SourcePath}}</span>
+            </div>
+            {{end}}
+            {{if .SourceBranch}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Branch</span>
+                <span class="wf-info-card-version-val">{{.SourceBranch}}</span>
+            </div>
+            {{end}}
+        </div>
+        <!-- Actions -->
+        {{if and $.User.isAdmin $.TargetVClusters}}
+        <div class="wf-info-card-actions">
+            <button onclick="toggleMigrateForm('{{.Name}}')" class="btn btn-sm btn-outline">
+                Migrer
+            </button>
+        </div>
+        <!-- Migration form (hidden) -->
+        <div id="migrate-{{.Name}}" class="hidden pt-2" style="border-top:1px solid var(--border-subtle);">
+            <form hx-post="/api/vclusters/{{$.SourceVCluster}}/apps/migrate?env={{$.Env}}"
+                  hx-target="#toast-container"
+                  hx-swap="beforeend"
+                  hx-disabled-elt="find button"
+                  hx-on::after-request="if(event.detail.successful && !event.detail.xhr.responseText.includes('wf-toast-error')){
+                      var c=this.closest('.wf-info-card');
+                      c.style.transition='opacity 0.4s';
+                      c.style.opacity='0.2';
+                      c.style.pointerEvents='none';
+                      setTimeout(function(){ c.remove(); }, 420);
+                  }"
+                  class="space-y-3">
+                <input type="hidden" name="app_name" value="{{.Name}}">
+                <input type="hidden" name="app_file_path" value="{{.FilePath}}">
+                <div>
+                    <label class="wf-form-label">Vcluster cible</label>
+                    <select name="target_vcluster" class="wf-form-select mt-1">
+                        {{range $.TargetVClusters}}
+                        <option value="{{.}}">{{.}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="flex items-center gap-2">
+                    <label class="switch">
+                        <input type="checkbox" name="delete_source" id="del-{{.Name}}">
+                        <span class="switch-track"></span>
+                    </label>
+                    <label for="del-{{.Name}}" class="text-xs cursor-pointer" style="color:var(--text-secondary);">
+                        Supprimer du source apres migration
+                    </label>
+                </div>
+                <p class="text-xs" style="color:var(--amber);">
+                    &#9888; Verifiez si l'application utilise des PVCs (migration des donnees manuelle).
+                </p>
+                <div class="flex gap-2">
+                    <button type="submit" class="btn btn-sm btn-indigo">Confirmer</button>
+                    <button type="button" onclick="toggleMigrateForm('{{.Name}}')" class="btn btn-sm btn-outline">Annuler</button>
+                </div>
+            </form>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+{{end}}
+
+<script>
+function toggleMigrateForm(name) {
+    document.getElementById('migrate-' + name).classList.toggle('hidden');
+}
+</script>
+{{end}}

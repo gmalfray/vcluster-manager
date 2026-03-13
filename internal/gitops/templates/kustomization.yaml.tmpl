@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../base
+  - tenant_flux.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: vcluster-{{.Name}}-values
+    namespace: vcluster-{{.Name}}
+    files:
+      - values.yaml
+patches:
+  - target:
+      version: v1
+      kind: Namespace
+      name: __VC_NAMESPACE__
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: vcluster-{{.Name}}
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: vcluster
+      namespace: __VC_NAMESPACE__
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: vcluster-{{.Name}}
+      - op: replace
+        path: /metadata/namespace
+        value: vcluster-{{.Name}}
+      - op: replace
+        path: /spec/chart/spec/sourceRef/name
+        value: platform-helm-charts
+      - op: add
+        path: /spec/valuesFrom
+        value:
+          - kind: ConfigMap
+            name: vcluster-{{.Name}}-values
+            valuesKey: values.yaml

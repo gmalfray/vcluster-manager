@@ -1,0 +1,479 @@
+{{define "content"}}
+<style>
+.vcm-env-btn { padding:4px 12px; font-size:.8rem; background:transparent;
+               border:none; color:var(--text-secondary); cursor:pointer; transition:background .15s; }
+.vcm-env-btn.active { background:var(--indigo); color:#fff; }
+.vcm-dh { cursor:grab; color:var(--text-muted); padding:0 6px !important;
+          font-size:1rem; letter-spacing:-2px; user-select:none; }
+.vcm-dh:hover { color:var(--text) !important; }
+[data-card-id] { cursor:grab; }
+[data-card-id]:active { cursor:grabbing; }
+[data-card-id].vcm-card-dragging { opacity:0.4; }
+</style>
+
+<div class="mb-8">
+    <h1 class="text-2xl font-bold" style="font-family: 'Outfit', sans-serif; color: var(--text);">Dashboard</h1>
+    <p style="color: var(--text-muted);" class="mt-1 text-sm">Monitoring des vClusters</p>
+</div>
+
+{{if or .LatestRelease .HelmUpdaterEnabled .LatestArgoCDRelease}}
+<div class="wf-info-grid" id="vcm-info-grid">
+
+    <!-- Card : Chart vCluster -->
+    {{if .LatestRelease}}
+    <div class="wf-info-card accent-cyan" data-card-id="info-chart">
+        <div class="wf-info-card-header">
+            <div class="wf-banner-icon cyan">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor"/></svg>
+            </div>
+            <span class="wf-info-card-title">Chart vCluster</span>
+        </div>
+        <div class="wf-info-card-versions">
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Latest</span>
+                <span class="wf-info-card-version-val">{{.LatestRelease.Tag}}</span>
+                <span class="wf-info-card-version-date">{{.LatestRelease.PublishedAt}}</span>
+            </div>
+            {{if .PreprodChartVersion}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Preprod</span>
+                <span class="wf-info-card-version-val">{{.PreprodChartVersion}}</span>
+            </div>
+            {{end}}
+            {{if .ProdChartVersion}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Prod</span>
+                <span class="wf-info-card-version-val">{{.ProdChartVersion}}</span>
+            </div>
+            {{end}}
+        </div>
+        <div class="wf-info-card-actions">
+            <a href="https://github.com/loft-sh/vcluster/releases/tag/{{.LatestRelease.Tag}}" target="_blank" class="btn btn-outline btn-sm">
+                Release notes
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="currentColor"/></svg>
+            </a>
+            {{if .PendingChartMR}}
+            <a href="{{.PendingChartMR.WebURL}}" target="_blank" class="btn btn-amber btn-sm">
+                MR prod en attente
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="currentColor"/></svg>
+            </a>
+            {{else if and .PreprodChartVersion (ne .PreprodChartVersion (trimPrefix .LatestRelease.Tag "v"))}}
+            {{if .User.isAdmin}}
+            <button hx-post="/api/chart/update" hx-vals='{"version":"{{.LatestRelease.Tag}}"}' hx-target="#toast-container"
+                hx-swap="beforeend" hx-confirm="Mettre a jour le chart vcluster vers {{.LatestRelease.Tag}} sur preprod ?"
+                class="btn btn-indigo btn-sm">
+                Mettre a jour
+            </button>
+            {{end}}
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
+    <!-- Card : Version K8s -->
+    {{if .HelmUpdaterEnabled}}
+    <div class="wf-info-card accent-indigo" data-card-id="info-k8s">
+        <div class="wf-info-card-header">
+            <div class="wf-banner-icon indigo">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7" stroke="currentColor"/></svg>
+            </div>
+            <span class="wf-info-card-title">Version K8s par defaut</span>
+        </div>
+        <div class="wf-info-card-versions">
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Preprod</span>
+                <span class="wf-info-card-version-val">{{if .PreprodK8sVersion}}{{.PreprodK8sVersion}}{{else}}non definie{{end}}</span>
+            </div>
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Prod</span>
+                <span class="wf-info-card-version-val">{{if .ProdK8sVersion}}{{.ProdK8sVersion}}{{else}}non definie{{end}}</span>
+            </div>
+        </div>
+        {{if .User.isAdmin}}
+        <div class="wf-info-card-actions">
+            <form id="k8s-version-form" class="flex items-center gap-2 flex-wrap" hx-post="/api/chart/k8s-version"
+                hx-target="#toast-container" hx-swap="beforeend">
+                <select id="k8s-version-select"
+                    onchange="var ci=document.getElementById('k8s-custom-input'),vi=document.getElementById('k8s-version-hidden');if(this.value==='custom'){ci.classList.remove('hidden');ci.focus();vi.value='';}else{ci.classList.add('hidden');ci.value='';vi.value=this.value;}"
+                    class="wf-form-select btn-sm" style="height:32px;padding:0 8px;">
+                    <option value="" disabled selected>Choisir...</option>
+                    {{range .K8sVersions}}
+                    <option value="{{.}}">{{.}}</option>
+                    {{end}}
+                    <option value="custom">Autre (custom)</option>
+                </select>
+                <input type="text" id="k8s-custom-input" placeholder="ex: 1.32.0"
+                    onchange="document.getElementById('k8s-version-hidden').value=this.value;"
+                    oninput="document.getElementById('k8s-version-hidden').value=this.value;"
+                    class="hidden wf-form-input btn-sm" style="width:110px;height:32px;padding:0 8px;">
+                <input type="hidden" name="version" id="k8s-version-hidden" value="">
+                <button type="submit" hx-confirm="Modifier la version K8s par defaut sur preprod ?"
+                    class="btn btn-indigo btn-sm">Modifier</button>
+            </form>
+            {{if .PendingK8sMR}}
+            <a href="{{.PendingK8sMR.WebURL}}" target="_blank" class="btn btn-amber btn-sm">
+                MR prod en attente
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="currentColor"/></svg>
+            </a>
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+
+    <!-- Card : ArgoCD -->
+    {{if .LatestArgoCDRelease}}
+    <div class="wf-info-card accent-purple" data-card-id="info-argocd">
+        <div class="wf-info-card-header">
+            <div class="wf-banner-icon purple">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke="currentColor"/></svg>
+            </div>
+            <span class="wf-info-card-title">ArgoCD</span>
+        </div>
+        <div class="wf-info-card-versions">
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Latest</span>
+                <span class="wf-info-card-version-val">{{.LatestArgoCDRelease.Tag}}</span>
+                <span class="wf-info-card-version-date">{{.LatestArgoCDRelease.PublishedAt}}</span>
+            </div>
+            {{if .PreprodArgoCDVersion}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Preprod</span>
+                <span class="wf-info-card-version-val">{{.PreprodArgoCDVersion}}</span>
+            </div>
+            {{end}}
+            {{if .ProdArgoCDVersion}}
+            <div class="wf-info-card-version-row">
+                <span class="wf-info-card-version-label">Prod</span>
+                <span class="wf-info-card-version-val">{{.ProdArgoCDVersion}}</span>
+            </div>
+            {{end}}
+        </div>
+        <div class="wf-info-card-actions">
+            <a href="https://github.com/argoproj/argo-cd/releases/tag/{{.LatestArgoCDRelease.Tag}}" target="_blank" class="btn btn-outline btn-sm">
+                Release notes
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="currentColor"/></svg>
+            </a>
+            {{if .PendingArgoCDMR}}
+            <a href="{{.PendingArgoCDMR.WebURL}}" target="_blank" class="btn btn-amber btn-sm">
+                MR prod en attente
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="currentColor"/></svg>
+            </a>
+            {{else if and .PreprodArgoCDVersion (ne .PreprodArgoCDVersion .LatestArgoCDRelease.Tag)}}
+            {{if .User.isAdmin}}
+            <button hx-post="/api/argocd/update" hx-vals='{"version":"{{.LatestArgoCDRelease.Tag}}"}' hx-target="#toast-container"
+                hx-swap="beforeend" hx-confirm="Mettre a jour ArgoCD vers {{.LatestArgoCDRelease.Tag}} sur preprod ?"
+                class="btn btn-indigo btn-sm">
+                Mettre a jour
+            </button>
+            {{end}}
+            {{end}}
+        </div>
+    </div>
+    {{end}}
+
+</div>
+{{end}}
+
+<!-- ═══ Summary cards ══════════════════════════════════════════════════════════ -->
+{{if .SummaryTotal}}
+<div class="wf-stat-grid" id="vcm-stat-grid">
+
+    <!-- Total vclusters -->
+    <div class="wf-stat-card accent-indigo" data-card-id="stat-total">
+        <div class="wf-stat-label">Total vClusters</div>
+        <div class="wf-stat-value">{{.SummaryTotal}}</div>
+        <div class="wf-stat-sub">{{.SummaryTotalPreprod}} preprod &middot; {{.SummaryTotalProd}} prod</div>
+    </div>
+
+    <!-- Flux status (loaded async) -->
+    <div class="wf-stat-card accent-cyan" data-card-id="stat-flux">
+        <div class="wf-stat-label">Flux Status</div>
+        <div id="flux-summary" hx-get="/api/dashboard/flux-summary" hx-trigger="load" hx-swap="innerHTML">
+            <div class="wf-stat-value" style="color:var(--text-muted);font-size:1.5rem;">—</div>
+            <div class="wf-stat-sub">Chargement...</div>
+        </div>
+    </div>
+
+    <!-- ArgoCD -->
+    <div class="wf-stat-card {{if gt .SummaryNoArgoCDCount 0}}accent-amber{{else}}accent-green{{end}}" data-card-id="stat-argocd">
+        <div class="wf-stat-label">ArgoCD actif</div>
+        <div class="wf-stat-value">
+            {{.SummaryArgoCDCount}}
+            <span class="denom">/{{.SummaryTotal}}</span>
+        </div>
+        {{if gt .SummaryNoArgoCDCount 0}}
+        <div class="wf-stat-sub">{{.SummaryNoArgoCDCount}} sans ArgoCD</div>
+        {{else}}
+        <div class="wf-stat-pill green">Tous actifs</div>
+        {{end}}
+    </div>
+
+    <!-- Backups -->
+    <div class="wf-stat-card {{if gt .SummaryNoBackupCount 0}}accent-amber{{else}}accent-green{{end}}" data-card-id="stat-backups">
+        <div class="wf-stat-label">Backups actifs</div>
+        <div class="wf-stat-value">
+            {{.SummaryBackupCount}}
+            <span class="denom">/{{.SummaryTotal}}</span>
+        </div>
+        {{if gt .SummaryNoBackupCount 0}}
+        <div class="wf-stat-pill amber">{{.SummaryNoBackupCount}} sans backup</div>
+        {{else}}
+        <div class="wf-stat-pill green">Tous actifs</div>
+        {{end}}
+    </div>
+
+</div>
+{{end}}
+
+<!-- ═══ Toolbar ══════════════════════════════════════════════════════════════════ -->
+<div id="vcm-toolbar" class="flex items-center gap-3 mb-4 flex-wrap">
+    <div class="flex rounded-lg overflow-hidden" style="border:1px solid var(--border);">
+        <button onclick="vcmSetEnv('all')"     id="vcm-env-all"     class="vcm-env-btn">Les deux</button>
+        <button onclick="vcmSetEnv('preprod')" id="vcm-env-preprod" class="vcm-env-btn">Preprod</button>
+        <button onclick="vcmSetEnv('prod')"    id="vcm-env-prod"    class="vcm-env-btn">Prod</button>
+    </div>
+</div>
+
+{{range .Groups}}
+<div class="mb-8" id="vcm-group-{{.Env}}" data-env="{{.Env}}">
+    <h2 class="text-base font-semibold mb-3" style="font-family: 'Outfit', sans-serif; color: var(--text-secondary);">
+        {{.Label}}
+        <span class="text-sm font-normal" style="color: var(--text-muted);">({{.Env}})</span>
+    </h2>
+    <div class="wf-table-wrap">
+        <table class="wf-table">
+            <thead>
+                <tr>
+                    <th style="width:20px;padding:0;"></th>
+                    <th>Nom</th>
+                    <th>ArgoCD</th>
+                    <th>Backup</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Items}}
+                {{if .Deleting}}
+                <tr class="row-deleting">
+                    <td></td>
+                    <td>
+                        <div class="flex items-center gap-2">
+                            <span class="font-medium" style="color:var(--red);">{{.VCluster.Name}}</span>
+                            {{if .DeletingMR}}
+                            <a href="{{.DeletingMR}}" target="_blank" onclick="event.stopPropagation()"
+                                class="wf-badge wf-badge-red">
+                                MR de suppression
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="currentColor"/></svg>
+                            </a>
+                            {{else}}
+                            <span class="wf-badge wf-badge-red" style="animation:pulse 2s infinite;">Suppression</span>
+                            {{end}}
+                        </div>
+                    </td>
+                    <td colspan="4">
+                        <span hx-get="/api/vclusters/{{.VCluster.Name}}/status?env={{.VCluster.Env}}&deleting=true"
+                            hx-trigger="load, every 30s" hx-swap="innerHTML">
+                            <span style="color:var(--red);" class="text-sm animate-pulse">Reconciliation...</span>
+                        </span>
+                    </td>
+                    <td></td>
+                </tr>
+                {{else if .RancherCleaning}}
+                <tr class="row-deleting">
+                    <td></td>
+                    <td>
+                        <div class="flex items-center gap-2">
+                            <span class="font-medium" style="color:var(--red);">{{.VCluster.Name}}</span>
+                            <span class="wf-badge wf-badge-red" style="animation:pulse 2s infinite;">Nettoyage Rancher...</span>
+                        </div>
+                    </td>
+                    <td colspan="5">
+                        <span class="text-sm animate-pulse" style="color:var(--red);">Suppression automatique après le nettoyage</span>
+                    </td>
+                </tr>
+                {{else if .PendingMR}}
+                <tr class="row-pending cursor-pointer vcm-row" draggable="true"
+                    data-name="{{.VCluster.Name}}" data-env="{{.VCluster.Env}}"
+                    onclick="window.location='/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}'">
+                    <td class="vcm-dh" onclick="event.stopPropagation()">&#8942;&#8942;</td>
+                    <td>
+                        <div class="flex items-center gap-2">
+                            <a href="/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}" class="wf-table-link">{{.VCluster.Name}}</a>
+                            {{if .PendingMRURL}}
+                            <a href="{{.PendingMRURL}}" target="_blank" onclick="event.stopPropagation()" class="wf-badge wf-badge-amber" style="text-decoration:none;">MR en attente ↗</a>
+                            {{else}}
+                            <span class="wf-badge wf-badge-amber">MR en attente</span>
+                            {{end}}
+                        </div>
+                        <div class="text-xs mt-0.5" style="color:var(--text-muted);">{{.APIHost}}</div>
+                    </td>
+                    <td>
+                        {{if .VCluster.ArgoCD}}
+                        <span class="wf-badge wf-badge-green">Oui</span>
+                        {{else}}
+                        <span class="wf-badge wf-badge-gray">Non</span>
+                        {{end}}
+                    </td>
+                    <td class="text-sm" style="color:var(--text-secondary);">
+                        {{if .VCluster.Velero.Enabled}}{{printf "%02d:%02d" .VCluster.Velero.Hour .VCluster.Velero.Minute}}{{else}}<span style="color:var(--text-muted);">-</span>{{end}}
+                    </td>
+                    <td><span class="wf-badge wf-badge-amber">Non deploye</span></td>
+                    <td class="text-xs" style="color:var(--text-muted);">Merge preprod → master pour deployer</td>
+                </tr>
+                {{else}}
+                <tr class="cursor-pointer vcm-row" draggable="true"
+                    data-name="{{.VCluster.Name}}" data-env="{{.VCluster.Env}}"
+                    onclick="window.location='/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}'">
+                    <td class="vcm-dh" onclick="event.stopPropagation()">&#8942;&#8942;</td>
+                    <td>
+                        <a href="/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}" class="wf-table-link">{{.VCluster.Name}}</a>
+                        <div class="text-xs mt-0.5" style="color:var(--text-muted);">{{.APIHost}}</div>
+                    </td>
+                    <td>
+                        {{if .VCluster.ArgoCD}}
+                        <span class="wf-badge wf-badge-green">Oui</span>
+                        {{else}}
+                        <span class="wf-badge wf-badge-gray">Non</span>
+                        {{end}}
+                    </td>
+                    <td class="text-sm" style="color:var(--text-secondary);">
+                        {{if .VCluster.Velero.Enabled}}{{printf "%02d:%02d" .VCluster.Velero.Hour .VCluster.Velero.Minute}}{{else}}<span style="color:var(--text-muted);">-</span>{{end}}
+                    </td>
+                    <td>
+                        <span hx-get="/api/vclusters/{{.VCluster.Name}}/status?env={{.VCluster.Env}}{{if .VCluster.K8sVersionConfig}}&configVersion={{.VCluster.K8sVersionConfig}}{{else if eq .VCluster.Env "preprod"}}{{if $.PreprodK8sVersion}}&configVersion={{$.PreprodK8sVersion}}{{end}}{{else if $.ProdK8sVersion}}&configVersion={{$.ProdK8sVersion}}{{end}}"
+                            hx-trigger="load, every 30s" hx-swap="innerHTML">
+                            <span class="text-sm" style="color:var(--text-muted);">Loading...</span>
+                        </span>
+                    </td>
+                    <td>
+                        {{if .ArgoURL}}
+                        <a href="{{.ArgoURL}}" target="_blank" onclick="event.stopPropagation()"
+                            class="text-sm" style="color:var(--purple);">ArgoCD</a>
+                        {{end}}
+                    </td>
+                </tr>
+                {{end}}
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{else}}
+<p class="text-sm" style="color:var(--text-muted);">Aucun vcluster trouve.</p>
+{{end}}
+
+<script>
+const VCM_KEY = 'vcm_dashboard_prefs';
+const vcmPrefs = () => JSON.parse(localStorage.getItem(VCM_KEY)||'{}');
+const vcmSave  = p  => localStorage.setItem(VCM_KEY, JSON.stringify(p));
+
+document.addEventListener('DOMContentLoaded', () => {
+    const p = vcmPrefs();
+    vcmApplyEnv(p.envFilter || 'all');
+    vcmApplyHidden(p.hidden || []);
+    vcmApplyOrder(p.order || {});
+    vcmInitDrag();
+    vcmApplyGridOrder('vcm-info-grid', 'cardsInfo');
+    vcmApplyGridOrder('vcm-stat-grid', 'cardsStat');
+    vcmInitGridDrag('vcm-info-grid', 'cardsInfo');
+    vcmInitGridDrag('vcm-stat-grid', 'cardsStat');
+});
+
+// Filtre env
+function vcmSetEnv(env) {
+    const p = vcmPrefs(); p.envFilter = env; vcmSave(p); vcmApplyEnv(env);
+}
+function vcmApplyEnv(env) {
+    ['preprod','prod'].forEach(e => {
+        const g = document.getElementById('vcm-group-'+e);
+        if (g) g.style.display = (env==='all'||env===e) ? '' : 'none';
+    });
+    ['all','preprod','prod'].forEach(e =>
+        document.getElementById('vcm-env-'+e)?.classList.toggle('active', e===env));
+}
+
+// Visibilité vclusters
+function vcmApplyHidden(hidden) {
+    document.querySelectorAll('tr.vcm-row').forEach(tr => {
+        tr.style.display = hidden.includes(tr.dataset.name+':'+tr.dataset.env) ? 'none' : '';
+    });
+}
+// Drag & drop
+let vcmDragSrc = null;
+function vcmInitDrag() {
+    document.querySelectorAll('tr.vcm-row').forEach(tr => {
+        tr.addEventListener('dragstart', e => {
+            vcmDragSrc = tr; e.dataTransfer.effectAllowed='move'; tr.style.opacity='0.4';
+        });
+        tr.addEventListener('dragend', () => { tr.style.opacity=''; vcmSaveOrder(); });
+        tr.addEventListener('dragover', e => {
+            e.preventDefault();
+            if (vcmDragSrc && vcmDragSrc!==tr &&
+                vcmDragSrc.closest('tbody')===tr.closest('tbody')) {
+                const after = e.clientY > tr.getBoundingClientRect().top + tr.getBoundingClientRect().height/2;
+                tr.closest('tbody').insertBefore(vcmDragSrc, after ? tr.nextSibling : tr);
+            }
+        });
+    });
+}
+function vcmSaveOrder() {
+    const p = vcmPrefs(); p.order = {};
+    ['preprod','prod'].forEach(env => {
+        const g = document.getElementById('vcm-group-'+env);
+        if (g) p.order[env] = [...g.querySelectorAll('tr.vcm-row')].map(tr=>tr.dataset.name);
+    });
+    vcmSave(p);
+}
+function vcmApplyOrder(order) {
+    Object.entries(order).forEach(([env, names]) => {
+        const tbody = document.querySelector('#vcm-group-'+env+' tbody');
+        if (!tbody) return;
+        names.forEach(name => {
+            const tr = tbody.querySelector('tr.vcm-row[data-name="'+name+'"]');
+            if (tr) tbody.appendChild(tr);
+        });
+    });
+}
+
+// Drag & drop pour les grids de cards (info + stat)
+function vcmInitGridDrag(gridId, prefKey) {
+    const grid = document.getElementById(gridId);
+    if (!grid) return;
+    let dragSrc = null;
+    grid.querySelectorAll('[data-card-id]').forEach(card => {
+        card.setAttribute('draggable', 'true');
+        card.addEventListener('dragstart', e => {
+            dragSrc = card;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', card.dataset.cardId);
+            setTimeout(() => card.classList.add('vcm-card-dragging'), 0);
+        });
+        card.addEventListener('dragend', () => {
+            card.classList.remove('vcm-card-dragging');
+            const p = vcmPrefs();
+            p[prefKey] = [...grid.querySelectorAll('[data-card-id]')].map(c => c.dataset.cardId);
+            vcmSave(p);
+        });
+        card.addEventListener('dragover', e => {
+            e.preventDefault();
+            if (!dragSrc || dragSrc === card) return;
+            const rect = card.getBoundingClientRect();
+            const after = e.clientX > rect.left + rect.width / 2;
+            grid.insertBefore(dragSrc, after ? card.nextSibling : card);
+        });
+    });
+}
+function vcmApplyGridOrder(gridId, prefKey) {
+    const grid = document.getElementById(gridId);
+    if (!grid) return;
+    const order = vcmPrefs()[prefKey];
+    if (!order) return;
+    order.forEach(id => {
+        const card = grid.querySelector('[data-card-id="'+id+'"]');
+        if (card) grid.appendChild(card);
+    });
+}
+</script>
+{{end}}

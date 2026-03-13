@@ -1,0 +1,69 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vcluster-manager
+rules:
+  # Read HelmReleases status + update for finalizer cleanup
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "watch", "update"]
+  # Read Flux Kustomizations status + update for finalizer cleanup
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "watch", "update"]
+  # Read vcluster kubeconfig secrets (vc-vcluster-*-ext in each vcluster namespace)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  # Read ResourceQuota usage
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list"]
+  # Read namespaces + update annotations for namespace-protection toggle
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "update"]
+  # Velero backup management (list backups, create download requests and restores)
+  - apiGroups: ["velero.io"]
+    resources: ["backups", "restores", "downloadrequests", "schedules"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vcluster-manager
+subjects:
+  - kind: ServiceAccount
+    name: vcluster-manager
+    namespace: vcluster-manager
+roleRef:
+  kind: ClusterRole
+  name: vcluster-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+# Role namespaced pour le backend ConfigMap (STATE_BACKEND=configmap)
+# Permet de lire/écrire le ConfigMap vcluster-manager-state dans le namespace de l'app.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vcluster-manager-state
+  namespace: vcluster-manager
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["vcluster-manager-state"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vcluster-manager-state
+  namespace: vcluster-manager
+subjects:
+  - kind: ServiceAccount
+    name: vcluster-manager
+    namespace: vcluster-manager
+roleRef:
+  kind: Role
+  name: vcluster-manager-state
+  apiGroup: rbac.authorization.k8s.io

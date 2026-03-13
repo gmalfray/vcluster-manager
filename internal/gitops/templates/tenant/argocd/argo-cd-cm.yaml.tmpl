@@ -1,0 +1,20 @@
+apiVersion: v1
+data:
+  admin.enabled: "true"
+  exec.enabled: "true"
+  kustomize.buildOptions: --enable-helm
+  oidc.config: |
+    name: Keycloak
+    issuer: {{.OIDCIssuer}}
+    clientID: {{.ArgoCDClientID}}
+    requestedScopes: ["openid", "profile", "email", "groups"]
+  resource.customizations: |
+    networking.k8s.io/Ingress:
+        health.lua: |
+          hs = {}
+          hs.status = "Healthy"
+          return hs
+  url: {{.ArgoCDURL}}
+kind: ConfigMap
+metadata:
+  name: argocd-cm

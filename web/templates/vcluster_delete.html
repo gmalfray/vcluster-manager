@@ -1,0 +1,74 @@
+{{define "content"}}
+<div class="max-w-lg mx-auto mt-10">
+    <div class="wf-card" style="border:1px solid var(--red-border);">
+        <h1 class="text-xl font-bold mb-3" style="font-family:'Outfit',sans-serif;color:var(--red);">
+            Supprimer vcluster-{{.Name}} ({{.Env}})
+        </h1>
+        <p class="text-sm mb-6" style="color:var(--text-secondary);">
+            {{if eq .Env "prod"}}
+            Cette action va supprimer le vcluster en <strong>production</strong> via un commit GitOps.
+            {{if .HasCounterpart}}Le vcluster <strong>preprod restera actif</strong> sauf si vous cochez l'option ci-dessous.{{end}}
+            {{else}}
+            Cette action va supprimer le vcluster en <strong>preprod</strong> via un commit GitOps.
+            {{if .HasCounterpart}}Le vcluster <strong>prod restera actif</strong> sauf si vous cochez l'option ci-dessous.{{end}}
+            {{end}}
+            FluxCD reconciliera et detruira les ressources.
+        </p>
+
+        {{if .ProtectionEnabled}}
+        <div class="wf-alert wf-alert-amber mb-4">
+            <svg class="flex-shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" stroke="currentColor"/></svg>
+            <span class="text-sm">La protection du namespace est active. Elle sera automatiquement desactivee avant la suppression.</span>
+        </div>
+        {{end}}
+
+        <form hx-post="/vclusters/{{.Name}}/delete" hx-target="#toast-container" class="space-y-5">
+            <input type="hidden" name="env" value="{{.Env}}">
+            <div>
+                <label for="confirm_name" class="wf-form-label">
+                    Tapez <strong style="color:var(--text);">{{.Name}}</strong> pour confirmer
+                </label>
+                <input type="text" name="confirm_name" id="confirm_name" required
+                       autocomplete="off"
+                       class="wf-form-input mt-1">
+            </div>
+
+            {{if or .HasCounterpart (and .VCluster .VCluster.ArgoCD)}}
+            <div class="space-y-3 pt-2" style="border-top:1px solid var(--border-subtle);">
+                {{if .HasCounterpart}}
+                <div class="flex items-center gap-3">
+                    <label class="switch">
+                        <input type="checkbox" name="delete_counterpart" id="delete_counterpart">
+                        <span class="switch-track"></span>
+                    </label>
+                    <label for="delete_counterpart" class="text-sm cursor-pointer" style="color:var(--red);">
+                        {{if eq .Env "prod"}}Supprimer aussi le vcluster preprod{{else}}Supprimer aussi le vcluster prod{{end}}
+                    </label>
+                </div>
+                {{end}}
+                {{if and .VCluster .VCluster.ArgoCD}}
+                <div class="flex items-center gap-3">
+                    <label class="switch">
+                        <input type="checkbox" name="delete_gitlab" id="delete_gitlab">
+                        <span class="switch-track"></span>
+                    </label>
+                    <label for="delete_gitlab" class="text-sm cursor-pointer" style="color:var(--text-secondary);">
+                        Supprimer aussi le repo GitLab app-manifests-{{.Name}}
+                    </label>
+                </div>
+
+                {{end}}
+            </div>
+            {{end}}
+
+            <div class="flex gap-3 pt-2">
+                <button type="submit" class="btn btn-danger"
+                        onclick="this.classList.add('opacity-50','cursor-not-allowed');this.innerHTML='<svg class=\'animate-spin -ml-1 mr-2 h-4 w-4\' xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\'><circle class=\'opacity-25\' cx=\'12\' cy=\'12\' r=\'10\' stroke=\'currentColor\' stroke-width=\'4\'></circle><path class=\'opacity-75\' fill=\'currentColor\' d=\'M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z\'></path></svg> Suppression...'">
+                    Confirmer la suppression
+                </button>
+                <a href="/" class="btn btn-outline">Annuler</a>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}

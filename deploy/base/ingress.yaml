@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vcluster-manager
+  namespace: vcluster-manager
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "__CLUSTER_ISSUER__"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: __INGRESS_HOST__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vcluster-manager
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - __INGRESS_HOST__
+      secretName: __TLS_SECRET__

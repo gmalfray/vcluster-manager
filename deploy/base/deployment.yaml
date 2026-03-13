@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vcluster-manager
+  namespace: vcluster-manager
+  labels:
+    app: vcluster-manager
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vcluster-manager
+  template:
+    metadata:
+      labels:
+        app: vcluster-manager
+    spec:
+      serviceAccountName: vcluster-manager
+      containers:
+        - name: vcluster-manager
+          image: ghcr.io/gmalfray/vcluster-manager:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: vcluster-manager-config
+            - secretRef:
+                name: vcluster-manager-secrets
+            - secretRef:
+                name: vcluster-manager-auth
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vcluster-manager-data

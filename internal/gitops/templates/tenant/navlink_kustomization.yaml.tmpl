@@ -1,0 +1,20 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: navlink-{{.Name}}
+  namespace: vcluster-{{.Name}}
+spec:
+  dependsOn:
+    - name: argocd-{{.Name}}
+  interval: 5m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  path: ./clusters/{{.Env}}/vclusters/{{.Name}}/tenant/navlink
+  prune: true
+  timeout: 5m
+  kubeConfig:
+    secretRef:
+      name: vc-vcluster-{{.Name}}-int
+      key: config

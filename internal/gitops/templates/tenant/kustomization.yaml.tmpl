@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+{{- if .ArgoCD}}
+  - argocd_kustomization.yaml
+{{- end}}
+  - cert-manager_kustomization.yaml
+  - vault-webhook_kustomization.yaml
+  - cert-manager-config_kustomization.yaml
+{{- if .ArgoCD}}
+  - navlink_kustomization.yaml
+{{- end}}
+{{- if .FluxCD}}
+  - flux-bootstrap_kustomization.yaml
+{{- end}}
