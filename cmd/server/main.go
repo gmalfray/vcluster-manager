@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 	_ "time/tzdata" // embed timezone DB for Europe/Paris in Docker containers without tzdata
 
 	"golang.org/x/time/rate"
@@ -39,7 +43,8 @@ func splitCSV(s string) []string {
 }
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	log.Printf("vCluster Manager %s starting", version.Version)
 
@@ -87,6 +92,7 @@ func main() {
 
 	// Kubernetes status clients (one per env, optional)
 	k8sClients := make(map[string]*kubernetes.StatusClient)
+	var tunnels []*kubernetes.SSHTunnel
 
 	// Helper to create a client for an env
 	initK8sClient := func(env, kubeconfigPath, sshTunnel string) {
@@ -99,7 +105,7 @@ func main() {
 				log.Printf("K8s client for %s (SSH tunnel) failed: %v", env, err)
 				return
 			}
-			_ = tunnel // tunnel stays open for the lifetime of the process
+			tunnels = append(tunnels, tunnel)
 			k8sClients[env] = client
 			log.Printf("K8s client for %s initialized (kubeconfig+SSH via %s)", env, sshTunnel)
 		} else {
@@ -299,9 +305,41 @@ func main() {
 	rateLimiter := auth.NewRateLimiter(rate.Limit(20), 50)
 	http.Handle("/", metrics.Middleware(rateLimiter.Middleware(authMiddleware(auth.CSRFMiddleware(mux)))))
 
-	log.Printf("Starting server on %s", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, nil); err != nil {
+	srv := &http.Server{
+		Addr:              cfg.ListenAddr,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("Starting server on %s", cfg.ListenAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Println("Shutdown signal received, draining requests")
+	case err := <-serverErr:
 		log.Fatalf("Server failed: %v", err)
 	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
+
+	for _, t := range tunnels {
+		if err := t.Close(); err != nil {
+			log.Printf("SSH tunnel close error: %v", err)
+		}
+	}
+
+	log.Println("Server stopped cleanly")
 }
 
