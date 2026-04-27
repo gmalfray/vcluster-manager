@@ -434,7 +434,7 @@ Si la valeur doit venir d'une variable d'environnement :
 2. Dans `generator.go` :
    - Ajouter le fichier dans la liste `files` de `GenerateVCluster()`
    - Si c'est un fichier tenant, l'ajouter dans `tenant/kustomization.yaml.tmpl`
-3. Synchroniser avec les vclusters existants dans fluxprod si nécessaire (voir CLAUDE.md)
+3. Synchroniser avec les vclusters existants dans fluxprod si nécessaire (voir [`AGENTS.md`](AGENTS.md) §3 et [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#generator))
 
 ## CI/CD
 
