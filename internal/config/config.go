@@ -13,11 +13,11 @@ type Config struct {
 	ListenAddr string
 
 	// GitLab
-	GitLabURL        string
-	GitLabToken      string
-	GitLabProjectID  string
-	GitLabGroupID    string
-	FluxCDDeployKey  int
+	GitLabURL       string
+	GitLabToken     string
+	GitLabProjectID string
+	GitLabGroupID   string
+	FluxCDDeployKey int
 
 	// Keycloak (Service Account — client_credentials)
 	KeycloakURL          string
@@ -38,10 +38,10 @@ type Config struct {
 	HelmChartsProjectID string
 
 	// Multi-cluster Kubernetes
-	KubeconfigPreprod    string // KUBECONFIG_PREPROD — path to preprod cluster kubeconfig
-	KubeconfigProd       string // KUBECONFIG_PROD — path to prod cluster kubeconfig
-	ClusterLabelPreprod  string // CLUSTER_LABEL_PREPROD — display name for preprod host cluster
-	ClusterLabelProd     string // CLUSTER_LABEL_PROD — display name for prod host cluster
+	KubeconfigPreprod   string // KUBECONFIG_PREPROD — path to preprod cluster kubeconfig
+	KubeconfigProd      string // KUBECONFIG_PROD — path to prod cluster kubeconfig
+	ClusterLabelPreprod string // CLUSTER_LABEL_PREPROD — display name for preprod host cluster
+	ClusterLabelProd    string // CLUSTER_LABEL_PROD — display name for prod host cluster
 
 	// SSH tunnel (optional, for restricted networks)
 	SSHTunnelPreprod string // SSH_TUNNEL_PREPROD — e.g. "user@bastion:22226"
@@ -113,52 +113,52 @@ type Config struct {
 
 func Load() (*Config, error) {
 	c := &Config{
-		ListenAddr:          os.Getenv("LISTEN_ADDR"),
-		GitLabURL:           os.Getenv("GITLAB_URL"),
-		GitLabToken:         os.Getenv("GITLAB_TOKEN"),
-		GitLabProjectID:     os.Getenv("GITLAB_PROJECT_ID"),
-		GitLabGroupID:       os.Getenv("GITLAB_ARGOCD_GROUP_ID"),
-		FluxCDDeployKey:     getIntEnv("FLUXCD_DEPLOY_KEY_ID"),
-		GitLabSSHURL:        os.Getenv("GITLAB_SSH_URL"),
-		GitLabArgoCDPath:    os.Getenv("GITLAB_ARGOCD_PATH"),
-		KeycloakURL:         os.Getenv("KEYCLOAK_URL"),
-		KeycloakRealm:       os.Getenv("KEYCLOAK_REALM"),
-		KeycloakClientID:    os.Getenv("KEYCLOAK_CLIENT_ID"),
-		KeycloakClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),
-		OIDCClientID:        os.Getenv("OIDC_CLIENT_ID"),
-		OIDCClientSecret:    os.Getenv("OIDC_CLIENT_SECRET"),
-		OIDCRedirectURL:     os.Getenv("OIDC_REDIRECT_URL"),
-		HelmChartsProjectID: os.Getenv("GITLAB_HELM_PROJECT_ID"),
-		AdminPassword:       os.Getenv("ADMIN_PASSWORD"),
-		JWTSecret:           os.Getenv("JWT_SECRET"),
-		KubeconfigPreprod:   os.Getenv("KUBECONFIG_PREPROD"),
-		KubeconfigProd:      os.Getenv("KUBECONFIG_PROD"),
-		SSHTunnelPreprod:    os.Getenv("SSH_TUNNEL_PREPROD"),
-		SSHTunnelProd:       os.Getenv("SSH_TUNNEL_PROD"),
-		SSHKeyPath:          os.Getenv("SSH_KEY_PATH"),
-		ClusterLabelPreprod: os.Getenv("CLUSTER_LABEL_PREPROD"),
-		ClusterLabelProd:    os.Getenv("CLUSTER_LABEL_PROD"),
-		RancherURL:            os.Getenv("RANCHER_URL"),
-		RancherToken:          os.Getenv("RANCHER_TOKEN"),
-		RancherEnabledPreprod: os.Getenv("RANCHER_ENABLED_PREPROD") == "true",
-		RancherEnabledProd:    os.Getenv("RANCHER_ENABLED_PROD") == "true",
-		VaultAddr:           os.Getenv("VAULT_ADDR"),
-		VaultRoleID:         os.Getenv("VAULT_ROLE_ID"),
-		VaultSecretID:       os.Getenv("VAULT_SECRET_ID"),
-		VaultToken:          os.Getenv("VAULT_TOKEN"),
-		BaseDomainPreprod:   os.Getenv("BASE_DOMAIN_PREPROD"),
-		BaseDomainProd:      os.Getenv("BASE_DOMAIN_PROD"),
-		TLSSecretPreprod:    os.Getenv("TLS_SECRET_PREPROD"),
-		TLSSecretProd:       os.Getenv("TLS_SECRET_PROD"),
-		DefaultCPU:          os.Getenv("DEFAULT_CPU"),
-		DefaultMemory:       os.Getenv("DEFAULT_MEMORY"),
-		DefaultStorage:      os.Getenv("DEFAULT_STORAGE"),
-		VeleroTimezone:      os.Getenv("VELERO_TIMEZONE"),
-		VeleroDefaultTTL:    getEnvOrDefault("VELERO_DEFAULT_TTL", "720h0m0s"),
-		VeleroNamespace:     getEnvOrDefault("VELERO_NAMESPACE", "velero-system"),
-		VeleroS3URL:         os.Getenv("VELERO_S3_URL"),
-		VeleroBucketPreprod: os.Getenv("VELERO_BUCKET_PREPROD"),
-		VeleroBucketProd:    os.Getenv("VELERO_BUCKET_PROD"),
+		ListenAddr:             os.Getenv("LISTEN_ADDR"),
+		GitLabURL:              os.Getenv("GITLAB_URL"),
+		GitLabToken:            os.Getenv("GITLAB_TOKEN"),
+		GitLabProjectID:        os.Getenv("GITLAB_PROJECT_ID"),
+		GitLabGroupID:          os.Getenv("GITLAB_ARGOCD_GROUP_ID"),
+		FluxCDDeployKey:        getIntEnv("FLUXCD_DEPLOY_KEY_ID"),
+		GitLabSSHURL:           os.Getenv("GITLAB_SSH_URL"),
+		GitLabArgoCDPath:       os.Getenv("GITLAB_ARGOCD_PATH"),
+		KeycloakURL:            os.Getenv("KEYCLOAK_URL"),
+		KeycloakRealm:          os.Getenv("KEYCLOAK_REALM"),
+		KeycloakClientID:       os.Getenv("KEYCLOAK_CLIENT_ID"),
+		KeycloakClientSecret:   os.Getenv("KEYCLOAK_CLIENT_SECRET"),
+		OIDCClientID:           os.Getenv("OIDC_CLIENT_ID"),
+		OIDCClientSecret:       os.Getenv("OIDC_CLIENT_SECRET"),
+		OIDCRedirectURL:        os.Getenv("OIDC_REDIRECT_URL"),
+		HelmChartsProjectID:    os.Getenv("GITLAB_HELM_PROJECT_ID"),
+		AdminPassword:          os.Getenv("ADMIN_PASSWORD"),
+		JWTSecret:              os.Getenv("JWT_SECRET"),
+		KubeconfigPreprod:      os.Getenv("KUBECONFIG_PREPROD"),
+		KubeconfigProd:         os.Getenv("KUBECONFIG_PROD"),
+		SSHTunnelPreprod:       os.Getenv("SSH_TUNNEL_PREPROD"),
+		SSHTunnelProd:          os.Getenv("SSH_TUNNEL_PROD"),
+		SSHKeyPath:             os.Getenv("SSH_KEY_PATH"),
+		ClusterLabelPreprod:    os.Getenv("CLUSTER_LABEL_PREPROD"),
+		ClusterLabelProd:       os.Getenv("CLUSTER_LABEL_PROD"),
+		RancherURL:             os.Getenv("RANCHER_URL"),
+		RancherToken:           os.Getenv("RANCHER_TOKEN"),
+		RancherEnabledPreprod:  os.Getenv("RANCHER_ENABLED_PREPROD") == "true",
+		RancherEnabledProd:     os.Getenv("RANCHER_ENABLED_PROD") == "true",
+		VaultAddr:              os.Getenv("VAULT_ADDR"),
+		VaultRoleID:            os.Getenv("VAULT_ROLE_ID"),
+		VaultSecretID:          os.Getenv("VAULT_SECRET_ID"),
+		VaultToken:             os.Getenv("VAULT_TOKEN"),
+		BaseDomainPreprod:      os.Getenv("BASE_DOMAIN_PREPROD"),
+		BaseDomainProd:         os.Getenv("BASE_DOMAIN_PROD"),
+		TLSSecretPreprod:       os.Getenv("TLS_SECRET_PREPROD"),
+		TLSSecretProd:          os.Getenv("TLS_SECRET_PROD"),
+		DefaultCPU:             os.Getenv("DEFAULT_CPU"),
+		DefaultMemory:          os.Getenv("DEFAULT_MEMORY"),
+		DefaultStorage:         os.Getenv("DEFAULT_STORAGE"),
+		VeleroTimezone:         os.Getenv("VELERO_TIMEZONE"),
+		VeleroDefaultTTL:       getEnvOrDefault("VELERO_DEFAULT_TTL", "720h0m0s"),
+		VeleroNamespace:        getEnvOrDefault("VELERO_NAMESPACE", "velero-system"),
+		VeleroS3URL:            os.Getenv("VELERO_S3_URL"),
+		VeleroBucketPreprod:    os.Getenv("VELERO_BUCKET_PREPROD"),
+		VeleroBucketProd:       os.Getenv("VELERO_BUCKET_PROD"),
 		VClusterPodSecurity:    os.Getenv("VCLUSTER_POD_SECURITY"),
 		ArgoCDDefaultPolicy:    os.Getenv("ARGOCD_DEFAULT_POLICY"),
 		WebhookURL:             os.Getenv("WEBHOOK_URL"),
@@ -206,8 +206,8 @@ func (c *Config) DataDir() string {
 // ClusterSettings holds the per-env cluster connectivity config.
 type ClusterSettings struct {
 	Label      string `json:"label,omitempty"`
-	Kubeconfig string `json:"kubeconfig,omitempty"` // path to kubeconfig file in data dir
-	SSHTunnel  string `json:"ssh_tunnel,omitempty"` // e.g. "user@bastion:22226"
+	Kubeconfig string `json:"kubeconfig,omitempty"`   // path to kubeconfig file in data dir
+	SSHTunnel  string `json:"ssh_tunnel,omitempty"`   // e.g. "user@bastion:22226"
 	SSHKeyPath string `json:"ssh_key_path,omitempty"` // path to SSH key file in data dir
 }
 

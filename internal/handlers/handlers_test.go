@@ -21,10 +21,10 @@ func minimalHandlers() *Handlers {
 		`{{define "toast.html"}}{{.Level}}:{{.Message}}{{end}}`,
 	))
 	return &Handlers{
-		partials:   partials,
-		migrations: make(map[string]migrationEntry),
+		partials:    partials,
+		migrations:  make(map[string]migrationEntry),
 		vaultStates: make(map[string]*vaultSetupState),
-		k8sClients: make(map[string]*kubernetes.StatusClient),
+		k8sClients:  make(map[string]*kubernetes.StatusClient),
 	}
 }
 

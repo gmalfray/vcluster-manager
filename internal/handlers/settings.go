@@ -38,8 +38,8 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		FluxCDPath:    r.FormValue("fluxcd_path"),
 	}
 
-	argoCDToggle := r.FormValue("argocd")  // "on", "off", or "" (not changing)
-	fluxCDToggle := r.FormValue("fluxcd")  // "on", "off", or "" (not changing)
+	argoCDToggle := r.FormValue("argocd") // "on", "off", or "" (not changing)
+	fluxCDToggle := r.FormValue("fluxcd") // "on", "off", or "" (not changing)
 	deleteRepo := r.FormValue("delete_repo") == "on"
 
 	env := r.URL.Query().Get("env")

@@ -37,19 +37,19 @@ type migrationEntry struct {
 
 // vaultSetupState tracks the async Vault auth backend setup for a vcluster.
 type vaultSetupState struct {
-	Status    string    // "waiting" | "configuring" | "done" | "error"
-	Message   string    // error message if Status == "error"
+	Status    string // "waiting" | "configuring" | "done" | "error"
+	Message   string // error message if Status == "error"
 	UpdatedAt time.Time
 }
 
 type Handlers struct {
-	cfg         *config.Config
-	parser      *gitops.Parser
-	generator   *gitops.Generator
-	gitlab      *gitops.GitLabClient
-	keycloak    *keycloak.Client
-	k8sClients  map[string]*kubernetes.StatusClient // key: "preprod" or "prod"
-	k8sClientsMu sync.RWMutex
+	cfg           *config.Config
+	parser        *gitops.Parser
+	generator     *gitops.Generator
+	gitlab        *gitops.GitLabClient
+	keycloak      *keycloak.Client
+	k8sClients    map[string]*kubernetes.StatusClient // key: "preprod" or "prod"
+	k8sClientsMu  sync.RWMutex
 	rancher       *rancher.Client
 	vault         *vault.Client
 	ghReleases    *github.ReleaseClient
@@ -67,8 +67,8 @@ type Handlers struct {
 
 func New(cfg *config.Config, parser *gitops.Parser, gl *gitops.GitLabClient, kc *keycloak.Client, k8sClients map[string]*kubernetes.StatusClient, rc *rancher.Client, ghReleases *github.ReleaseClient, helmUpdater *helmcharts.Updater, argoUpdater *argocd.Updater, vc *vault.Client, notifier *notify.Notifier, templateDir string) *Handlers {
 	h := &Handlers{
-		cfg:           cfg,
-		parser:        parser,
+		cfg:    cfg,
+		parser: parser,
 		generator: gitops.NewGenerator(gitops.GeneratorConfig{
 			BaseDomainPreprod:   cfg.BaseDomainPreprod,
 			BaseDomainProd:      cfg.BaseDomainProd,
@@ -279,10 +279,10 @@ func (h *Handlers) ClusterConfig(w http.ResponseWriter, r *http.Request) {
 		"HelmConfigured":      h.cfg.HelmChartsProjectID != "",
 		"HelmChartsProjectID": h.cfg.HelmChartsProjectID,
 		// Rancher
-		"RancherConfigured":      h.rancher != nil,
-		"RancherURL":             h.cfg.RancherURL,
-		"RancherEnabledPreprod":  h.cfg.RancherEnabledPreprod,
-		"RancherEnabledProd":     h.cfg.RancherEnabledProd,
+		"RancherConfigured":     h.rancher != nil,
+		"RancherURL":            h.cfg.RancherURL,
+		"RancherEnabledPreprod": h.cfg.RancherEnabledPreprod,
+		"RancherEnabledProd":    h.cfg.RancherEnabledProd,
 		// Vault
 		"VaultConfigured": h.vault != nil,
 		"VaultAddr":       h.cfg.VaultAddr,

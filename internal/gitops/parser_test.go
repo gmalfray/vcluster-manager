@@ -10,7 +10,7 @@ import (
 // fakeFileProvider implements fileProvider with an in-memory map.
 // Keys are "branch:path". Missing entries return an error.
 type fakeFileProvider struct {
-	files map[string]string // "branch:path" -> content
+	files map[string]string   // "branch:path" -> content
 	dirs  map[string][]string // "branch:path" -> list of file paths under that prefix
 }
 

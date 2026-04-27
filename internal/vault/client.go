@@ -14,10 +14,10 @@ import (
 
 // Client is a Vault API client for managing Kubernetes auth backends.
 type Client struct {
-	addr     string
-	token    string
-	mu       sync.RWMutex // protects token
-	http     *http.Client
+	addr  string
+	token string
+	mu    sync.RWMutex // protects token
+	http  *http.Client
 	// AppRole credentials (non-empty when using AppRole auth)
 	roleID   string
 	secretID string

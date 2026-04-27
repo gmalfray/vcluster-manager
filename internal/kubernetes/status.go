@@ -20,8 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 	k8sclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -1176,19 +1176,19 @@ func (s *StatusClient) CreateVeleroBackup(ctx context.Context, vcName, veleroNam
 				"namespace": veleroNamespace,
 			},
 			"spec": map[string]interface{}{
-				"includedNamespaces":      []interface{}{ns},
+				"includedNamespaces":       []interface{}{ns},
 				"defaultVolumesToFsBackup": true,
-				"snapshotVolumes":         false,
-				"storageLocation":         storageLocation,
-				"ttl":                     ttl,
+				"snapshotVolumes":          false,
+				"storageLocation":          storageLocation,
+				"ttl":                      ttl,
 				// Pods and replicasets are ephemeral and synced by vcluster — they are recreated
-			// automatically when the vcluster starts. Including them causes Velero to inject
-			// restore-wait init containers which fail when pods have runAsNonRoot security
-			// contexts (velero image uses non-numeric user "cnb"). Only the PVCs matter.
-			"excludedResources": []interface{}{
-				"events", "leases",
-				"pods", "replicasets.apps",
-			},
+				// automatically when the vcluster starts. Including them causes Velero to inject
+				// restore-wait init containers which fail when pods have runAsNonRoot security
+				// contexts (velero image uses non-numeric user "cnb"). Only the PVCs matter.
+				"excludedResources": []interface{}{
+					"events", "leases",
+					"pods", "replicasets.apps",
+				},
 			},
 		},
 	}

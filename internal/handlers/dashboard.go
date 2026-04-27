@@ -158,14 +158,14 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 		"Groups": groups,
 		"User":   h.getUser(r),
 		// Summary cards
-		"SummaryTotalPreprod":   pp.total,
-		"SummaryTotalProd":      pr.total,
-		"SummaryTotal":          pp.total + pr.total,
-		"SummaryArgoCDCount":    pp.argocd + pr.argocd,
-		"SummaryNoArgoCDCount":  (pp.total - pp.argocd) + (pr.total - pr.argocd),
-		"SummaryBackupCount":    pp.backup + pr.backup,
-		"SummaryNoBackupCount":  (pp.total - pp.backup) + (pr.total - pr.backup),
-		"SummaryPendingCount":   pendingCount,
+		"SummaryTotalPreprod":  pp.total,
+		"SummaryTotalProd":     pr.total,
+		"SummaryTotal":         pp.total + pr.total,
+		"SummaryArgoCDCount":   pp.argocd + pr.argocd,
+		"SummaryNoArgoCDCount": (pp.total - pp.argocd) + (pr.total - pr.argocd),
+		"SummaryBackupCount":   pp.backup + pr.backup,
+		"SummaryNoBackupCount": (pp.total - pp.backup) + (pr.total - pr.backup),
+		"SummaryPendingCount":  pendingCount,
 	}
 
 	if h.ghReleases != nil {

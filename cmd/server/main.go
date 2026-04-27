@@ -61,19 +61,19 @@ func main() {
 
 	// GitLab client
 	gl, err := gitops.NewGitLabClient(gitops.GitLabClientConfig{
-		URL:                  cfg.GitLabURL,
-		Token:                cfg.GitLabToken,
-		ProjectID:            cfg.GitLabProjectID,
-		ArgoCDGroupID:        cfg.GitLabGroupID,
-		ArgoCDPath:           cfg.GitLabArgoCDPath,
-		FluxDeployKeyID:      cfg.FluxCDDeployKey,
-		DomainPreprod:        cfg.BaseDomainPreprod,
-		DomainProd:           cfg.BaseDomainProd,
-		VaultAddr:            cfg.VaultAddr,
-		GitLabSSHURL:         cfg.GitLabSSHURL,
-		ClustersPath:         cfg.FluxprodClustersPath,
+		URL:                   cfg.GitLabURL,
+		Token:                 cfg.GitLabToken,
+		ProjectID:             cfg.GitLabProjectID,
+		ArgoCDGroupID:         cfg.GitLabGroupID,
+		ArgoCDPath:            cfg.GitLabArgoCDPath,
+		FluxDeployKeyID:       cfg.FluxCDDeployKey,
+		DomainPreprod:         cfg.BaseDomainPreprod,
+		DomainProd:            cfg.BaseDomainProd,
+		VaultAddr:             cfg.VaultAddr,
+		GitLabSSHURL:          cfg.GitLabSSHURL,
+		ClustersPath:          cfg.FluxprodClustersPath,
 		VaultKVArgoCDRootApps: cfg.VaultKVArgoCDRootApps,
-		VaultKVArgoCDRepo:    cfg.VaultKVArgoCDRepo,
+		VaultKVArgoCDRepo:     cfg.VaultKVArgoCDRepo,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create GitLab client: %v", err)
@@ -342,4 +342,3 @@ func main() {
 
 	log.Println("Server stopped cleanly")
 }
-
