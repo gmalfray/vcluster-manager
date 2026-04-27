@@ -79,6 +79,18 @@ discussion).
 - **Commits** : convention conventionnelle (`feat:`, `fix:`, `chore:`,
   `docs:`, `style:`, `refactor:`). Co-author Claude quand pertinent.
 
+## Logging
+
+- `slog` est le logger par défaut (`cmd/server/main.go`, handler JSON sur
+  `os.Stderr`). Niveau configurable via `LOG_LEVEL=debug|info|warn|error`.
+- Le package `log` standard est bridgé via `slog.SetLogLoggerLevel` : tout
+  `log.Printf` existant sort en JSON, mais sans fields structurés. Pour un
+  nouveau call site, préférer `slog.Info/Warn/Error("message", "key", val)`.
+- Convention erreurs : `slog.Error("operation X failed", "err", err)` (clé
+  `err` standardisée).
+- Pas encore de propagation `context.Context` (`slog.InfoContext`) : à
+  introduire en même temps que le tracing OpenTelemetry (item TODO).
+
 ## Points de vigilance
 
 - **Fichiers monstres** : `internal/kubernetes/status.go` (~1400 LOC) et
