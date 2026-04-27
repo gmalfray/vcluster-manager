@@ -5,9 +5,15 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 
 ## Améliorations Go (issu de l'audit skills)
 
-- [ ] **Migration `log` → `slog`** : ~30 `log.Printf` à remplacer par du logging
-      structuré (`slog.InfoContext(ctx, "...", "key", val)`). Préreq pour la
-      corrélation logs/traces et l'indexation Loki/Datadog.
+- [x] ~~**Migration `log` → `slog` (phase 1)** : init JSON handler dans
+      `main.go`, bridge du package `log` standard via
+      `slog.SetLogLoggerLevel`, conversion enrichie de `cmd/server/main.go`
+      et `internal/audit/audit.go`.~~
+- [ ] **Migration `log` → `slog` (phase 2)** : enrichir avec des fields
+      structurés (`slog.Error("foo", "err", err)`) les ~150 call sites
+      restants dans `internal/handlers/*` (98), `internal/kubernetes/*` (10),
+      `internal/gitops/*` (8), `internal/rancher/`, `internal/vault/`, etc.
+      Préreq pour la corrélation logs/traces (`slog.InfoContext(ctx, ...)`).
 - [ ] **Cache GitLab maison → `samber/hot`** : `internal/gitops/gitlab.go`
       embarque un cache `map+sync.RWMutex+TTL 30s` (~40 LOC). `samber/hot`
       apporte LRU/TinyLFU, métriques Prometheus, et purge des entrées expirées

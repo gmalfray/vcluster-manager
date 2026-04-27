@@ -38,6 +38,18 @@ Toutes les modifications notables sont documentées ici. Le format suit
 - Sweep `gofmt` sur l'ensemble du tree (alignement de structs, regroupement
   d'imports). Aucun changement sémantique.
 
+### Logging
+- **Phase 1 de la migration `log` → `slog`** : initialisation d'un handler
+  JSON par défaut dans `cmd/server/main.go`, niveau configurable via
+  `LOG_LEVEL` (`debug|info|warn|error`, défaut `info`). Les call sites
+  existants `log.Printf/Println` flow désormais à travers `slog` via
+  `slog.SetLogLoggerLevel` — sortie JSON immédiate sans refactor des 181
+  occurrences éparpillées dans 20 fichiers.
+- `cmd/server/main.go` (32 calls) et `internal/audit/audit.go` (audit log
+  structuré) sont migrés avec des fields enrichis (`"err"`, `"env"`,
+  `"vcluster"`, `"action"`, etc.). L'enrichissement progressif des autres
+  fichiers est listé dans `TODO.md`.
+
 ## [1.2.0] — Initial public release
 
 Première release publique. Voir le commit `065b9ec` pour la liste complète des
