@@ -298,9 +298,32 @@ VERSION                              # Version courante (ex: 1.1.0), lue par int
 - `master` : deploye en prod via FluxCD (branche master de fluxprod)
 - `preprod` : deploye en preprod via FluxCD (branche preprod de fluxprod)
 
+## Build & test
+
+Cibles `make` (voir `Makefile`) :
+
+| Cible | Action |
+|---|---|
+| `make build` | Compile le binaire dans `./bin/vcluster-manager` |
+| `make test` | `go test -race -count=1 ./...` |
+| `make test-short` | Idem sans `-race` (plus rapide) |
+| `make vet` | `go vet ./...` |
+| `make lint` | `golangci-lint run` (config dans `.golangci.yml`) |
+| `make lint-fix` | Idem avec `--fix` |
+| `make fmt` | `gofmt` + `goimports` |
+| `make check` | Enchaîne `vet` → `test` → `lint` |
+| `make coverage` | Génère `coverage.html` |
+
+**Préreqs** :
+- Go ≥ 1.25 (cf. `go.mod`)
+- `golangci-lint` v2 : `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`
+- Si `/tmp` est monté `noexec` (workstation durcie), `make` exporte `GOTMPDIR=$HOME/.cache/go-tmp` pour que les binaires de test puissent s'exécuter.
+
+**État du lint** : ~36 issues actionnables au baseline (errcheck, misspell, unused, gocritic). `SA1019` (deprecation `xanzy/go-gitlab`) et `ST1000/ST1020` (package docs) sont exclus en attendant la migration et la passe `doc.go`.
+
 ## Regles
 
-- Tester avec `go build ./...` et `go vet ./...` avant de committer
+- Avant tout commit : `make check` (build + vet + tests + lint)
 - **Avant toute modification des configs tenant dans fluxprod** (`tenant/kustomization.yaml`, ajout de `*_kustomization.yaml`) : verifier `internal/gitops/generator.go` et synchroniser si necessaire
 - **Avant toute modification de `generator.go`** : verifier que les fichiers existants dans fluxprod sont coherents et les mettre a jour si necessaire
 

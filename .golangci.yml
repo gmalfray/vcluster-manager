@@ -1,0 +1,92 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck      # reports unchecked errors (catches the bug fixed in CreateAppManifestsRepo)
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose     # net/http response body must be closed
+    - misspell
+    - unconvert
+    - gocritic      # opinionated code quality
+    - revive        # replacement for golint
+    - copyloopvar   # Go 1.22+ loop var scoping (defensive)
+
+  settings:
+    errcheck:
+      # Conventional patterns: errors deliberately ignored.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Listener).Close
+        - (*net/http.Response).Body.Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    revive:
+      rules:
+        - name: var-naming
+          disabled: true   # too noisy on initialism rules across the codebase
+        - name: package-comments
+          disabled: true   # to introduce later via a doc.go pass
+        - name: exported
+          disabled: true   # same
+        - name: unused-parameter
+          disabled: true
+        - name: empty-block
+          disabled: true
+    staticcheck:
+      checks:
+        - all
+        # SA1019 deprecation warnings: xanzy/go-gitlab is archived; the migration
+        # to gitlab.com/gitlab-org/api/client-go is tracked separately. Re-enable
+        # once that work lands.
+        - "-SA1019"
+        # ST1000/ST1020 require package/exported-symbol comments — re-enable when
+        # the doc.go pass lands across packages.
+        - "-ST1000"
+        - "-ST1020"
+        # QF*/S* are quickfix style suggestions, not bugs.
+        - "-QF1001"
+        - "-QF1003"
+        - "-QF1008"
+        - "-S1011"
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+        - commentFormatting
+        - paramTypeCombine
+        - hugeParam
+        - rangeValCopy
+
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+    rules:
+      # Tests can be more permissive about resource leaks and unchecked errors.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+      # Generator-style files often have intentional patterns.
+      - path: internal/gitops/generator\.go
+        linters:
+          - gocritic
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

@@ -2,3 +2,8 @@ TODO.txt
 secret*
 .secret*
 FORK.md
+
+# Build & test artifacts
+/bin/
+/coverage.out
+/coverage.html
