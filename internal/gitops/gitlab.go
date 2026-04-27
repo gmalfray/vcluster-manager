@@ -3,6 +3,7 @@ package gitops
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -274,17 +275,25 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 
 	projectID := proj.ID
 
+	// Configuration is best-effort: the repo exists and is recoverable manually.
+	// We collect errors and return them aggregated (with the projectID), so the
+	// caller can decide whether to surface a warning or fail the user-facing flow.
+	var setupErrs []error
+
 	// Set ArgoCD avatar
-	g.client.Projects.EditProject(projectID, &gitlab.EditProjectOptions{
+	if _, _, err := g.client.Projects.EditProject(projectID, &gitlab.EditProjectOptions{
 		Avatar: &gitlab.ProjectAvatar{
 			Filename: "argocd.png",
 			Image:    bytes.NewReader(argocdAvatarPNG),
 		},
-	})
+	}); err != nil {
+		log.Printf("CreateAppManifestsRepo(%s): set avatar failed: %v", name, err)
+		setupErrs = append(setupErrs, fmt.Errorf("set avatar: %w", err))
+	}
 
 	// Update README.md with project documentation
 	readmeContent := GenerateAppManifestsREADME(name, g)
-	g.client.Commits.CreateCommit(projectID, &gitlab.CreateCommitOptions{
+	if _, _, err := g.client.Commits.CreateCommit(projectID, &gitlab.CreateCommitOptions{
 		Branch:        gitlab.Ptr("master"),
 		CommitMessage: gitlab.Ptr("docs: add project README"),
 		Actions: []*gitlab.CommitActionOptions{
@@ -294,29 +303,44 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 				Content:  gitlab.Ptr(readmeContent),
 			},
 		},
-	})
+	}); err != nil {
+		log.Printf("CreateAppManifestsRepo(%s): commit README failed: %v", name, err)
+		setupErrs = append(setupErrs, fmt.Errorf("commit README: %w", err))
+	}
 
 	// Create preprod branch
-	g.client.Branches.CreateBranch(projectID, &gitlab.CreateBranchOptions{
+	if _, _, err := g.client.Branches.CreateBranch(projectID, &gitlab.CreateBranchOptions{
 		Branch: gitlab.Ptr("preprod"),
 		Ref:    gitlab.Ptr("master"),
-	})
+	}); err != nil {
+		log.Printf("CreateAppManifestsRepo(%s): create preprod branch failed: %v", name, err)
+		setupErrs = append(setupErrs, fmt.Errorf("create preprod branch: %w", err))
+	}
 
 	// Protect branches
 	for _, branch := range []string{"preprod", "master"} {
-		g.client.ProtectedBranches.UnprotectRepositoryBranches(projectID, url.PathEscape(branch))
-		g.client.ProtectedBranches.ProtectRepositoryBranches(projectID, &gitlab.ProtectRepositoryBranchesOptions{
+		if _, err := g.client.ProtectedBranches.UnprotectRepositoryBranches(projectID, url.PathEscape(branch)); err != nil {
+			// 404 is expected when the branch isn't yet protected — log only at debug level.
+			log.Printf("CreateAppManifestsRepo(%s): unprotect %s skipped: %v", name, branch, err)
+		}
+		if _, _, err := g.client.ProtectedBranches.ProtectRepositoryBranches(projectID, &gitlab.ProtectRepositoryBranchesOptions{
 			Name:             gitlab.Ptr(branch),
 			PushAccessLevel:  gitlab.Ptr(gitlab.MaintainerPermissions),
 			MergeAccessLevel: gitlab.Ptr(gitlab.MaintainerPermissions),
 			AllowForcePush:   gitlab.Ptr(false),
-		})
+		}); err != nil {
+			log.Printf("CreateAppManifestsRepo(%s): protect %s failed: %v", name, branch, err)
+			setupErrs = append(setupErrs, fmt.Errorf("protect %s: %w", branch, err))
+		}
 	}
 
 	// Enable FluxCD deploy key
-	g.client.DeployKeys.EnableDeployKey(projectID, g.fluxDeployKeyID)
+	if _, _, err := g.client.DeployKeys.EnableDeployKey(projectID, g.fluxDeployKeyID); err != nil {
+		log.Printf("CreateAppManifestsRepo(%s): enable deploy key %d failed: %v", name, g.fluxDeployKeyID, err)
+		setupErrs = append(setupErrs, fmt.Errorf("enable deploy key: %w", err))
+	}
 
-	return projectID, nil
+	return projectID, errors.Join(setupErrs...)
 }
 
 // AppManifestsRepoExists checks if the app-manifests repo exists for a vcluster.
