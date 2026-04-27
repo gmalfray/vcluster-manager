@@ -89,7 +89,7 @@ func (b *configmapBackend) writeKey(key string, data []byte) error {
 	return err
 }
 
-func (b *configmapBackend) readSettings() ([]byte, error)      { return b.readKey("settings.json") }
-func (b *configmapBackend) writeSettings(data []byte) error     { return b.writeKey("settings.json", data) }
-func (b *configmapBackend) readDeleting() ([]byte, error)       { return b.readKey("deleting.json") }
-func (b *configmapBackend) writeDeleting(data []byte) error     { return b.writeKey("deleting.json", data) }
+func (b *configmapBackend) readSettings() ([]byte, error)   { return b.readKey("settings.json") }
+func (b *configmapBackend) writeSettings(data []byte) error { return b.writeKey("settings.json", data) }
+func (b *configmapBackend) readDeleting() ([]byte, error)   { return b.readKey("deleting.json") }
+func (b *configmapBackend) writeDeleting(data []byte) error { return b.writeKey("deleting.json", data) }

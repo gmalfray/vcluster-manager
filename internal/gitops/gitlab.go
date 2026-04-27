@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xanzy/go-gitlab"
 	"github.com/gmalfray/vcluster-manager/internal/metrics"
+	"github.com/xanzy/go-gitlab"
 )
 
 type cacheEntry struct {
@@ -35,28 +35,28 @@ type GitLabClientConfig struct {
 	VaultAddr     string
 	GitLabSSHURL  string
 	// GitOps repo structure
-	ClustersPath         string // path prefix for cluster dirs, e.g. "clusters"
+	ClustersPath          string // path prefix for cluster dirs, e.g. "clusters"
 	VaultKVArgoCDRootApps string // Vault KV path for ArgoCD root deploy key
 	VaultKVArgoCDRepo     string // Vault KV path for ArgoCD repo deploy key
 }
 
 // GitLabClient wraps the GitLab API for fluxprod operations.
 type GitLabClient struct {
-	client               *gitlab.Client
-	projectID            string
-	argocdGroupID        string
-	argocdPath           string // namespace path for repo lookups, e.g. "ops/argocd"
-	fluxDeployKeyID      int
-	domainPreprod        string
-	domainProd           string
-	vaultAddr            string
-	gitlabSSHURL         string
-	clustersPath         string // prefix for cluster dirs, e.g. "clusters"
+	client                *gitlab.Client
+	projectID             string
+	argocdGroupID         string
+	argocdPath            string // namespace path for repo lookups, e.g. "ops/argocd"
+	fluxDeployKeyID       int
+	domainPreprod         string
+	domainProd            string
+	vaultAddr             string
+	gitlabSSHURL          string
+	clustersPath          string // prefix for cluster dirs, e.g. "clusters"
 	vaultKVArgoCDRootApps string
 	vaultKVArgoCDRepo     string
-	cache                map[string]cacheEntry
-	cacheMu              sync.RWMutex
-	cacheTTL             time.Duration
+	cache                 map[string]cacheEntry
+	cacheMu               sync.RWMutex
+	cacheTTL              time.Duration
 }
 
 // withRetry retries fn up to 3 times on transient errors (network, 429, 5xx).
@@ -95,20 +95,20 @@ func NewGitLabClient(cfg GitLabClientConfig) (*GitLabClient, error) {
 		clustersPath = "clusters"
 	}
 	return &GitLabClient{
-		client:               client,
-		projectID:            cfg.ProjectID,
-		argocdGroupID:        cfg.ArgoCDGroupID,
-		argocdPath:           cfg.ArgoCDPath,
-		fluxDeployKeyID:      cfg.FluxDeployKeyID,
-		domainPreprod:        cfg.DomainPreprod,
-		domainProd:           cfg.DomainProd,
-		vaultAddr:            cfg.VaultAddr,
-		gitlabSSHURL:         cfg.GitLabSSHURL,
-		clustersPath:         clustersPath,
+		client:                client,
+		projectID:             cfg.ProjectID,
+		argocdGroupID:         cfg.ArgoCDGroupID,
+		argocdPath:            cfg.ArgoCDPath,
+		fluxDeployKeyID:       cfg.FluxDeployKeyID,
+		domainPreprod:         cfg.DomainPreprod,
+		domainProd:            cfg.DomainProd,
+		vaultAddr:             cfg.VaultAddr,
+		gitlabSSHURL:          cfg.GitLabSSHURL,
+		clustersPath:          clustersPath,
 		vaultKVArgoCDRootApps: cfg.VaultKVArgoCDRootApps,
-		vaultKVArgoCDRepo:    cfg.VaultKVArgoCDRepo,
-		cache:                make(map[string]cacheEntry),
-		cacheTTL:             30 * time.Second,
+		vaultKVArgoCDRepo:     cfg.VaultKVArgoCDRepo,
+		cache:                 make(map[string]cacheEntry),
+		cacheTTL:              30 * time.Second,
 	}, nil
 }
 
@@ -249,13 +249,13 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 
 	// Try to create
 	proj, _, err := g.client.Projects.CreateProject(&gitlab.CreateProjectOptions{
-		Name:                gitlab.Ptr(repoName),
-		Path:                gitlab.Ptr(repoName),
-		NamespaceID:         gitlab.Ptr(atoi(g.argocdGroupID)),
-		DefaultBranch:       gitlab.Ptr("master"),
+		Name:                 gitlab.Ptr(repoName),
+		Path:                 gitlab.Ptr(repoName),
+		NamespaceID:          gitlab.Ptr(atoi(g.argocdGroupID)),
+		DefaultBranch:        gitlab.Ptr("master"),
 		InitializeWithReadme: gitlab.Ptr(true),
-		Visibility:          gitlab.Ptr(gitlab.PrivateVisibility),
-		Description:         gitlab.Ptr(fmt.Sprintf("Manifestes ArgoCD pour le vcluster %s", name)),
+		Visibility:           gitlab.Ptr(gitlab.PrivateVisibility),
+		Description:          gitlab.Ptr(fmt.Sprintf("Manifestes ArgoCD pour le vcluster %s", name)),
 	})
 	if err != nil {
 		// Project may already exist, try to find it

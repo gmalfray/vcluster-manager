@@ -9,8 +9,8 @@ type VCluster struct {
 	Velero           VeleroConfig
 	Quotas           QuotaConfig
 	NoQuotas         bool
-	K8sVersionConfig string   // controlPlane.distro.k8s.version from values.yaml (if set)
-	ArgoCDVersion    string   // per-vcluster ArgoCD version override (empty = global)
+	K8sVersionConfig string // controlPlane.distro.k8s.version from values.yaml (if set)
+	ArgoCDVersion    string // per-vcluster ArgoCD version override (empty = global)
 	FluxCD           FluxCDConfig
 }
 
@@ -32,14 +32,14 @@ type VeleroConfig struct {
 
 // VeleroBackupInfo holds info about a Velero Backup object.
 type VeleroBackupInfo struct {
-	Name        string
-	Phase       string // Completed, Failed, InProgress, ...
-	StartTime   string
+	Name           string
+	Phase          string // Completed, Failed, InProgress, ...
+	StartTime      string
 	CompletionTime string
-	ItemsBackedUp int
-	TotalItems    int
-	Namespace   string // included namespace
-	TTL         string
+	ItemsBackedUp  int
+	TotalItems     int
+	Namespace      string // included namespace
+	TTL            string
 }
 
 // VeleroRestoreInfo holds info about a Velero Restore object.
@@ -58,39 +58,39 @@ type QuotaConfig struct {
 
 // CreateRequest represents a request to create a new vcluster.
 type CreateRequest struct {
-	Name           string   `json:"name"`
-	ArgoCD         bool     `json:"argocd"`
-	RBACGroups     []string `json:"rbac_groups"`
-	VeleroEnabled  bool     `json:"velero_enabled"`
-	VeleroHour     string   `json:"velero_hour"` // "HH:MM"
-	VeleroTTL      string   `json:"velero_ttl"`  // e.g. "720h0m0s"
-	CPU            string   `json:"cpu"`
-	Memory         string   `json:"memory"`
-	Storage        string   `json:"storage"`
-	NoQuotas       bool     `json:"no_quotas"`
-	ArgoCDVersion  string   `json:"argocd_version"`
-	FluxCDEnabled  bool     `json:"fluxcd_enabled"`
-	FluxCDRepoURL  string   `json:"fluxcd_repo_url"`
-	FluxCDBranch   string   `json:"fluxcd_branch"`
-	FluxCDPath     string   `json:"fluxcd_path"`
+	Name          string   `json:"name"`
+	ArgoCD        bool     `json:"argocd"`
+	RBACGroups    []string `json:"rbac_groups"`
+	VeleroEnabled bool     `json:"velero_enabled"`
+	VeleroHour    string   `json:"velero_hour"` // "HH:MM"
+	VeleroTTL     string   `json:"velero_ttl"`  // e.g. "720h0m0s"
+	CPU           string   `json:"cpu"`
+	Memory        string   `json:"memory"`
+	Storage       string   `json:"storage"`
+	NoQuotas      bool     `json:"no_quotas"`
+	ArgoCDVersion string   `json:"argocd_version"`
+	FluxCDEnabled bool     `json:"fluxcd_enabled"`
+	FluxCDRepoURL string   `json:"fluxcd_repo_url"`
+	FluxCDBranch  string   `json:"fluxcd_branch"`
+	FluxCDPath    string   `json:"fluxcd_path"`
 }
 
 // UpdateRequest represents a request to update a vcluster's settings.
 type UpdateRequest struct {
-	VeleroEnabled  bool     `json:"velero_enabled"`
-	VeleroHour     string   `json:"velero_hour"`
-	VeleroTTL      string   `json:"velero_ttl"`
-	CPU            string   `json:"cpu"`
-	Memory         string   `json:"memory"`
-	Storage        string   `json:"storage"`
-	NoQuotas       bool     `json:"no_quotas"`
-	RBACGroups     []string `json:"rbac_groups"`
-	K8sVersion     string   `json:"k8s_version"`
-	ArgoCDVersion  string   `json:"argocd_version"`
-	FluxCDEnabled  bool     `json:"fluxcd_enabled"`
-	FluxCDRepoURL  string   `json:"fluxcd_repo_url"`
-	FluxCDBranch   string   `json:"fluxcd_branch"`
-	FluxCDPath     string   `json:"fluxcd_path"`
+	VeleroEnabled bool     `json:"velero_enabled"`
+	VeleroHour    string   `json:"velero_hour"`
+	VeleroTTL     string   `json:"velero_ttl"`
+	CPU           string   `json:"cpu"`
+	Memory        string   `json:"memory"`
+	Storage       string   `json:"storage"`
+	NoQuotas      bool     `json:"no_quotas"`
+	RBACGroups    []string `json:"rbac_groups"`
+	K8sVersion    string   `json:"k8s_version"`
+	ArgoCDVersion string   `json:"argocd_version"`
+	FluxCDEnabled bool     `json:"fluxcd_enabled"`
+	FluxCDRepoURL string   `json:"fluxcd_repo_url"`
+	FluxCDBranch  string   `json:"fluxcd_branch"`
+	FluxCDPath    string   `json:"fluxcd_path"`
 }
 
 // StatusInfo holds real-time status from the Kubernetes cluster.
@@ -111,17 +111,17 @@ type StatusInfo struct {
 
 // DashboardItem combines config and status for the dashboard view.
 type DashboardItem struct {
-	VCluster     VCluster
-	Status       *StatusInfo
-	APIHost      string
-	ArgoURL      string
-	ChartVersion string // populated async via HTMX status fragment
-	K8sVersion   string // populated async via HTMX status fragment
-	PendingMR    bool   // true if vcluster exists in preprod but not yet merged to master
-	PendingMRURL string // URL of the open preprod→master MR
-	Deleting       bool   // true if vcluster deletion is in progress (waiting for K8s reconciliation)
-	DeletingMR     string // URL of the deletion MR for prod (if applicable)
-	RancherCleaning bool  // true if rancher-cleanup job is running (pre-deletion step)
+	VCluster        VCluster
+	Status          *StatusInfo
+	APIHost         string
+	ArgoURL         string
+	ChartVersion    string // populated async via HTMX status fragment
+	K8sVersion      string // populated async via HTMX status fragment
+	PendingMR       bool   // true if vcluster exists in preprod but not yet merged to master
+	PendingMRURL    string // URL of the open preprod→master MR
+	Deleting        bool   // true if vcluster deletion is in progress (waiting for K8s reconciliation)
+	DeletingMR      string // URL of the deletion MR for prod (if applicable)
+	RancherCleaning bool   // true if rancher-cleanup job is running (pre-deletion step)
 }
 
 // ReleaseInfo holds information about the latest vcluster release from GitHub.

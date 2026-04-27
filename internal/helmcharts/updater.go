@@ -26,7 +26,7 @@ func NewUpdater(gl *gitops.GitLabClient, chartPath string) *Updater {
 
 // GetCurrentChartVersion reads the chart version from charts/vcluster/Chart.yaml on the given branch.
 func (u *Updater) GetCurrentChartVersion(branch string) (string, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath + "/Chart.yaml")
+	content, err := u.gitlab.GetFile(branch, u.chartPath+"/Chart.yaml")
 	if err != nil {
 		return "", fmt.Errorf("reading Chart.yaml: %w", err)
 	}
@@ -43,7 +43,7 @@ func (u *Updater) GetCurrentChartVersion(branch string) (string, error) {
 // GetDefaultK8sVersion reads the default K8s version from charts/vcluster/values.yaml.
 // Path: vcluster.controlPlane.distro.k8s.image.tag
 func (u *Updater) GetDefaultK8sVersion(branch string) (string, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath + "/values.yaml")
+	content, err := u.gitlab.GetFile(branch, u.chartPath+"/values.yaml")
 	if err != nil {
 		return "", fmt.Errorf("reading values.yaml: %w", err)
 	}
@@ -170,7 +170,7 @@ func (u *Updater) UpdateK8sVersion(version string) (string, error) {
 // buildChartVersionActions reads Chart.yaml from the given branch and updates
 // both the chart version and the vcluster dependency version.
 func (u *Updater) buildChartVersionActions(branch, semver string) ([]gitops.CommitAction, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath + "/Chart.yaml")
+	content, err := u.gitlab.GetFile(branch, u.chartPath+"/Chart.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("reading Chart.yaml on %s: %w", branch, err)
 	}
@@ -204,7 +204,7 @@ func (u *Updater) buildChartVersionActions(branch, semver string) ([]gitops.Comm
 // buildK8sVersionActions reads values.yaml from the given branch and updates
 // vcluster.controlPlane.distro.k8s.image.tag.
 func (u *Updater) buildK8sVersionActions(branch, version string) ([]gitops.CommitAction, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath + "/values.yaml")
+	content, err := u.gitlab.GetFile(branch, u.chartPath+"/values.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("reading values.yaml on %s: %w", branch, err)
 	}

@@ -118,7 +118,7 @@ func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 	k8s := h.k8sForEnv(env)
 	if k8s == nil {
 		h.renderPartial(w, "status_badge.html", map[string]interface{}{
-			"HelmRelease": "N/A",
+			"HelmRelease":   "N/A",
 			"Kustomization": "N/A",
 		})
 		return
@@ -127,7 +127,7 @@ func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 	status, err := k8s.GetVClusterStatus(r.Context(), name)
 	if err != nil {
 		h.renderPartial(w, "status_badge.html", map[string]interface{}{
-			"HelmRelease": "Error",
+			"HelmRelease":   "Error",
 			"Kustomization": "Error",
 		})
 		return
@@ -555,11 +555,11 @@ func (h *Handlers) RancherStatus(w http.ResponseWriter, r *http.Request) {
 			if k8s.HasRancherAgents(r.Context(), name) {
 				log.Printf("Rancher: detected agents for %s/%s via K8s pod labels (manual pairing with different cluster name)", env, name)
 				h.renderPartial(w, "rancher_status.html", map[string]interface{}{
-					"Enabled":       true,
+					"Enabled":        true,
 					"ManuallyPaired": true,
-					"Cleaning":      cleaning,
-					"Name":          name,
-					"Env":           env,
+					"Cleaning":       cleaning,
+					"Name":           name,
+					"Env":            env,
 				})
 				return
 			}
@@ -1272,4 +1272,3 @@ func renameKubeconfig(data []byte, name, env string) []byte {
 	}
 	return out
 }
-

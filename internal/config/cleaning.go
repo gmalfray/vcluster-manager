@@ -11,13 +11,13 @@ import (
 // CleaningEntry tracks a vcluster where rancher-cleanup is running.
 // Deletion flags are persisted so the operation can be resumed after a restart.
 type CleaningEntry struct {
-	Name            string `json:"name"`
-	Env             string `json:"env"`
-	StartedAt       string `json:"started_at"`
-	DeletePreprod   bool   `json:"delete_preprod"`
-	DeleteProd      bool   `json:"delete_prod"`
-	DeleteGitlab    bool   `json:"delete_gitlab"`
-	DeleteKeycloak  bool   `json:"delete_keycloak"`
+	Name           string `json:"name"`
+	Env            string `json:"env"`
+	StartedAt      string `json:"started_at"`
+	DeletePreprod  bool   `json:"delete_preprod"`
+	DeleteProd     bool   `json:"delete_prod"`
+	DeleteGitlab   bool   `json:"delete_gitlab"`
+	DeleteKeycloak bool   `json:"delete_keycloak"`
 }
 
 // AddCleaning registers a vcluster as having a rancher-cleanup in progress.

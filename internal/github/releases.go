@@ -21,21 +21,21 @@ type releaseResponse struct {
 type ReleaseClient struct {
 	httpClient *http.Client
 
-	mu        sync.RWMutex
-	cached    *models.ReleaseInfo
-	cachedAt  time.Time
-	cacheTTL  time.Duration
+	mu       sync.RWMutex
+	cached   *models.ReleaseInfo
+	cachedAt time.Time
+	cacheTTL time.Duration
 
 	k8sMu       sync.RWMutex
 	k8sCached   []string
 	k8sCachedAt time.Time
 
-	argoMu           sync.RWMutex
-	argoCached       *models.ReleaseInfo
-	argoCachedAt     time.Time
-	argoVerMu        sync.RWMutex
-	argoVerCached    []string
-	argoVerCachedAt  time.Time
+	argoMu          sync.RWMutex
+	argoCached      *models.ReleaseInfo
+	argoCachedAt    time.Time
+	argoVerMu       sync.RWMutex
+	argoVerCached   []string
+	argoVerCachedAt time.Time
 }
 
 func NewReleaseClient() *ReleaseClient {
