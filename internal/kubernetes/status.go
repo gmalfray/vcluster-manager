@@ -151,7 +151,7 @@ func NewStatusClientWithTunnel(kubeconfigPath, sshTarget, sshKeyPath string) (*S
 
 	client, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		tunnel.Close()
+		_ = tunnel.Close()
 		return nil, nil, fmt.Errorf("creating dynamic client: %w", err)
 	}
 

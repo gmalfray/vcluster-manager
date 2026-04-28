@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -312,10 +313,10 @@ func compareVersions(a, b string) int {
 	for i := 0; i < 3; i++ {
 		var na, nb int
 		if i < len(pa) {
-			fmt.Sscanf(pa[i], "%d", &na)
+			na, _ = strconv.Atoi(pa[i])
 		}
 		if i < len(pb) {
-			fmt.Sscanf(pb[i], "%d", &nb)
+			nb, _ = strconv.Atoi(pb[i])
 		}
 		if na != nb {
 			return na - nb

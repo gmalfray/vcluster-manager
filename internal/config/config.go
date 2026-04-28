@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"sync"
 )
 
@@ -403,8 +404,7 @@ func (c *Config) RancherEnabledForEnv(env string) bool {
 }
 
 func getIntEnv(key string) int {
-	var i int
-	fmt.Sscanf(os.Getenv(key), "%d", &i)
+	i, _ := strconv.Atoi(os.Getenv(key))
 	return i
 }
 

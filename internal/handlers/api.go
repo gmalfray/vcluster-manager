@@ -188,7 +188,9 @@ func (h *Handlers) DownloadKubeconfig(w http.ResponseWriter, r *http.Request) {
 	filename := fmt.Sprintf("kubeconfig-vcluster-%s-%s.yaml", name, env)
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-	w.Write(kubeconfig)
+	if _, err := w.Write(kubeconfig); err != nil {
+		slog.Warn("kubeconfig write failed", "vcluster", name, "env", env, "err", err)
+	}
 }
 
 // CreateAppManifestsRepo creates the app-manifests GitLab repo for a vcluster (admin only).
@@ -1003,7 +1005,7 @@ func (h *Handlers) VeleroBackupContent(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		defer gz.Close()
+		defer func() { _ = gz.Close() }()
 		reader = gz
 	}
 
@@ -1020,7 +1022,7 @@ func (h *Handlers) VeleroBackupContent(w http.ResponseWriter, r *http.Request) {
 	if len(body) > 1 && body[0] == 0x1f && body[1] == 0x8b {
 		gz, err := gzip.NewReader(bytes.NewReader(body))
 		if err == nil {
-			defer gz.Close()
+			defer func() { _ = gz.Close() }()
 			if decompressed, err := io.ReadAll(io.LimitReader(gz, 1<<20)); err == nil {
 				body = decompressed
 			}

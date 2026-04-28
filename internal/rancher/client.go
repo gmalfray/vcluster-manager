@@ -373,8 +373,12 @@ func (c *Client) WaitForClusterActive(clusterID string, timeout time.Duration) e
 		}
 
 		var cluster clusterResponse
-		json.NewDecoder(resp.Body).Decode(&cluster)
-		resp.Body.Close()
+		decodeErr := json.NewDecoder(resp.Body).Decode(&cluster)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
 
 		if cluster.State == "active" {
 			return nil

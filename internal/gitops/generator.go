@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -375,8 +376,8 @@ func UpdateKustomization(content, name string, add bool) string {
 func parseVeleroHour(hourStr string) (hour, minute int) {
 	parts := strings.Split(hourStr, ":")
 	if len(parts) == 2 {
-		fmt.Sscanf(parts[0], "%d", &hour)
-		fmt.Sscanf(parts[1], "%d", &minute)
+		hour, _ = strconv.Atoi(parts[0])
+		minute, _ = strconv.Atoi(parts[1])
 	}
 	return
 }

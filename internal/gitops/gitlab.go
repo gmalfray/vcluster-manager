@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -263,11 +264,16 @@ func (g *GitLabClient) Commit(ctx context.Context, branch, message string, actio
 func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 	repoName := "app-manifests-" + name
 
+	groupID, err := strconv.Atoi(g.argocdGroupID)
+	if err != nil {
+		return 0, fmt.Errorf("invalid argocd group ID %q: %w", g.argocdGroupID, err)
+	}
+
 	// Try to create
 	proj, _, err := g.client.Projects.CreateProject(&gitlab.CreateProjectOptions{
 		Name:                 gitlab.Ptr(repoName),
 		Path:                 gitlab.Ptr(repoName),
-		NamespaceID:          gitlab.Ptr(atoi(g.argocdGroupID)),
+		NamespaceID:          gitlab.Ptr(groupID),
 		DefaultBranch:        gitlab.Ptr("master"),
 		InitializeWithReadme: gitlab.Ptr(true),
 		Visibility:           gitlab.Ptr(gitlab.PrivateVisibility),
@@ -522,10 +528,4 @@ func (g *GitLabClient) ListOpenMergeRequests(targetBranch, sourcePrefix string) 
 func (g *GitLabClient) DeleteBranch(branch string) error {
 	_, err := g.client.Branches.DeleteBranch(g.projectID, branch)
 	return err
-}
-
-func atoi(s string) int {
-	var n int
-	fmt.Sscanf(s, "%d", &n)
-	return n
 }
