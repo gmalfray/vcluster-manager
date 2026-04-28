@@ -1,6 +1,7 @@
 package argocd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -33,8 +34,8 @@ type PendingMR struct {
 }
 
 // GetGlobalVersion reads the ArgoCD image tag from the base kustomization.
-func (u *Updater) GetGlobalVersion(branch string) (string, error) {
-	content, err := u.gitlab.GetFile(branch, u.kustomizationPath)
+func (u *Updater) GetGlobalVersion(ctx context.Context, branch string) (string, error) {
+	content, err := u.gitlab.GetFile(ctx, branch, u.kustomizationPath)
 	if err != nil {
 		return "", fmt.Errorf("reading kustomization.yaml: %w", err)
 	}
@@ -42,14 +43,14 @@ func (u *Updater) GetGlobalVersion(branch string) (string, error) {
 }
 
 // UpdateGlobalVersion updates the ArgoCD image tag on preprod and creates a MR to master.
-func (u *Updater) UpdateGlobalVersion(tag string) (string, error) {
-	actions, err := u.buildUpdateActions("preprod", tag)
+func (u *Updater) UpdateGlobalVersion(ctx context.Context, tag string) (string, error) {
+	actions, err := u.buildUpdateActions(ctx, "preprod", tag)
 	if err != nil {
 		return "", fmt.Errorf("building actions: %w", err)
 	}
 
 	commitMsg := fmt.Sprintf("feat: update ArgoCD to %s", tag)
-	if err := u.gitlab.Commit("preprod", commitMsg, actions); err != nil {
+	if err := u.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 
@@ -84,8 +85,8 @@ func (u *Updater) GetPendingMR() *PendingMR {
 	return nil
 }
 
-func (u *Updater) buildUpdateActions(branch, tag string) ([]gitops.CommitAction, error) {
-	content, err := u.gitlab.GetFile(branch, u.kustomizationPath)
+func (u *Updater) buildUpdateActions(ctx context.Context, branch, tag string) ([]gitops.CommitAction, error) {
+	content, err := u.gitlab.GetFile(ctx, branch, u.kustomizationPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading kustomization.yaml on %s: %w", branch, err)
 	}

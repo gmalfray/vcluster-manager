@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -60,7 +61,9 @@ type GitLabClient struct {
 }
 
 // withRetry retries fn up to 3 times on transient errors (network, 429, 5xx).
-func withRetry(op string, fn func() (*gitlab.Response, error)) error {
+// The ctx aborts the back-off sleep so a server shutdown does not block on
+// the longest delay (~17s cumulated).
+func withRetry(ctx context.Context, op string, fn func() (*gitlab.Response, error)) error {
 	delays := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
 	var lastErr error
 	for i, delay := range delays {
@@ -79,7 +82,11 @@ func withRetry(op string, fn func() (*gitlab.Response, error)) error {
 			slog.Warn("GitLab API transient error, retrying",
 				"op", op, "attempt", i+1, "max", 3, "delay", delay, "err", err)
 			metrics.GitLabAPIRetries.WithLabelValues(op).Inc()
-			time.Sleep(delay)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
 		}
 	}
 	metrics.GitLabAPIErrors.WithLabelValues(op).Inc()
@@ -137,7 +144,7 @@ func (g *GitLabClient) InvalidateCache() {
 }
 
 // ListFiles returns file paths under a given directory in the repo.
-func (g *GitLabClient) ListFiles(branch, path string) ([]string, error) {
+func (g *GitLabClient) ListFiles(ctx context.Context, branch, path string) ([]string, error) {
 	key := "list:" + branch + ":" + path
 	if v, ok := g.cacheGet(key); ok {
 		if v == "" {
@@ -156,9 +163,9 @@ func (g *GitLabClient) ListFiles(branch, path string) ([]string, error) {
 	for {
 		var nodes []*gitlab.TreeNode
 		var resp *gitlab.Response
-		if err := withRetry("list-files", func() (*gitlab.Response, error) {
+		if err := withRetry(ctx, "list-files", func() (*gitlab.Response, error) {
 			var e error
-			nodes, resp, e = g.client.Repositories.ListTree(g.projectID, opt)
+			nodes, resp, e = g.client.Repositories.ListTree(g.projectID, opt, gitlab.WithContext(ctx))
 			return resp, e
 		}); err != nil {
 			return nil, err
@@ -182,19 +189,19 @@ func (g *GitLabClient) ListFiles(branch, path string) ([]string, error) {
 }
 
 // GetFile reads a file from the repo.
-func (g *GitLabClient) GetFile(branch, path string) (string, error) {
+func (g *GitLabClient) GetFile(ctx context.Context, branch, path string) (string, error) {
 	key := "get:" + branch + ":" + path
 	if v, ok := g.cacheGet(key); ok {
 		return v, nil
 	}
 
 	var f *gitlab.File
-	if err := withRetry("get-file", func() (*gitlab.Response, error) {
+	if err := withRetry(ctx, "get-file", func() (*gitlab.Response, error) {
 		var resp *gitlab.Response
 		var e error
 		f, resp, e = g.client.RepositoryFiles.GetFile(g.projectID, path, &gitlab.GetFileOptions{
 			Ref: gitlab.Ptr(branch),
-		})
+		}, gitlab.WithContext(ctx))
 		return resp, e
 	}); err != nil {
 		return "", err
@@ -216,7 +223,7 @@ type CommitAction struct {
 }
 
 // Commit creates a commit with multiple file actions.
-func (g *GitLabClient) Commit(branch, message string, actions []CommitAction) error {
+func (g *GitLabClient) Commit(ctx context.Context, branch, message string, actions []CommitAction) error {
 	var gitlabActions []*gitlab.CommitActionOptions
 	for _, a := range actions {
 		actionValue := gitlab.FileActionValue(a.Action)
@@ -230,12 +237,12 @@ func (g *GitLabClient) Commit(branch, message string, actions []CommitAction) er
 		gitlabActions = append(gitlabActions, opt)
 	}
 
-	err := withRetry("commit", func() (*gitlab.Response, error) {
+	err := withRetry(ctx, "commit", func() (*gitlab.Response, error) {
 		_, resp, e := g.client.Commits.CreateCommit(g.projectID, &gitlab.CreateCommitOptions{
 			Branch:        gitlab.Ptr(branch),
 			CommitMessage: gitlab.Ptr(message),
 			Actions:       gitlabActions,
-		})
+		}, gitlab.WithContext(ctx))
 		return resp, e
 	})
 	if err == nil {

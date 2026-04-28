@@ -18,12 +18,13 @@ var nameRegex = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // ListVClusters shows the vcluster list page.
 func (h *Handlers) ListVClusters(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		env = "preprod"
 	}
 
-	vclusters, err := h.parser.ListVClusters(env)
+	vclusters, err := h.parser.ListVClusters(ctx, env)
 	if err != nil {
 		http.Error(w, "Error listing vclusters: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -56,7 +57,7 @@ func (h *Handlers) ListVClusters(w http.ResponseWriter, r *http.Request) {
 		if env == "prod" {
 			branch = "master"
 		}
-		if k8s, err := h.helmUpdater.GetDefaultK8sVersion(branch); err == nil {
+		if k8s, err := h.helmUpdater.GetDefaultK8sVersion(ctx, branch); err == nil {
 			data["DefaultK8sVersion"] = k8s
 		}
 	}
@@ -64,7 +65,7 @@ func (h *Handlers) ListVClusters(w http.ResponseWriter, r *http.Request) {
 	// For prod, check which vclusters are actually deployed on master
 	if env == "prod" {
 		masterNames := map[string]bool{}
-		for _, name := range h.parser.ListVClusterNamesOnBranch("master", "prod") {
+		for _, name := range h.parser.ListVClusterNamesOnBranch(ctx, "master", "prod") {
 			masterNames[name] = true
 		}
 		pendingNames := map[string]bool{}
@@ -89,7 +90,7 @@ func (h *Handlers) CreateForm(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
 	}
-	usedSlots := h.parser.UsedVeleroSlots("preprod")
+	usedSlots := h.parser.UsedVeleroSlots(r.Context(), "preprod")
 	h.render(w, "vcluster_create.html", map[string]interface{}{
 		"UsedSlots": usedSlots,
 		"User":      h.getUser(r),
@@ -105,6 +106,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}
+	ctx := r.Context()
 
 	req := &models.CreateRequest{
 		Name:          r.FormValue("name"),
@@ -132,12 +134,12 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if scope == "prod" {
-		if h.parser.Exists("prod", req.Name) {
+		if h.parser.Exists(ctx, "prod", req.Name) {
 			h.renderToast(w, "error", fmt.Sprintf("Le vcluster '%s' existe deja en prod", req.Name))
 			return
 		}
 	} else {
-		if h.parser.Exists("preprod", req.Name) {
+		if h.parser.Exists(ctx, "preprod", req.Name) {
 			h.renderToast(w, "error", fmt.Sprintf("Le vcluster '%s' existe deja", req.Name))
 			return
 		}
@@ -156,13 +158,13 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 				Content: f.Content,
 			})
 		}
-		kustAction, err := h.kustomizationAction("preprod", "preprod", req.Name, true)
+		kustAction, err := h.kustomizationAction(ctx, "preprod", "preprod", req.Name, true)
 		if err != nil {
 			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
 		} else {
 			preprodActions = append(preprodActions, kustAction)
 		}
-		if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: add vcluster %s", req.Name), preprodActions); err != nil {
+		if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: add vcluster %s", req.Name), preprodActions); err != nil {
 			slog.Error("GitLab commit failed", "vcluster", req.Name, "err", err)
 			h.renderToast(w, "error", "Erreur lors du commit GitLab : "+err.Error())
 			return
@@ -179,7 +181,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 				Content: f.Content,
 			})
 		}
-		kustAction, err := h.kustomizationAction("prod", "preprod", req.Name, true)
+		kustAction, err := h.kustomizationAction(ctx, "prod", "preprod", req.Name, true)
 		if err != nil {
 			slog.Warn("could not read prod kustomization.yaml", "err", err)
 		} else {
@@ -189,6 +191,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		if scope == "prod" {
 			// Prod-only: create a MR so the change goes through review before reaching master
 			mrURL, err := h.commitProdMRActions(
+				ctx,
 				fmt.Sprintf("feat: add vcluster %s (prod)", req.Name),
 				fmt.Sprintf("Ajout du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", req.Name),
 				prodActions,
@@ -202,6 +205,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// Both: commit prod files on preprod branch then create/get the MR preprod→master
 			mrURL, err := h.commitProdMRActions(
+				ctx,
 				fmt.Sprintf("feat: add vcluster %s (prod)", req.Name),
 				fmt.Sprintf("Ajout du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", req.Name),
 				prodActions,
@@ -309,13 +313,14 @@ func (h *Handlers) setupVaultAuthWhenReady(name, env string) {
 
 // Detail shows a single vcluster's details.
 func (h *Handlers) Detail(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	name := r.PathValue("name")
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		env = "preprod"
 	}
 
-	vc, err := h.parser.ParseVCluster(env, name)
+	vc, err := h.parser.ParseVCluster(ctx, env, name)
 	if err != nil {
 		http.Error(w, "VCluster not found: "+err.Error(), http.StatusNotFound)
 		return
@@ -341,7 +346,7 @@ func (h *Handlers) Detail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if this is a pending prod vcluster (not yet on master)
-	isPending := env == "prod" && h.isPendingProd(name)
+	isPending := env == "prod" && h.isPendingProd(ctx, name)
 	// Deployed prod vclusters are read-only (modifications go through preprod editing)
 	prodDeployed := env == "prod" && !isPending
 
@@ -404,6 +409,7 @@ func (h *Handlers) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
 	}
+	ctx := r.Context()
 	name := r.PathValue("name")
 	env := r.URL.Query().Get("env")
 	if env == "" {
@@ -411,7 +417,7 @@ func (h *Handlers) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get vcluster details for the targeted env
-	vc, _ := h.parser.ParseVCluster(env, name)
+	vc, _ := h.parser.ParseVCluster(ctx, env, name)
 
 	// Check if a counterpart exists in the other env
 	var counterpartPath string
@@ -420,7 +426,7 @@ func (h *Handlers) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
 	} else {
 		counterpartPath = fmt.Sprintf("%s/prod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
 	}
-	counterpartFiles, _ := h.gitlab.ListFiles("preprod", counterpartPath)
+	counterpartFiles, _ := h.gitlab.ListFiles(ctx, "preprod", counterpartPath)
 	hasCounterpart := len(counterpartFiles) > 0
 
 	// Check if namespace-protection is active (warn the user it will be auto-disabled)
@@ -504,7 +510,9 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	audit.Log(r, "delete", name, env)
-	h.performDeletion(name, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
+	// performDeletion goes through GitOps and must complete even if the user closes the
+	// tab; detach from r.Context() and use a fresh background context for the chain.
+	h.performDeletion(context.Background(), name, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
 	var msg string
 	if deletePreprod && deleteProd {
 		msg = fmt.Sprintf("vcluster %s supprimé", name)
@@ -531,7 +539,7 @@ func (h *Handlers) runCleanupAndDelete(name, env string, k8s interface {
 		}
 	}
 	h.cfg.RemoveCleaning(name, env)
-	h.performDeletion(name, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
+	h.performDeletion(ctx, name, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
 }
 
 // startCleaningReconciler runs at startup: for every active cleaning entry in cleaning.json,
@@ -552,7 +560,7 @@ func (h *Handlers) startCleaningReconciler() {
 
 // performDeletion executes the GitOps deletion steps (K8s cleanup, GitLab commits, Keycloak, Vault).
 // It is called either inline (when not Rancher-paired) or from a goroutine after Rancher cleanup.
-func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak bool) {
+func (h *Handlers) performDeletion(ctx context.Context, name string, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak bool) {
 	// Cleanup K8s finalizers + disable namespace-protection before GitOps deletion
 	for _, e := range []string{"preprod", "prod"} {
 		if (e == "preprod" && !deletePreprod) || (e == "prod" && !deleteProd) {
@@ -560,14 +568,14 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 		}
 		if k8s := h.k8sForEnv(e); k8s != nil {
 			// Disable namespace-protection so FluxCD can delete the namespace cleanly
-			if k8s.GetNamespaceProtection(context.Background(), name) {
-				if err := k8s.SetNamespaceProtection(context.Background(), name, false); err != nil {
+			if k8s.GetNamespaceProtection(ctx, name) {
+				if err := k8s.SetNamespaceProtection(ctx, name, false); err != nil {
 					slog.Warn("disabling namespace-protection failed", "vcluster", name, "env", e, "err", err)
 				} else {
 					slog.Info("delete: namespace-protection disabled", "vcluster", name, "env", e)
 				}
 			}
-			if err := k8s.CleanupNamespace(context.Background(), name); err != nil {
+			if err := k8s.CleanupNamespace(ctx, name); err != nil {
 				slog.Warn("K8s cleanup failed", "vcluster", name, "env", e, "err", err)
 			}
 		}
@@ -576,7 +584,7 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 	// 1. Delete preprod files + update kustomization.yaml on preprod branch
 	if deletePreprod {
 		preprodPath := fmt.Sprintf("%s/preprod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
-		preprodFiles, err := h.gitlab.ListFiles("preprod", preprodPath)
+		preprodFiles, err := h.gitlab.ListFiles(ctx, "preprod", preprodPath)
 		if err != nil {
 			slog.Error("error listing preprod files", "vcluster", name, "err", err)
 		}
@@ -587,14 +595,14 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 				Path:   f,
 			})
 		}
-		kustAction, err := h.kustomizationAction("preprod", "preprod", name, false)
+		kustAction, err := h.kustomizationAction(ctx, "preprod", "preprod", name, false)
 		if err != nil {
 			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
 		} else {
 			preprodActions = append(preprodActions, kustAction)
 		}
 		if len(preprodActions) > 0 {
-			if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: remove vcluster %s", name), preprodActions); err != nil {
+			if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: remove vcluster %s", name), preprodActions); err != nil {
 				slog.Error("error committing preprod deletion", "vcluster", name, "err", err)
 				return
 			}
@@ -606,12 +614,12 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 	// 2. Handle prod deletion
 	if deleteProd {
 		prodPath := fmt.Sprintf("%s/prod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
-		prodFiles, err := h.gitlab.ListFiles("preprod", prodPath)
+		prodFiles, err := h.gitlab.ListFiles(ctx, "preprod", prodPath)
 		if err != nil {
 			slog.Error("error listing prod files", "vcluster", name, "err", err)
 		}
 		if len(prodFiles) > 0 {
-			isPending := h.isPendingProd(name)
+			isPending := h.isPendingProd(ctx, name)
 			var prodActions []gitops.CommitAction
 			for _, f := range prodFiles {
 				prodActions = append(prodActions, gitops.CommitAction{
@@ -619,7 +627,7 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 					Path:   f,
 				})
 			}
-			kustAction, err := h.kustomizationAction("prod", "preprod", name, false)
+			kustAction, err := h.kustomizationAction(ctx, "prod", "preprod", name, false)
 			if err != nil {
 				slog.Warn("could not update prod kustomization.yaml", "err", err)
 			} else {
@@ -628,13 +636,14 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 
 			if isPending {
 				// Pending prod: delete directly on preprod branch (no MR, no HelmRelease to wait for)
-				if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: remove vcluster %s (prod)", name), prodActions); err != nil {
+				if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: remove vcluster %s (prod)", name), prodActions); err != nil {
 					slog.Error("error deleting pending prod files", "vcluster", name, "err", err)
 				}
 				// No AddDeleting: no K8s HelmRelease exists for pending vclusters
 			} else {
 				// Deployed prod: create MR for deletion
 				mrURL, err := h.commitProdMRActions(
+					ctx,
 					fmt.Sprintf("feat: remove vcluster %s", name),
 					fmt.Sprintf("Suppression du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", name),
 					prodActions,
@@ -679,9 +688,9 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 
 // commitProdMRActions commits prod file changes to the preprod branch (source of truth),
 // then gets or creates a single MR preprod→master to promote all pending prod changes.
-func (h *Handlers) commitProdMRActions(commitMsg, mrDescription string, actions []gitops.CommitAction) (string, error) {
+func (h *Handlers) commitProdMRActions(ctx context.Context, commitMsg, mrDescription string, actions []gitops.CommitAction) (string, error) {
 	// 1. Commit to preprod (source of truth for both envs)
-	if err := h.gitlab.Commit("preprod", commitMsg, actions); err != nil {
+	if err := h.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 
@@ -706,9 +715,9 @@ func (h *Handlers) commitProdMRActions(commitMsg, mrDescription string, actions 
 }
 
 // kustomizationAction reads the cluster kustomization.yaml and returns a CommitAction to add/remove a vcluster entry.
-func (h *Handlers) kustomizationAction(env, branch, name string, add bool) (gitops.CommitAction, error) {
+func (h *Handlers) kustomizationAction(ctx context.Context, env, branch, name string, add bool) (gitops.CommitAction, error) {
 	kustPath := fmt.Sprintf("%s/%s/kustomization.yaml", h.cfg.FluxprodClustersPath, env)
-	content, err := h.gitlab.GetFile(branch, kustPath)
+	content, err := h.gitlab.GetFile(ctx, branch, kustPath)
 	if err != nil {
 		return gitops.CommitAction{}, fmt.Errorf("reading %s: %w", kustPath, err)
 	}
@@ -721,8 +730,8 @@ func (h *Handlers) kustomizationAction(env, branch, name string, add bool) (gito
 }
 
 // isPendingProd returns true if a prod vcluster exists on preprod but not yet on master.
-func (h *Handlers) isPendingProd(name string) bool {
-	for _, n := range h.parser.ListVClusterNamesOnBranch("master", "prod") {
+func (h *Handlers) isPendingProd(ctx context.Context, name string) bool {
+	for _, n := range h.parser.ListVClusterNamesOnBranch(ctx, "master", "prod") {
 		if n == name {
 			return false
 		}
