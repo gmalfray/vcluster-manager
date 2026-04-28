@@ -248,7 +248,20 @@ func run() error {
 	}
 
 	// Handlers
-	h := handlers.New(cfg, parser, gl, kc, k8sClients, rancherClient, ghReleases, helmUpdater, argoUpdater, vaultClient, webhookNotifier, templateDir)
+	h := handlers.New(handlers.Deps{
+		Config:         cfg,
+		Parser:         parser,
+		GitLab:         gl,
+		Keycloak:       kc,
+		K8sClients:     k8sClients,
+		Rancher:        rancherClient,
+		GitHubReleases: ghReleases,
+		HelmUpdater:    helmUpdater,
+		ArgoCDUpdater:  argoUpdater,
+		Vault:          vaultClient,
+		Notifier:       webhookNotifier,
+		TemplateDir:    templateDir,
+	})
 
 	// Auth setup
 	var authMiddleware func(http.Handler) http.Handler
