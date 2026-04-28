@@ -34,6 +34,28 @@ Toutes les modifications notables sont documentées ici. Le format suit
   `errors.Join`, retournées à côté du `projectID` (best-effort : le repo
   reste récupérable manuellement).
 
+### Lint
+- **`make check` propre** : 0 warning. Les 15 issues résiduelles
+  (copyloopvar, gocritic, staticcheck SA9003, unused, misspell) sont
+  traitées :
+  - `cmd/server/main.go` refactorisé en `main()` + `run() error` : les
+    quatre `os.Exit(1)` qui shuntaient `defer stop()` (et plus loin
+    `tunnels.Close()`, `gl.Close()`, `helmGL.Close()`) deviennent des
+    `return fmt.Errorf(...)`, donc tous les defer s'exécutent avant
+    sortie.
+  - Suppression des copies de variable de boucle (`env := env`,
+    `entry := entry`) inutiles depuis Go 1.22.
+  - `else { if … }` → `else if`, `host = host + ":22"` → `host += ":22"`.
+  - `if err := …; err != nil { /* comment-only */ }` → `_ = …` avec
+    commentaire explicatif (best-effort documenté au call site).
+  - Suppression du type mort `valuesFile` dans `gitops/parser.go` (le
+    parser utilise `map[string]interface{}`) et des méthodes Rancher
+    inutilisées (`getManifestURL`, `getManifestURLFromEndpoint` +
+    `registrationTokenListResponse`).
+  - `.golangci.yml` : whitelist de mots français (`manifestes`,
+    `exemple`, `correspondant`) pour `misspell` ; nettoyage des
+    `disabled-checks` gocritic redondants.
+
 ### Errcheck cleanup
 - 21 retours d'erreur ignorés signalés par `errcheck` traités à la
   source : `tmpl.Execute`, `json.Unmarshal/Decode`, `w.Write`,
