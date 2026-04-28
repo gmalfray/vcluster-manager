@@ -34,6 +34,21 @@ Toutes les modifications notables sont documentées ici. Le format suit
   `errors.Join`, retournées à côté du `projectID` (best-effort : le repo
   reste récupérable manuellement).
 
+### Errcheck cleanup
+- 21 retours d'erreur ignorés signalés par `errcheck` traités à la
+  source : `tmpl.Execute`, `json.Unmarshal/Decode`, `w.Write`,
+  `buf.WriteTo`, `gz.Close`, et les `Close()` des connexions tunnel SSH.
+  Les erreurs récupérables remontent (auth OIDC retourne `authenticated:
+  false` si le payload JWT est mal formé ; le polling Rancher continue
+  son retry au lieu d'utiliser un cluster vide). Les chemins de cleanup
+  où l'erreur n'est pas actionnable utilisent `_ = closer.Close()`
+  pour expliciter l'intention.
+- **`atoi` maison → `strconv.Atoi`** dans `internal/gitops/gitlab.go`,
+  `internal/gitops/generator.go`, `internal/github/releases.go` et
+  `internal/config/config.go`. La conversion du `argocdGroupID` propage
+  désormais une erreur si la valeur n'est pas numérique au lieu d'utiliser
+  silencieusement `0`.
+
 ### Caching
 - **Cache GitLab maison → `samber/hot`** : `internal/gitops/gitlab.go`
   remplace son `map+sync.RWMutex+TTL 30s` non borné par
