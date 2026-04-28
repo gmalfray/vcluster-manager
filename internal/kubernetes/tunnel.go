@@ -60,7 +60,7 @@ func NewSSHTunnel(sshTarget, sshKeyPath, remoteK8sAddr string) (*SSHTunnel, erro
 	// Listen on a random local port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		sshClient.Close()
+		_ = sshClient.Close()
 		return nil, fmt.Errorf("creating local listener: %w", err)
 	}
 
@@ -128,19 +128,19 @@ func (t *SSHTunnel) handleConn(localConn net.Conn) {
 	remoteConn, err := t.sshClient.Dial("tcp", t.remoteAddr)
 	if err != nil {
 		slog.Error("SSH tunnel dial failed", "remote", t.remoteAddr, "err", err)
-		localConn.Close()
+		_ = localConn.Close()
 		return
 	}
 
 	go func() {
-		defer localConn.Close()
-		defer remoteConn.Close()
-		io.Copy(localConn, remoteConn) //nolint:errcheck
+		defer func() { _ = localConn.Close() }()
+		defer func() { _ = remoteConn.Close() }()
+		_, _ = io.Copy(localConn, remoteConn)
 	}()
 	go func() {
-		defer localConn.Close()
-		defer remoteConn.Close()
-		io.Copy(remoteConn, localConn) //nolint:errcheck
+		defer func() { _ = localConn.Close() }()
+		defer func() { _ = remoteConn.Close() }()
+		_, _ = io.Copy(remoteConn, localConn)
 	}()
 }
 

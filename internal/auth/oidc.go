@@ -211,7 +211,9 @@ func UserFromRequest(r *http.Request) map[string]interface{} {
 		return map[string]interface{}{"authenticated": false}
 	}
 	var claims map[string]interface{}
-	json.Unmarshal(payload, &claims)
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return map[string]interface{}{"authenticated": false}
+	}
 	claims["authenticated"] = true
 	return claims
 }

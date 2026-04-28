@@ -343,7 +343,9 @@ func (h *Handlers) render(w http.ResponseWriter, name string, data interface{}) 
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	buf.WriteTo(w)
+	if _, err := buf.WriteTo(w); err != nil {
+		slog.Warn("template write failed", "name", name, "err", err)
+	}
 }
 
 func (h *Handlers) renderPartial(w http.ResponseWriter, name string, data interface{}) {
@@ -354,7 +356,9 @@ func (h *Handlers) renderPartial(w http.ResponseWriter, name string, data interf
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	buf.WriteTo(w)
+	if _, err := buf.WriteTo(w); err != nil {
+		slog.Warn("partial template write failed", "name", name, "err", err)
+	}
 }
 
 func (h *Handlers) getUser(r *http.Request) map[string]interface{} {

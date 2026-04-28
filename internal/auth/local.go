@@ -41,7 +41,9 @@ func (a *LocalAuth) LoginPageHandler() http.HandlerFunc {
 			"OIDCEnabled": a.oidcEnabled,
 			"Error":       r.URL.Query().Get("error"),
 		}
-		tmpl.Execute(w, data)
+		if err := tmpl.Execute(w, data); err != nil {
+			slog.Warn("login template execute failed", "err", err)
+		}
 	}
 }
 
