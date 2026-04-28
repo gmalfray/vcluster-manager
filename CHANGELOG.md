@@ -49,6 +49,16 @@ Toutes les modifications notables sont documentées ici. Le format suit
   structuré) sont migrés avec des fields enrichis (`"err"`, `"env"`,
   `"vcluster"`, `"action"`, etc.). L'enrichissement progressif des autres
   fichiers est listé dans `TODO.md`.
+- **Phase 2 de la migration `log` → `slog`** : conversion des ~140 call
+  sites restants dans `internal/auth/`, `internal/config/`,
+  `internal/gitops/`, `internal/handlers/`, `internal/kubernetes/`,
+  `internal/rancher/`, `internal/vault/`. Chaque appel utilise désormais
+  des attributs key/value structurés (`"vcluster"`, `"env"`, `"err"`,
+  `"branch"`, `"cluster_id"`, …) plutôt que du formatage `%s/%v`, ce qui
+  rend la sortie JSON exploitable par un agrégateur (Loki, ELK). Les
+  messages bruyants (port-forward, manifests appliqués, polling Rancher)
+  passent au niveau `Debug`. `cmd/server/main.go` conserve l'import
+  `"log"` pour le bridge `slog.SetLogLoggerLevel`.
 
 ## [1.2.0] — Initial public release
 
