@@ -3,7 +3,7 @@ package handlers
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -102,7 +102,7 @@ func (h *Handlers) UpdateClusterConfig(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			log.Printf("K8s client init for %s: %v (config saved, will retry on restart)", env, err)
+			slog.Warn("K8s client init failed (config saved, will retry on restart)", "env", env, "err", err)
 			w.Header().Set("HX-Refresh", "true")
 			h.renderToast(w, "warning", fmt.Sprintf("Configuration %s sauvegardee. Connexion echouee : %v", env, err))
 			return

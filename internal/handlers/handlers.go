@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -163,7 +163,7 @@ func (h *Handlers) startVaultReconciler() {
 	for _, env := range []string{"preprod", "prod"} {
 		vclusters, err := h.parser.ListVClusters(env)
 		if err != nil {
-			log.Printf("[vault] startup: could not list vclusters for %s: %v", env, err)
+			slog.Warn("vault startup: could not list vclusters", "env", env, "err", err)
 			continue
 		}
 
@@ -177,16 +177,16 @@ func (h *Handlers) startVaultReconciler() {
 			cancel()
 
 			if err != nil {
-				log.Printf("[vault] startup: checking backend for %s/%s: %v — will retry", env, name, err)
+				slog.Warn("vault startup: checking backend failed, will retry", "env", env, "vcluster", name, "err", err)
 				go h.setupVaultAuthWhenReady(name, env)
 				continue
 			}
 
 			if exists {
 				h.setVaultState(env, name, "done", "")
-				log.Printf("[vault] startup: %s/%s already configured", env, name)
+				slog.Info("vault startup: already configured", "env", env, "vcluster", name)
 			} else {
-				log.Printf("[vault] startup: %s/%s backend missing, launching setup", env, name)
+				slog.Info("vault startup: backend missing, launching setup", "env", env, "vcluster", name)
 				go h.setupVaultAuthWhenReady(name, env)
 			}
 		}
@@ -332,13 +332,13 @@ func (h *Handlers) render(w http.ResponseWriter, name string, data interface{}) 
 	}
 	tmpl, ok := h.pages[name]
 	if !ok {
-		log.Printf("Template %s not found", name)
+		slog.Error("template not found", "name", name)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "layout", data); err != nil {
-		log.Printf("Template error (%s): %v", name, err)
+		slog.Error("template execute failed", "name", name, "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -349,7 +349,7 @@ func (h *Handlers) render(w http.ResponseWriter, name string, data interface{}) 
 func (h *Handlers) renderPartial(w http.ResponseWriter, name string, data interface{}) {
 	var buf bytes.Buffer
 	if err := h.partials.ExecuteTemplate(&buf, name, data); err != nil {
-		log.Printf("Partial template error (%s): %v", name, err)
+		slog.Error("partial template execute failed", "name", name, "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -394,7 +394,7 @@ func (h *Handlers) sendNotification(text string) {
 		return
 	}
 	if err := h.notifier.Send(text); err != nil {
-		log.Printf("Webhook notification error: %v", err)
+		slog.Warn("webhook notification failed", "err", err)
 	}
 }
 
@@ -470,7 +470,7 @@ func (h *Handlers) UpdateVeleroConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(actions) > 0 {
 			if err := h.gitlab.Commit("preprod", "chore: update Velero BSL configuration", actions); err != nil {
-				log.Printf("UpdateVeleroConfig: commit error: %v", err)
+				slog.Error("UpdateVeleroConfig: commit failed", "err", err)
 				h.renderToast(w, "error", fmt.Sprintf("Settings sauvegardés mais erreur commit fluxprod : %v", err))
 				return
 			}

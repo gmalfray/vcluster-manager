@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -158,12 +158,12 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		kustAction, err := h.kustomizationAction("preprod", "preprod", req.Name, true)
 		if err != nil {
-			log.Printf("Warning: could not update kustomization.yaml: %v", err)
+			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
 		} else {
 			preprodActions = append(preprodActions, kustAction)
 		}
 		if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: add vcluster %s", req.Name), preprodActions); err != nil {
-			log.Printf("GitLab commit error: %v", err)
+			slog.Error("GitLab commit failed", "vcluster", req.Name, "err", err)
 			h.renderToast(w, "error", "Erreur lors du commit GitLab : "+err.Error())
 			return
 		}
@@ -181,7 +181,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		kustAction, err := h.kustomizationAction("prod", "preprod", req.Name, true)
 		if err != nil {
-			log.Printf("Warning: could not read prod kustomization.yaml: %v", err)
+			slog.Warn("could not read prod kustomization.yaml", "err", err)
 		} else {
 			prodActions = append(prodActions, kustAction)
 		}
@@ -194,10 +194,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 				prodActions,
 			)
 			if err != nil {
-				log.Printf("MR creation error for prod-only vcluster: %v", err)
+				slog.Error("MR creation failed for prod-only vcluster", "vcluster", req.Name, "err", err)
 				warnings = append(warnings, "Erreur création MR prod : "+err.Error())
 			} else {
-				log.Printf("MR created for prod-only vcluster %s: %s", req.Name, mrURL)
+				slog.Info("MR created for prod-only vcluster", "vcluster", req.Name, "url", mrURL)
 			}
 		} else {
 			// Both: commit prod files on preprod branch then create/get the MR preprod→master
@@ -207,10 +207,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 				prodActions,
 			)
 			if err != nil {
-				log.Printf("MR creation error for vcluster %s: %v", req.Name, err)
+				slog.Error("MR creation failed for vcluster", "vcluster", req.Name, "err", err)
 				warnings = append(warnings, "Erreur création MR prod : "+err.Error())
 			} else {
-				log.Printf("MR created/found for vcluster %s: %s", req.Name, mrURL)
+				slog.Info("MR created/found for vcluster", "vcluster", req.Name, "url", mrURL)
 			}
 		}
 	}
@@ -218,7 +218,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	// 3. Create GitLab repo for ArgoCD
 	if req.ArgoCD {
 		if _, err := h.gitlab.CreateAppManifestsRepo(req.Name); err != nil {
-			log.Printf("GitLab repo creation error: %v", err)
+			slog.Error("GitLab repo creation failed", "vcluster", req.Name, "err", err)
 			warnings = append(warnings, "Erreur repo GitLab : "+err.Error())
 		}
 	}
@@ -227,13 +227,13 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	if req.ArgoCD {
 		if h.keycloak != nil {
 			if err := h.keycloak.CreateArgoCDClients(req.Name, scope); err != nil {
-				log.Printf("Keycloak client creation error: %v", err)
+				slog.Error("Keycloak client creation failed", "vcluster", req.Name, "err", err)
 				warnings = append(warnings, "Erreur Keycloak : "+err.Error())
 			} else {
-				log.Printf("Keycloak OIDC clients created for %s", req.Name)
+				slog.Info("Keycloak OIDC clients created", "vcluster", req.Name)
 			}
 		} else {
-			log.Printf("Warning: Keycloak not configured, skipping OIDC client creation for %s", req.Name)
+			slog.Warn("Keycloak not configured, skipping OIDC client creation", "vcluster", req.Name)
 			warnings = append(warnings, "Keycloak non configure : le client OIDC d'ArgoCD ne sera pas cree")
 		}
 	}
@@ -271,40 +271,40 @@ func (h *Handlers) setupVaultAuthWhenReady(name, env string) {
 
 	k8s := h.k8sForEnv(env)
 	if k8s == nil {
-		log.Printf("[vault] %s/%s: no k8s client configured, skipping Vault setup", env, name)
+		slog.Warn("vault: no k8s client configured, skipping Vault setup", "env", env, "vcluster", name)
 		return
 	}
 
 	h.setVaultState(env, name, "waiting", "")
-	log.Printf("[vault] %s/%s: waiting for vault-webhook Kustomization to be Ready...", env, name)
+	slog.Info("vault: waiting for vault-webhook Kustomization to be Ready", "env", env, "vcluster", name)
 	if err := k8s.WaitForVaultWebhookReady(ctx, name); err != nil {
-		log.Printf("[vault] %s/%s: vault-webhook not ready: %v", env, name, err)
+		slog.Error("vault: vault-webhook not ready", "env", env, "vcluster", name, "err", err)
 		h.setVaultState(env, name, "error", err.Error())
 		return
 	}
 
 	h.setVaultState(env, name, "configuring", "")
-	log.Printf("[vault] %s/%s: generating reviewer token...", env, name)
+	slog.Info("vault: generating reviewer token", "env", env, "vcluster", name)
 	token, caCert, err := k8s.CreateVaultReviewerToken(ctx, name, 876000*time.Hour)
 	if err != nil {
-		log.Printf("[vault] %s/%s: token generation error: %v", env, name, err)
+		slog.Error("vault: token generation failed", "env", env, "vcluster", name, "err", err)
 		h.setVaultState(env, name, "error", err.Error())
 		return
 	}
 
-	log.Printf("[vault] %s/%s: configuring Vault backend...", env, name)
+	slog.Info("vault: configuring Vault backend", "env", env, "vcluster", name)
 	domain := h.cfg.BaseDomainProd
 	if env == "preprod" {
 		domain = h.cfg.BaseDomainPreprod
 	}
 	apiHost := "https://" + name + ".api." + domain
 	if err := h.vault.SetupVClusterAuth(ctx, name, env, apiHost, caCert, token); err != nil {
-		log.Printf("[vault] %s/%s: Vault setup error: %v", env, name, err)
+		slog.Error("vault: setup failed", "env", env, "vcluster", name, "err", err)
 		h.setVaultState(env, name, "error", err.Error())
 		return
 	}
 	h.setVaultState(env, name, "done", "")
-	log.Printf("[vault] %s/%s: Vault backend configured successfully", env, name)
+	slog.Info("vault: backend configured successfully", "env", env, "vcluster", name)
 }
 
 // Detail shows a single vcluster's details.
@@ -375,7 +375,7 @@ func (h *Handlers) Detail(w http.ResponseWriter, r *http.Request) {
 	if h.rancher != nil && h.cfg.RancherEnabledForEnv(env) && !isPending {
 		info, found, err := h.rancher.FindClusterByName(name)
 		if err != nil {
-			log.Printf("Warning: Rancher lookup for %s: %v", name, err)
+			slog.Warn("Rancher lookup failed", "vcluster", name, "err", err)
 		}
 		data["RancherPaired"] = found && info.State == "active"
 	}
@@ -495,7 +495,7 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 				h.renderToast(w, "error", fmt.Sprintf("Erreur dépairage Rancher : %v", err))
 				return
 			}
-			log.Printf("[delete] Rancher cluster %s (ID %s) deleted, launching cleanup then deletion", name, info.ID)
+			slog.Info("delete: Rancher cluster deleted, launching cleanup then deletion", "vcluster", name, "rancher_id", info.ID)
 			h.cfg.AddCleaning(name, e, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
 			go h.runCleanupAndDelete(name, e, k8s, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
 			h.redirectWithFlash(w, "/", "info", fmt.Sprintf("Dépairage Rancher en cours — la suppression de %s sera lancée automatiquement", name))
@@ -525,9 +525,9 @@ func (h *Handlers) runCleanupAndDelete(name, env string, k8s interface {
 	ctx := context.Background()
 	if k8s != nil {
 		if err := k8s.ApplyManifestToVClusterViaPortForward(ctx, name, []byte(rancherCleanupManifest)); err != nil {
-			log.Printf("[delete] Warning: rancher-cleanup deploy failed for %s: %v", name, err)
+			slog.Warn("delete: rancher-cleanup deploy failed", "vcluster", name, "err", err)
 		} else if err := k8s.WaitForJobComplete(ctx, name, "rancher-cleanup", "kube-system", 10*time.Minute); err != nil {
-			log.Printf("[delete] Warning: rancher-cleanup job for %s: %v", name, err)
+			slog.Warn("delete: rancher-cleanup job did not complete", "vcluster", name, "err", err)
 		}
 	}
 	h.cfg.RemoveCleaning(name, env)
@@ -543,7 +543,7 @@ func (h *Handlers) startCleaningReconciler() {
 	}
 	for _, entry := range entries {
 		entry := entry
-		log.Printf("[cleaning] startup: resuming cleanup+deletion for %s (%s)", entry.Name, entry.Env)
+		slog.Info("cleaning startup: resuming cleanup+deletion", "vcluster", entry.Name, "env", entry.Env)
 		k8s := h.k8sForEnv(entry.Env)
 		go h.runCleanupAndDelete(entry.Name, entry.Env, k8s,
 			entry.DeletePreprod, entry.DeleteProd, entry.DeleteGitlab, entry.DeleteKeycloak)
@@ -562,13 +562,13 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 			// Disable namespace-protection so FluxCD can delete the namespace cleanly
 			if k8s.GetNamespaceProtection(context.Background(), name) {
 				if err := k8s.SetNamespaceProtection(context.Background(), name, false); err != nil {
-					log.Printf("Warning: disabling namespace-protection for %s on %s: %v", name, e, err)
+					slog.Warn("disabling namespace-protection failed", "vcluster", name, "env", e, "err", err)
 				} else {
-					log.Printf("[delete] namespace-protection disabled for %s/%s", e, name)
+					slog.Info("delete: namespace-protection disabled", "vcluster", name, "env", e)
 				}
 			}
 			if err := k8s.CleanupNamespace(context.Background(), name); err != nil {
-				log.Printf("Warning: K8s cleanup for %s on %s: %v", name, e, err)
+				slog.Warn("K8s cleanup failed", "vcluster", name, "env", e, "err", err)
 			}
 		}
 	}
@@ -578,7 +578,7 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 		preprodPath := fmt.Sprintf("%s/preprod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
 		preprodFiles, err := h.gitlab.ListFiles("preprod", preprodPath)
 		if err != nil {
-			log.Printf("Error listing preprod files for %s: %v", name, err)
+			slog.Error("error listing preprod files", "vcluster", name, "err", err)
 		}
 		var preprodActions []gitops.CommitAction
 		for _, f := range preprodFiles {
@@ -589,13 +589,13 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 		}
 		kustAction, err := h.kustomizationAction("preprod", "preprod", name, false)
 		if err != nil {
-			log.Printf("Warning: could not update kustomization.yaml: %v", err)
+			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
 		} else {
 			preprodActions = append(preprodActions, kustAction)
 		}
 		if len(preprodActions) > 0 {
 			if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: remove vcluster %s", name), preprodActions); err != nil {
-				log.Printf("Error committing preprod deletion for %s: %v", name, err)
+				slog.Error("error committing preprod deletion", "vcluster", name, "err", err)
 				return
 			}
 			h.cfg.AddDeleting(name, "preprod", "")
@@ -608,7 +608,7 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 		prodPath := fmt.Sprintf("%s/prod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
 		prodFiles, err := h.gitlab.ListFiles("preprod", prodPath)
 		if err != nil {
-			log.Printf("Error listing prod files for %s: %v", name, err)
+			slog.Error("error listing prod files", "vcluster", name, "err", err)
 		}
 		if len(prodFiles) > 0 {
 			isPending := h.isPendingProd(name)
@@ -621,7 +621,7 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 			}
 			kustAction, err := h.kustomizationAction("prod", "preprod", name, false)
 			if err != nil {
-				log.Printf("Warning: could not update prod kustomization.yaml: %v", err)
+				slog.Warn("could not update prod kustomization.yaml", "err", err)
 			} else {
 				prodActions = append(prodActions, kustAction)
 			}
@@ -629,7 +629,7 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 			if isPending {
 				// Pending prod: delete directly on preprod branch (no MR, no HelmRelease to wait for)
 				if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: remove vcluster %s (prod)", name), prodActions); err != nil {
-					log.Printf("Error deleting pending prod files: %v", err)
+					slog.Error("error deleting pending prod files", "vcluster", name, "err", err)
 				}
 				// No AddDeleting: no K8s HelmRelease exists for pending vclusters
 			} else {
@@ -640,9 +640,9 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 					prodActions,
 				)
 				if err != nil {
-					log.Printf("Error creating MR for prod deletion: %v", err)
+					slog.Error("error creating MR for prod deletion", "vcluster", name, "err", err)
 				} else {
-					log.Printf("MR created for prod deletion: %s", mrURL)
+					slog.Info("MR created for prod deletion", "vcluster", name, "url", mrURL)
 					h.cfg.AddDeleting(name, "prod", mrURL)
 				}
 			}
@@ -651,13 +651,13 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 
 	if deleteGitlab {
 		if err := h.gitlab.DeleteProject(name); err != nil {
-			log.Printf("Error deleting GitLab repo: %v", err)
+			slog.Error("error deleting GitLab repo", "vcluster", name, "err", err)
 		}
 	}
 
 	if deleteKeycloak && h.keycloak != nil {
 		if err := h.keycloak.DeleteArgoCDClients(name); err != nil {
-			log.Printf("Error deleting Keycloak clients: %v", err)
+			slog.Error("error deleting Keycloak clients", "vcluster", name, "err", err)
 		}
 	}
 
@@ -665,12 +665,12 @@ func (h *Handlers) performDeletion(name string, deletePreprod, deleteProd, delet
 	if h.vault != nil {
 		if deletePreprod {
 			if err := h.vault.DisableAuth(context.Background(), "kubernetes-vcluster-"+name+"-preprod"); err != nil {
-				log.Printf("[vault] cleanup preprod/%s: %v", name, err)
+				slog.Warn("vault cleanup failed", "env", "preprod", "vcluster", name, "err", err)
 			}
 		}
 		if deleteProd {
 			if err := h.vault.DisableAuth(context.Background(), "kubernetes-vcluster-"+name+"-prod"); err != nil {
-				log.Printf("[vault] cleanup prod/%s: %v", name, err)
+				slog.Warn("vault cleanup failed", "env", "prod", "vcluster", name, "err", err)
 			}
 		}
 	}

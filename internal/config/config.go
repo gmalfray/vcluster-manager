@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 )
@@ -187,10 +187,10 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("configmap state backend: %w", err)
 		}
 		c.backend = b
-		log.Println("State backend: Kubernetes ConfigMap (vcluster-manager-state)")
+		slog.Info("state backend selected", "type", "configmap", "name", "vcluster-manager-state")
 	default:
 		c.backend = &fileBackend{dataDir: c.dataDir}
-		log.Printf("State backend: local files (%s/)", c.dataDir)
+		slog.Info("state backend selected", "type", "file", "dir", c.dataDir)
 	}
 
 	c.loadPersistedSettings()
@@ -228,7 +228,7 @@ func (c *Config) loadPersistedSettings() {
 	}
 	var s persistedSettings
 	if err := json.Unmarshal(data, &s); err != nil {
-		log.Printf("Warning: could not parse settings: %v", err)
+		slog.Warn("could not parse settings", "err", err)
 		return
 	}
 	if s.VeleroDefaultTTL != "" {
@@ -291,7 +291,7 @@ func (c *Config) SetVeleroConfig(defaultTTL, s3URL, bucketPreprod, bucketProd st
 	}
 	c.mu.Unlock()
 	if err := c.savePersistedSettings(); err != nil {
-		log.Printf("Warning: could not save settings: %v", err)
+		slog.Warn("could not save settings", "err", err)
 	}
 }
 
@@ -350,7 +350,7 @@ func (c *Config) SetClusterLabel(env, label string) {
 	c.mu.Unlock()
 
 	if err := c.savePersistedSettings(); err != nil {
-		log.Printf("Warning: could not save settings: %v", err)
+		slog.Warn("could not save settings", "err", err)
 	}
 }
 
@@ -371,7 +371,7 @@ func (c *Config) SetClusterConfig(env, kubeconfigPath, sshTunnel, sshKeyPath str
 	c.mu.Unlock()
 
 	if err := c.savePersistedSettings(); err != nil {
-		log.Printf("Warning: could not save settings: %v", err)
+		slog.Warn("could not save settings", "err", err)
 	}
 }
 

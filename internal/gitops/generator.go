@@ -5,7 +5,8 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
+	"os"
 	"strings"
 	"text/template"
 
@@ -116,19 +117,25 @@ func NewGenerator(cfg GeneratorConfig) *Generator {
 		return nil
 	})
 	if err != nil {
-		log.Fatalf("failed to load vcluster templates: %v", err)
+		slog.Error("failed to load vcluster templates", "err", err)
+		os.Exit(1)
 	}
 	return g
 }
 
+// TODO: render() is called on a runtime path; an os.Exit on a bad template
+// kills the whole server. Returning an error up the stack would be safer,
+// but it's a bigger refactor (see TODO.md).
 func (g *Generator) render(templatePath string, data TemplateData) string {
 	tmpl, ok := g.templates[templatePath]
 	if !ok {
-		log.Fatalf("template not found: %s", templatePath)
+		slog.Error("template not found", "path", templatePath)
+		os.Exit(1)
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
-		log.Fatalf("failed to render template %s: %v", templatePath, err)
+		slog.Error("template render failed", "path", templatePath, "err", err)
+		os.Exit(1)
 	}
 	return buf.String()
 }

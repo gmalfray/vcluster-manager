@@ -3,7 +3,7 @@ package kubernetes
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -74,7 +74,7 @@ func NewSSHTunnel(sshTarget, sshKeyPath, remoteK8sAddr string) (*SSHTunnel, erro
 
 	go t.acceptLoop()
 
-	log.Printf("SSH tunnel established: %s → %s → %s", t.localAddr, host, remoteK8sAddr)
+	slog.Info("SSH tunnel established", "local", t.localAddr, "host", host, "remote", remoteK8sAddr)
 	return t, nil
 }
 
@@ -116,7 +116,7 @@ func (t *SSHTunnel) acceptLoop() {
 			case <-t.done:
 				return
 			default:
-				log.Printf("SSH tunnel accept error: %v", err)
+				slog.Error("SSH tunnel accept failed", "err", err)
 				return
 			}
 		}
@@ -127,7 +127,7 @@ func (t *SSHTunnel) acceptLoop() {
 func (t *SSHTunnel) handleConn(localConn net.Conn) {
 	remoteConn, err := t.sshClient.Dial("tcp", t.remoteAddr)
 	if err != nil {
-		log.Printf("SSH tunnel dial to %s: %v", t.remoteAddr, err)
+		slog.Error("SSH tunnel dial failed", "remote", t.remoteAddr, "err", err)
 		localConn.Close()
 		return
 	}

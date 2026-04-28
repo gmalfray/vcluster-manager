@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -141,20 +141,20 @@ func (c *Client) renewLoop(leaseDuration time.Duration) {
 		cancel()
 
 		if err == nil {
-			log.Printf("[vault] token renewed (lease: %s)", newDuration)
+			slog.Info("vault token renewed", "lease", newDuration)
 			leaseDuration = newDuration
 			continue
 		}
 
-		log.Printf("[vault] token renewal failed (%v), re-authenticating...", err)
+		slog.Warn("vault token renewal failed, re-authenticating", "err", err)
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 		leaseDuration, err = c.loginAppRole(ctx)
 		cancel()
 		if err != nil {
-			log.Printf("[vault] AppRole re-authentication failed: %v — retrying in 1 minute", err)
+			slog.Error("vault AppRole re-authentication failed, retrying in 1 minute", "err", err)
 			leaseDuration = time.Minute
 		} else {
-			log.Printf("[vault] AppRole re-authentication successful (lease: %s)", leaseDuration)
+			slog.Info("vault AppRole re-authentication successful", "lease", leaseDuration)
 		}
 	}
 }

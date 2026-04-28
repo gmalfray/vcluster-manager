@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -97,7 +97,7 @@ func (a *OIDCAuth) CallbackHandler() http.HandlerFunc {
 
 		token, err := a.config.Exchange(r.Context(), r.URL.Query().Get("code"))
 		if err != nil {
-			log.Printf("OIDC exchange error: %v", err)
+			slog.Error("OIDC token exchange failed", "err", err)
 			http.Error(w, "Authentication failed", http.StatusInternalServerError)
 			return
 		}

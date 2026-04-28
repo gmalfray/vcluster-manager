@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -238,7 +238,7 @@ func (s *StatusClient) GetVClusterStatus(ctx context.Context, name string) (*mod
 func (s *StatusClient) populateQuotaUsage(ctx context.Context, namespace string, info *models.StatusInfo) {
 	rqList, err := s.client.Resource(resourceQuotaGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		log.Printf("Could not list ResourceQuotas in %s: %v", namespace, err)
+		slog.Warn("could not list ResourceQuotas", "namespace", namespace, "err", err)
 		return
 	}
 
@@ -620,7 +620,7 @@ func (s *StatusClient) ApplyManifestToVCluster(ctx context.Context, name string,
 	if err != nil {
 		return err
 	}
-	log.Printf("Manifest applied successfully to vcluster %s", name)
+	slog.Info("manifest applied to vcluster", "vcluster", name)
 	return nil
 }
 
@@ -694,7 +694,7 @@ func (s *StatusClient) withVClusterPortForward(ctx context.Context, name string,
 		return fmt.Errorf("finding free port: %w", err)
 	}
 
-	log.Printf("Starting port-forward to pod %s/%s on local port %d", namespace, podName, localPort)
+	slog.Debug("starting port-forward", "namespace", namespace, "pod", podName, "local_port", localPort)
 
 	stopChan := make(chan struct{}, 1)
 	readyChan := make(chan struct{})
@@ -722,7 +722,7 @@ func (s *StatusClient) withVClusterPortForward(ctx context.Context, name string,
 
 	select {
 	case <-readyChan:
-		log.Printf("Port-forward ready on localhost:%d", localPort)
+		slog.Debug("port-forward ready", "local_port", localPort)
 	case err := <-errChan:
 		return fmt.Errorf("port-forward failed: %w", err)
 	case <-time.After(10 * time.Second):
@@ -732,7 +732,7 @@ func (s *StatusClient) withVClusterPortForward(ctx context.Context, name string,
 
 	defer func() {
 		close(stopChan)
-		log.Printf("Port-forward to %s/%s stopped", namespace, podName)
+		slog.Debug("port-forward stopped", "namespace", namespace, "pod", podName)
 	}()
 
 	modifiedKubeconfig, err := replaceServerURL(kubeconfigBytes, fmt.Sprintf("https://127.0.0.1:%d", localPort))
@@ -838,7 +838,7 @@ func applyManifestWithConfig(restCfg *rest.Config, manifestYAML []byte) error {
 		obj := &unstructured.Unstructured{}
 		dec := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(doc), 4096)
 		if err := dec.Decode(obj); err != nil {
-			log.Printf("Skipping document %d: %v", i, err)
+			slog.Warn("skipping manifest document", "index", i, "err", err)
 			continue
 		}
 
@@ -877,7 +877,7 @@ func applyManifestWithConfig(restCfg *rest.Config, manifestYAML []byte) error {
 			return fmt.Errorf("applying %s %s/%s: %w", gvk.Kind, ns, obj.GetName(), err)
 		}
 
-		log.Printf("Applied %s %s/%s", gvk.Kind, ns, obj.GetName())
+		slog.Debug("applied manifest object", "kind", gvk.Kind, "namespace", ns, "name", obj.GetName())
 	}
 
 	return nil

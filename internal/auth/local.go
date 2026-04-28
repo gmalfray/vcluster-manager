@@ -3,7 +3,7 @@ package auth
 import (
 	"crypto/subtle"
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -33,7 +33,7 @@ func (a *LocalAuth) LoginPageHandler() http.HandlerFunc {
 			filepath.Join(a.templateDir, "login.html"),
 		)
 		if err != nil {
-			log.Printf("Error parsing login template: %v", err)
+			slog.Error("login template parse failed", "err", err)
 			http.Error(w, "Internal error", http.StatusInternalServerError)
 			return
 		}
@@ -66,7 +66,7 @@ func (a *LocalAuth) LoginHandler() http.HandlerFunc {
 
 		tokenString, err := token.SignedString(a.jwtSecret)
 		if err != nil {
-			log.Printf("Error signing JWT: %v", err)
+			slog.Error("JWT signing failed", "err", err)
 			http.Error(w, "Internal error", http.StatusInternalServerError)
 			return
 		}

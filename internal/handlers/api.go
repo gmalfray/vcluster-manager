@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"path"
 	"sort"
@@ -68,7 +68,7 @@ func (h *Handlers) FluxSummaryFragment(w http.ResponseWriter, r *http.Request) {
 		}
 		total, ready, err := k8s.CountReadyHelmReleases(r.Context())
 		if err != nil {
-			log.Printf("Error counting helm releases for %s: %v", env, err)
+			slog.Error("error counting helm releases", "env", env, "err", err)
 			continue
 		}
 		counts[env] = envCount{Total: total, Ready: ready}
@@ -100,7 +100,7 @@ func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 		if k8s != nil && !k8s.HelmReleaseExists(r.Context(), name) {
 			// HelmRelease gone: remove any stuck FluxCD finalizers then cleanup
 			if err := k8s.CleanupNamespace(r.Context(), name); err != nil {
-				log.Printf("Warning: namespace cleanup for %s/%s: %v", env, name, err)
+				slog.Warn("namespace cleanup failed", "env", env, "vcluster", name, "err", err)
 			}
 			h.cfg.RemoveDeleting(name, env)
 			go h.sendNotification(fmt.Sprintf("vcluster *%s* (%s) supprime avec succes.", name, env))
@@ -407,15 +407,15 @@ func (h *Handlers) PairRancher(w http.ResponseWriter, r *http.Request) {
 		// 1. Import cluster in Rancher
 		clusterID, manifestURL, err := h.rancher.ImportCluster(name)
 		if err != nil {
-			log.Printf("Rancher: import error for %s: %v", name, err)
+			slog.Error("rancher: import failed", "vcluster", name, "err", err)
 			return
 		}
-		log.Printf("Rancher: cluster %s imported as %s, manifest: %s", name, clusterID, manifestURL)
+		slog.Info("rancher: cluster imported", "vcluster", name, "cluster_id", clusterID, "manifest", manifestURL)
 
 		// 2. Download the registration manifest
 		manifest, err := h.rancher.DownloadManifest(manifestURL)
 		if err != nil {
-			log.Printf("Rancher: download manifest error for %s: %v", name, err)
+			slog.Error("rancher: download manifest failed", "vcluster", name, "err", err)
 			return
 		}
 
@@ -423,18 +423,18 @@ func (h *Handlers) PairRancher(w http.ResponseWriter, r *http.Request) {
 		// Always use port-forward for Rancher (works for same-cluster and cross-cluster)
 		ctx := context.Background()
 		if err := k8s.ApplyManifestToVClusterViaPortForward(ctx, name, manifest); err != nil {
-			log.Printf("Rancher: apply manifest error for %s: %v", name, err)
+			slog.Error("rancher: apply manifest failed", "vcluster", name, "err", err)
 			return
 		}
-		log.Printf("Rancher: manifest applied for %s, waiting for cluster to become active...", name)
+		slog.Info("rancher: manifest applied, waiting for cluster to become active", "vcluster", name)
 
 		// 4. Wait for the cluster to become active in Rancher (agent connects back)
 		if err := h.rancher.WaitForClusterActive(clusterID, 5*time.Minute); err != nil {
-			log.Printf("Rancher: cluster %s did not become active: %v", name, err)
+			slog.Error("rancher: cluster did not become active", "vcluster", name, "err", err)
 			return
 		}
 
-		log.Printf("Rancher: vcluster %s successfully paired and active", name)
+		slog.Info("rancher: vcluster successfully paired and active", "vcluster", name)
 	}()
 }
 
@@ -476,9 +476,9 @@ func (h *Handlers) UnpairRancher(w http.ResponseWriter, r *http.Request) {
 			h.renderToast(w, "error", fmt.Sprintf("Erreur suppression Rancher : %v", err))
 			return
 		}
-		log.Printf("Rancher: cluster %s (ID %s) deleted", name, info.ID)
+		slog.Info("rancher: cluster deleted", "vcluster", name, "cluster_id", info.ID)
 	} else {
-		log.Printf("Rancher: cluster vcluster-%s not found in Rancher (may have been deleted manually or paired with a different name) — skipping Rancher deletion, proceeding with vcluster cleanup", name)
+		slog.Info("rancher: cluster not found, skipping Rancher deletion (may have been deleted manually or paired with a different name)", "vcluster", name)
 	}
 
 	// 3. Deploy rancher-cleanup job in the vcluster via port-forward
@@ -488,16 +488,16 @@ func (h *Handlers) UnpairRancher(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			ctx := context.Background()
 			if err := k8s.ApplyManifestToVClusterViaPortForward(ctx, name, []byte(rancherCleanupManifest)); err != nil {
-				log.Printf("Warning: could not deploy rancher-cleanup in vcluster %s: %v", name, err)
+				slog.Warn("could not deploy rancher-cleanup in vcluster", "vcluster", name, "err", err)
 				h.cfg.RemoveCleaning(name, env)
 				return
 			}
-			log.Printf("Rancher: cleanup job deployed in vcluster %s, waiting for completion...", name)
+			slog.Info("rancher: cleanup job deployed, waiting for completion", "vcluster", name)
 
 			if err := k8s.WaitForJobComplete(ctx, name, "rancher-cleanup", "kube-system", 10*time.Minute); err != nil {
-				log.Printf("Warning: rancher-cleanup job in vcluster %s: %v", name, err)
+				slog.Warn("rancher-cleanup job did not complete", "vcluster", name, "err", err)
 			} else {
-				log.Printf("Rancher: cleanup completed for vcluster %s", name)
+				slog.Info("rancher: cleanup completed", "vcluster", name)
 			}
 			h.cfg.RemoveCleaning(name, env)
 		}()
@@ -533,7 +533,7 @@ func (h *Handlers) RancherStatus(w http.ResponseWriter, r *http.Request) {
 
 	info, found, err := h.rancher.FindClusterByName(name)
 	if err != nil {
-		log.Printf("Warning: Rancher lookup for %s: %v", name, err)
+		slog.Warn("Rancher lookup failed", "vcluster", name, "err", err)
 		// Render an explicit "unknown" state so the user knows the status could not be determined,
 		// instead of silently showing "Off" which could lead to accidental re-pairing.
 		h.renderPartial(w, "rancher_status.html", map[string]interface{}{
@@ -553,7 +553,7 @@ func (h *Handlers) RancherStatus(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		if k8s := h.k8sForEnv(env); k8s != nil {
 			if k8s.HasRancherAgents(r.Context(), name) {
-				log.Printf("Rancher: detected agents for %s/%s via K8s pod labels (manual pairing with different cluster name)", env, name)
+				slog.Info("rancher: detected agents via K8s pod labels (manual pairing with different cluster name)", "env", env, "vcluster", name)
 				h.renderPartial(w, "rancher_status.html", map[string]interface{}{
 					"Enabled":        true,
 					"ManuallyPaired": true,
@@ -666,7 +666,7 @@ func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 			h.renderPartial(w, "apps_list.html", renderData)
 			return
 		}
-		log.Printf("ListApps: vcluster API unavailable for %s, falling back to repo: %v", name, err)
+		slog.Warn("ListApps: vcluster API unavailable, falling back to repo", "vcluster", name, "err", err)
 	}
 
 	// Fallback: read from app-manifests GitLab repo
@@ -682,7 +682,7 @@ func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 
 	files, err := h.gitlab.ListAppManifestFiles(name, branch)
 	if err != nil {
-		log.Printf("ListApps: list files for %s: %v", name, err)
+		slog.Error("ListApps: list files failed", "vcluster", name, "err", err)
 		h.renderPartial(w, "apps_list.html", renderData)
 		return
 	}
@@ -691,7 +691,7 @@ func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 	for _, filePath := range files {
 		content, err := h.gitlab.GetAppManifestFile(name, branch, filePath)
 		if err != nil {
-			log.Printf("ListApps: get file %s: %v", filePath, err)
+			slog.Warn("ListApps: get file failed", "path", filePath, "err", err)
 			continue
 		}
 		apps = append(apps, gitops.ParseArgoApps(filePath, content)...)
@@ -861,7 +861,7 @@ func (h *Handlers) EnableProtection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := k8s.SetNamespaceProtection(r.Context(), name, true); err != nil {
-		log.Printf("EnableProtection %s/%s: %v", env, name, err)
+		slog.Error("EnableProtection failed", "env", env, "vcluster", name, "err", err)
 		h.renderToast(w, "error", fmt.Sprintf("Erreur activation protection : %v", err))
 		return
 	}
@@ -895,7 +895,7 @@ func (h *Handlers) DisableProtection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := k8s.SetNamespaceProtection(r.Context(), name, false); err != nil {
-		log.Printf("DisableProtection %s/%s: %v", env, name, err)
+		slog.Error("DisableProtection failed", "env", env, "vcluster", name, "err", err)
 		h.renderToast(w, "error", fmt.Sprintf("Erreur desactivation protection : %v", err))
 		return
 	}
@@ -1074,15 +1074,15 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 	// For in-place restores: suspend Flux, scale down vcluster, delete PVC so Velero can restore it.
 	if inPlace {
 		if err := k8s.SetFluxSuspend(r.Context(), name, true); err != nil {
-			log.Printf("warn: could not suspend flux for %s: %v", name, err)
+			slog.Warn("could not suspend flux", "vcluster", name, "err", err)
 		}
 		if err := k8s.ScaleVClusterStatefulSet(r.Context(), name, 0); err != nil {
-			log.Printf("warn: could not scale down vcluster %s: %v", name, err)
+			slog.Warn("could not scale down vcluster", "vcluster", name, "err", err)
 		} else {
 			// Give the StatefulSet a moment to release the PVC before deleting it.
 			time.Sleep(5 * time.Second)
 			if err := k8s.DeleteVClusterPVC(r.Context(), name); err != nil {
-				log.Printf("warn: could not delete PVC for %s: %v", name, err)
+				slog.Warn("could not delete PVC", "vcluster", name, "err", err)
 			}
 		}
 	}
@@ -1092,7 +1092,7 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 		// Resume Flux if restore creation failed (it will rescale the StatefulSet).
 		if inPlace {
 			if resumeErr := k8s.SetFluxSuspend(r.Context(), name, false); resumeErr != nil {
-				log.Printf("warn: could not resume flux for %s after failed restore: %v", name, resumeErr)
+				slog.Warn("could not resume flux after failed restore", "vcluster", name, "err", resumeErr)
 			}
 		}
 		h.renderToast(w, "error", fmt.Sprintf("Erreur création restore : %v", err))
@@ -1145,7 +1145,7 @@ func (h *Handlers) VeleroRestoreStatus(w http.ResponseWriter, r *http.Request) {
 	terminal := phase == "Completed" || phase == "Failed" || phase == "PartiallyFailed"
 	if inPlace && terminal {
 		if resumeErr := k8s.SetFluxSuspend(r.Context(), name, false); resumeErr != nil {
-			log.Printf("warn: could not resume flux for %s after restore: %v", name, resumeErr)
+			slog.Warn("could not resume flux after restore", "vcluster", name, "err", resumeErr)
 		}
 	}
 
@@ -1226,7 +1226,7 @@ func httpGetWithTimeout(url string, timeout time.Duration) (*http.Response, erro
 func renameKubeconfig(data []byte, name, env string) []byte {
 	var kc map[string]interface{}
 	if err := yaml.Unmarshal(data, &kc); err != nil {
-		log.Printf("Could not parse kubeconfig for renaming: %v", err)
+		slog.Warn("could not parse kubeconfig for renaming", "err", err)
 		return data
 	}
 
@@ -1267,7 +1267,7 @@ func renameKubeconfig(data []byte, name, env string) []byte {
 
 	out, err := yaml.Marshal(kc)
 	if err != nil {
-		log.Printf("Could not marshal kubeconfig after renaming: %v", err)
+		slog.Warn("could not marshal kubeconfig after renaming", "err", err)
 		return data
 	}
 	return out
