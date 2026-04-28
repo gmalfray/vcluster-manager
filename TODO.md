@@ -26,8 +26,8 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 - [x] ~~**`notify.Send` avec contexte** : `n.client.Post(...)` → utiliser
       `http.NewRequestWithContext(ctx, ...)`. Permet d'annuler un webhook
       bloqué quand l'utilisateur ferme l'onglet.~~
-- [ ] **Constructeur `handlers.New` à 12 args** : remplacer par struct config
-      ou functional options.
+- [x] ~~**Constructeur `handlers.New` à 12 args** : remplacer par struct config
+      ou functional options.~~ Struct `handlers.Deps`.
 - [ ] **Découpe `internal/handlers/api.go`** (1275 LOC) : `api_velero.go`,
       `api_rancher.go`, `api_protection.go`, `api_chart.go`, `api_apps.go`.
 - [ ] **Découpe `internal/kubernetes/status.go`** (1413 LOC) : `status.go`,

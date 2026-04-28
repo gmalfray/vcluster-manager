@@ -34,6 +34,13 @@ Toutes les modifications notables sont documentées ici. Le format suit
   `errors.Join`, retournées à côté du `projectID` (best-effort : le repo
   reste récupérable manuellement).
 
+### Refactoring
+- **`handlers.New` à 12 args positionnels → struct `handlers.Deps`** :
+  le call site dans `cmd/server/main.go` passe maintenant un struct
+  champ-par-champ, donc auto-documenté et résilient à l'ajout/retrait
+  de dépendances (réordonner ou ajouter un argument ne nécessite plus
+  de toucher l'appelant). Pas de changement de comportement.
+
 ### Lint
 - **`make check` propre** : 0 warning. Les 15 issues résiduelles
   (copyloopvar, gocritic, staticcheck SA9003, unused, misspell) sont
