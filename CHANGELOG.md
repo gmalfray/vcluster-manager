@@ -38,6 +38,29 @@ Toutes les modifications notables sont documentées ici. Le format suit
 - Sweep `gofmt` sur l'ensemble du tree (alignement de structs, regroupement
   d'imports). Aucun changement sémantique.
 
+### Context propagation
+- **`context.Context` propagé sur la chaîne GitOps** :
+  `gitops.GitLabClient.{ListFiles,GetFile,Commit}`,
+  `gitops.Parser.{ListVClusters,ParseVCluster,Exists,UsedVeleroSlots,
+  ListVClusterNamesOnBranch}`, `helmcharts.Updater.{GetCurrentChartVersion,
+  GetDefaultK8sVersion,UpdateChart,UpdateK8sVersion}` et
+  `argocd.Updater.{GetGlobalVersion,UpdateGlobalVersion}` prennent
+  désormais un `ctx` en premier argument. Les handlers HTTP propagent
+  `r.Context()` ; les chaînes background (vault reconciler, suppression
+  asynchrone après pairing Rancher) utilisent `context.Background()`
+  explicitement.
+- **`withRetry` annulable** dans `gitops/gitlab.go` : le `time.Sleep`
+  bloquant entre tentatives (jusqu'à 17 s cumulés) est remplacé par un
+  `select { <-ctx.Done() / <-time.After(delay) }` qui débloque le
+  graceful shutdown si le serveur reçoit un SIGTERM pendant un retry.
+  Les requêtes GitLab elles-mêmes utilisent `gitlab.WithContext(ctx)`
+  pour annuler les appels HTTP en vol.
+- **`errgroup` dans `parser.ListVClusters`** : remplace
+  `sync.WaitGroup`. L'annulation du contexte (onglet fermé) interrompt
+  les parses en cours au lieu de continuer en pure perte. Les échecs
+  par-vcluster restent non fatals (warning + skip), seul `ctx.Err()`
+  remonte.
+
 ### Logging
 - **Phase 1 de la migration `log` → `slog`** : initialisation d'un handler
   JSON par défaut dans `cmd/server/main.go`, niveau configurable via
