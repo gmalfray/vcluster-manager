@@ -14,10 +14,10 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       restants dans `internal/handlers/*` (98), `internal/kubernetes/*` (10),
       `internal/gitops/*` (8), `internal/rancher/`, `internal/vault/`, etc.~~
       Phase 3 (corrélation `slog.*Context(ctx, ...)`) à planifier séparément.
-- [ ] **Cache GitLab maison → `samber/hot`** : `internal/gitops/gitlab.go`
+- [x] ~~**Cache GitLab maison → `samber/hot`** : `internal/gitops/gitlab.go`
       embarque un cache `map+sync.RWMutex+TTL 30s` (~40 LOC). `samber/hot`
       apporte LRU/TinyLFU, métriques Prometheus, et purge des entrées expirées
-      (le maison ne purge jamais : croissance mémoire non bornée).
+      (le maison ne purge jamais : croissance mémoire non bornée).~~
 - [x] ~~**`errgroup` au lieu de `WaitGroup`** dans `parser.ListVClusters` : pas
       de propagation d'erreur, pas d'annulation si un parse échoue.~~
 - [x] ~~**`withRetry` cancellable** : `time.Sleep` bloquant dans
