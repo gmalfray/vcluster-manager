@@ -176,8 +176,10 @@ func main() {
 
 	// Helm charts updater (for updating vcluster chart in platform-helm-charts)
 	var helmUpdater *helmcharts.Updater
+	var helmGL *gitops.GitLabClient
 	if cfg.HelmChartsProjectID != "" && cfg.GitLabToken != "" {
-		helmGL, err := gitops.NewGitLabClient(gitops.GitLabClientConfig{
+		var err error
+		helmGL, err = gitops.NewGitLabClient(gitops.GitLabClientConfig{
 			URL:       cfg.GitLabURL,
 			Token:     cfg.GitLabToken,
 			ProjectID: cfg.HelmChartsProjectID,
@@ -376,6 +378,12 @@ func main() {
 		if err := t.Close(); err != nil {
 			slog.Warn("SSH tunnel close error", "err", err)
 		}
+	}
+
+	// Stop the cache janitors so they don't outlive the process briefly.
+	gl.Close()
+	if helmGL != nil {
+		helmGL.Close()
 	}
 
 	slog.Info("server stopped cleanly")

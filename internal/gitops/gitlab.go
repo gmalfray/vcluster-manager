@@ -10,17 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/gmalfray/vcluster-manager/internal/metrics"
+	"github.com/samber/hot"
 	"github.com/xanzy/go-gitlab"
-)
 
-type cacheEntry struct {
-	data      string
-	expiresAt time.Time
-}
+	"github.com/gmalfray/vcluster-manager/internal/metrics"
+)
 
 // GitLabClientConfig holds configuration for creating a GitLabClient.
 type GitLabClientConfig struct {
@@ -55,9 +51,7 @@ type GitLabClient struct {
 	clustersPath          string // prefix for cluster dirs, e.g. "clusters"
 	vaultKVArgoCDRootApps string
 	vaultKVArgoCDRepo     string
-	cache                 map[string]cacheEntry
-	cacheMu               sync.RWMutex
-	cacheTTL              time.Duration
+	cache                 *hot.HotCache[string, string]
 }
 
 // withRetry retries fn up to 3 times on transient errors (network, 429, 5xx).
@@ -102,6 +96,23 @@ func NewGitLabClient(cfg GitLabClientConfig) (*GitLabClient, error) {
 	if clustersPath == "" {
 		clustersPath = "clusters"
 	}
+	// W-TinyLFU is the recommended general-purpose algorithm; capacity 1024 caps
+	// memory at ~5MB for typical entries (file paths joined by \n, YAML files of
+	// a few KB each). The previous map+RWMutex implementation was unbounded — a
+	// long-running server discovering new vclusters/files over time would grow
+	// without ever purging expired entries.
+	// The cache name is the project ID so multiple clients (fluxprod + helm
+	// charts) export distinct hot_* metrics without colliding.
+	cacheName := cfg.ProjectID
+	if cacheName == "" {
+		cacheName = "default"
+	}
+	cache := hot.NewHotCache[string, string](hot.WTinyLFU, 1024).
+		WithTTL(30 * time.Second).
+		WithJanitor().
+		WithPrometheusMetrics(cacheName).
+		Build()
+
 	return &GitLabClient{
 		client:                client,
 		projectID:             cfg.ProjectID,
@@ -115,32 +126,29 @@ func NewGitLabClient(cfg GitLabClientConfig) (*GitLabClient, error) {
 		clustersPath:          clustersPath,
 		vaultKVArgoCDRootApps: cfg.VaultKVArgoCDRootApps,
 		vaultKVArgoCDRepo:     cfg.VaultKVArgoCDRepo,
-		cache:                 make(map[string]cacheEntry),
-		cacheTTL:              30 * time.Second,
+		cache:                 cache,
 	}, nil
 }
 
-func (g *GitLabClient) cacheGet(key string) (string, bool) {
-	g.cacheMu.RLock()
-	defer g.cacheMu.RUnlock()
-	e, ok := g.cache[key]
-	if !ok || time.Now().After(e.expiresAt) {
-		return "", false
+// Close stops the cache janitor goroutine. Call during graceful shutdown.
+func (g *GitLabClient) Close() {
+	if g.cache != nil {
+		g.cache.StopJanitor()
 	}
-	return e.data, true
+}
+
+func (g *GitLabClient) cacheGet(key string) (string, bool) {
+	v, found, _ := g.cache.Get(key)
+	return v, found
 }
 
 func (g *GitLabClient) cacheSet(key, data string) {
-	g.cacheMu.Lock()
-	defer g.cacheMu.Unlock()
-	g.cache[key] = cacheEntry{data: data, expiresAt: time.Now().Add(g.cacheTTL)}
+	g.cache.Set(key, data)
 }
 
 // InvalidateCache purges all cached entries.
 func (g *GitLabClient) InvalidateCache() {
-	g.cacheMu.Lock()
-	defer g.cacheMu.Unlock()
-	g.cache = make(map[string]cacheEntry)
+	g.cache.Purge()
 }
 
 // ListFiles returns file paths under a given directory in the repo.
