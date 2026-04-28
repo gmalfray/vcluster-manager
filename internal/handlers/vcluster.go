@@ -607,7 +607,7 @@ func (h *Handlers) performDeletion(ctx context.Context, name string, deletePrepr
 				return
 			}
 			h.cfg.AddDeleting(name, "preprod", "")
-			go h.sendNotification(fmt.Sprintf("Suppression du vcluster *%s* (preprod) en cours...", name))
+			go h.sendNotification(context.Background(), fmt.Sprintf("Suppression du vcluster *%s* (preprod) en cours...", name))
 		}
 	}
 

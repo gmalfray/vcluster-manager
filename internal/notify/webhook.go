@@ -2,6 +2,7 @@ package notify
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,12 +29,19 @@ type payload struct {
 }
 
 // Send posts a plain-text notification message to the webhook.
-func (n *Notifier) Send(text string) error {
+// The HTTP request honors ctx for cancellation in addition to the client's
+// own 10s timeout.
+func (n *Notifier) Send(ctx context.Context, text string) error {
 	body, err := json.Marshal(payload{Text: text})
 	if err != nil {
 		return fmt.Errorf("webhook marshal: %w", err)
 	}
-	resp, err := n.client.Post(n.webhookURL, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.webhookURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("webhook request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := n.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("webhook post: %w", err)
 	}
