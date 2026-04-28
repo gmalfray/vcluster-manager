@@ -32,8 +32,9 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       `api_rancher.go`, `api_protection.go`, `api_chart.go`, `api_apps.go`.
 - [ ] **Découpe `internal/kubernetes/status.go`** (1413 LOC) : `status.go`,
       `vcluster_access.go`, `velero.go`, `rancher.go`, `protection.go`.
-- [ ] **`atoi` avec `fmt.Sscanf`** dans `gitlab.go` → `strconv.Atoi` (plus
-      rapide, erreur explicite).
+- [x] ~~**`atoi` avec `fmt.Sscanf`** dans `gitlab.go` → `strconv.Atoi` (plus
+      rapide, erreur explicite).~~ Étendu à `gitops/generator.go`,
+      `github/releases.go` et `config/config.go`.
 - [ ] **`/metrics` derrière le rate limiter ?** Aujourd'hui sur le mux global
       sans middleware. À décider : assumé (Prom scrape interne) vs DoS-vector.
 - [ ] **`doc.go` par package** : permettrait de réactiver `ST1000/ST1020` au
@@ -41,8 +42,8 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 - [ ] **Tests manquants** : `internal/gitops/gitlab.go` (`withRetry` testable
       avec `httptest`), `internal/notify/webhook.go`, `internal/auth/oidc.go`,
       `internal/rancher/client.go`.
-- [ ] **Errcheck cleanup** : ~21 erreurs réelles non check via `go fmt` dans
-      handlers et clients. Soit fix soit `//nolint:errcheck` motivé.
+- [x] ~~**Errcheck cleanup** : ~21 erreurs réelles non check via `go fmt` dans
+      handlers et clients. Soit fix soit `//nolint:errcheck` motivé.~~
 
 ## Portabilité Git provider
 
