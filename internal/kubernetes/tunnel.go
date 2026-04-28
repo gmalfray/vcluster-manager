@@ -155,7 +155,7 @@ func parseSSHTarget(target string) (string, string, error) {
 
 	// Ensure host has a port
 	if _, _, err := net.SplitHostPort(host); err != nil {
-		host = host + ":22"
+		host += ":22"
 	}
 
 	return user, host, nil

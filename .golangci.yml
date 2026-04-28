@@ -63,9 +63,14 @@ linters:
         - ifElseChain
         - singleCaseSwitch
         - commentFormatting
-        - paramTypeCombine
-        - hugeParam
-        - rangeValCopy
+    misspell:
+      # The user-facing strings (README templates, GitLab repo descriptions,
+      # error messages) are in French. The default US dictionary flags
+      # legitimate French words as typos — whitelist them.
+      ignore-rules:
+        - manifestes
+        - exemple
+        - correspondant
 
   exclusions:
     generated: lax

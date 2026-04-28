@@ -122,12 +122,10 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 						slog.Error("Keycloak ArgoCD clients creation failed", "vcluster", name, "err", err)
 					}
 				}
-			} else {
+			} else if deleteRepo {
 				// Disabling: delete repo only if explicitly requested
-				if deleteRepo {
-					if err := h.gitlab.DeleteProject(name); err != nil {
-						slog.Error("app-manifests repo deletion failed", "vcluster", name, "err", err)
-					}
+				if err := h.gitlab.DeleteProject(name); err != nil {
+					slog.Error("app-manifests repo deletion failed", "vcluster", name, "err", err)
 				}
 			}
 
