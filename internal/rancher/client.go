@@ -58,11 +58,6 @@ type registrationTokenResponse struct {
 	Command             string `json:"command"`
 }
 
-// registrationTokenListResponse represents the list of registration tokens.
-type registrationTokenListResponse struct {
-	Data []registrationTokenResponse `json:"data"`
-}
-
 // ImportCluster creates an imported cluster in Rancher and returns the clusterID and manifest URL.
 // The manifest URL points to the YAML that must be applied inside the vcluster to register it.
 func (c *Client) ImportCluster(name string) (clusterID, manifestURL string, err error) {
@@ -237,61 +232,6 @@ func extractManifestURL(t registrationTokenResponse) string {
 		}
 	}
 	return ""
-}
-
-// getManifestURL fetches the cluster registration token manifest URL.
-// Tries both the cluster sub-resource endpoint and the global endpoint as fallback.
-func (c *Client) getManifestURL(clusterID string) (string, error) {
-	// Primary: cluster sub-resource
-	url, err := c.getManifestURLFromEndpoint(c.baseURL+"/v3/clusters/"+clusterID+"/clusterregistrationtokens", clusterID)
-	if err == nil && url != "" {
-		return url, nil
-	}
-	if err != nil {
-		slog.Warn("rancher: cluster subresource endpoint error", "cluster_id", clusterID, "err", err)
-	}
-	// Fallback: global endpoint filtered by clusterId
-	url, err = c.getManifestURLFromEndpoint(c.baseURL+"/v3/clusterregistrationtokens?clusterId="+clusterID, clusterID)
-	if err != nil {
-		return "", err
-	}
-	return url, nil
-}
-
-func (c *Client) getManifestURLFromEndpoint(endpoint, clusterID string) (string, error) {
-	req, err := http.NewRequest("GET", endpoint, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	slog.Debug("rancher: tokens response", "endpoint", endpoint, "body", string(body))
-
-	var tokens registrationTokenListResponse
-	if err := json.Unmarshal(body, &tokens); err != nil {
-		return "", err
-	}
-
-	for _, t := range tokens.Data {
-		if url := extractManifestURL(t); url != "" {
-			return url, nil
-		}
-	}
-	return "", nil
 }
 
 // DeleteCluster removes a cluster from Rancher by its cluster ID.

@@ -133,9 +133,9 @@ func (p *Parser) parseVClusterEnv(ctx context.Context, env, name string) (*model
 		if err := p.parseRBACGroups(ctx, basePath, vc); err != nil {
 			vc.RBACGroups = []string{}
 		}
-		if err := p.parseArgoCDVersion(ctx, basePath, vc); err != nil {
-			// Not critical, just means no per-vcluster override
-		}
+		// parseArgoCDVersion is best-effort: a missing kustomization.yaml
+		// just means no per-vcluster ArgoCD version override.
+		_ = p.parseArgoCDVersion(ctx, basePath, vc)
 	}
 
 	// Parse values.yaml
@@ -144,30 +144,6 @@ func (p *Parser) parseVClusterEnv(ctx context.Context, env, name string) (*model
 	}
 
 	return vc, nil
-}
-
-// valuesFile is the subset of values.yaml we parse.
-type valuesFile struct {
-	VeleroBackup struct {
-		Enabled  bool   `yaml:"enabled"`
-		Schedule string `yaml:"schedule"`
-		TTL      string `yaml:"ttl"`
-	} `yaml:"veleroBackup"`
-	VCluster struct {
-		Policies struct {
-			ResourceQuota struct {
-				Enabled *bool `yaml:"enabled"`
-				Quota   struct {
-					CPU     interface{} `yaml:"requests.cpu"`
-					Memory  interface{} `yaml:"requests.memory"`
-					Storage interface{} `yaml:"requests.storage"`
-				} `yaml:"quota"`
-			} `yaml:"resourceQuota"`
-			LimitRange struct {
-				Enabled *bool `yaml:"enabled"`
-			} `yaml:"limitRange"`
-		} `yaml:"policies"`
-	} `yaml:"vcluster"`
 }
 
 func (p *Parser) parseValues(ctx context.Context, basePath string, vc *models.VCluster) error {

@@ -252,7 +252,6 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 			envs = append(envs, "prod")
 		}
 		for _, env := range envs {
-			env := env
 			go h.setupVaultAuthWhenReady(req.Name, env)
 		}
 	}
@@ -550,7 +549,6 @@ func (h *Handlers) startCleaningReconciler() {
 		return
 	}
 	for _, entry := range entries {
-		entry := entry
 		slog.Info("cleaning startup: resuming cleanup+deletion", "vcluster", entry.Name, "env", entry.Env)
 		k8s := h.k8sForEnv(entry.Env)
 		go h.runCleanupAndDelete(entry.Name, entry.Env, k8s,

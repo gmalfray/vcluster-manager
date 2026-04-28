@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -71,6 +72,16 @@ func initLogger() {
 }
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("fatal error", "err", err)
+		os.Exit(1)
+	}
+}
+
+// run holds the actual server lifecycle so deferred cleanups (signal context,
+// SSH tunnels, GitLab cache janitors) get a chance to execute before the
+// process exits — os.Exit in main() would skip them.
+func run() error {
 	initLogger()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -80,8 +91,7 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		slog.Error("failed to load config", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	// Configure admin groups from env (ADMIN_GROUPS).
@@ -107,8 +117,7 @@ func main() {
 		VaultKVArgoCDRepo:     cfg.VaultKVArgoCDRepo,
 	})
 	if err != nil {
-		slog.Error("failed to create GitLab client", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("creating GitLab client: %w", err)
 	}
 	parser.SetGitLabClient(gl)
 	slog.Info("GitLab client initialized")
@@ -213,8 +222,7 @@ func main() {
 		var err error
 		vaultClient, err = vault.NewClientWithAppRole(ctx, cfg.VaultAddr, cfg.VaultRoleID, cfg.VaultSecretID)
 		if err != nil {
-			slog.Error("vault AppRole authentication failed", "err", err)
-			os.Exit(1)
+			return fmt.Errorf("vault AppRole authentication: %w", err)
 		}
 		slog.Info("vault client initialized", "auth", "approle", "addr", cfg.VaultAddr)
 	} else if cfg.VaultAddr != "" && cfg.VaultToken != "" {
@@ -364,8 +372,7 @@ func main() {
 	case <-ctx.Done():
 		slog.Info("shutdown signal received, draining requests")
 	case err := <-serverErr:
-		slog.Error("server failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("server failed: %w", err)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -387,4 +394,5 @@ func main() {
 	}
 
 	slog.Info("server stopped cleanly")
+	return nil
 }
