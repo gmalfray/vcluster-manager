@@ -34,6 +34,24 @@ Toutes les modifications notables sont documentées ici. Le format suit
   `errors.Join`, retournées à côté du `projectID` (best-effort : le repo
   reste récupérable manuellement).
 
+### Caching
+- **Cache GitLab maison → `samber/hot`** : `internal/gitops/gitlab.go`
+  remplace son `map+sync.RWMutex+TTL 30s` non borné par
+  `hot.HotCache[string, string]` (W-TinyLFU, capacité 1024 entrées,
+  TTL 30 s, janitor de purge en arrière-plan). Avantages :
+  - **Mémoire bornée** : l'ancien cache ne purgeait jamais les entrées
+    expirées (uniquement vérifiées au lookup), donc un serveur de longue
+    durée découvrant de nouveaux vclusters/fichiers grandissait sans
+    limite. Capacité dure désormais ~5 MB.
+  - **Métriques Prometheus** : `hot_hit_total`, `hot_miss_total`,
+    `hot_eviction_total`, `hot_size_bytes`, `hot_length`, etc., labellés
+    par `name=<projectID>` pour distinguer les caches fluxprod et helm
+    charts.
+  - **Algo W-TinyLFU** scan-resistant, plus robuste qu'un LRU naïf.
+- `GitLabClient.Close()` arrête le janitor du cache ; appelé depuis le
+  shutdown de `cmd/server/main.go` pour ne pas laisser tourner les
+  goroutines au-delà du process.
+
 ### Style
 - Sweep `gofmt` sur l'ensemble du tree (alignement de structs, regroupement
   d'imports). Aucun changement sémantique.
