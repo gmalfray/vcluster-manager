@@ -65,10 +65,29 @@ type Handlers struct {
 	notifier      *notify.Notifier
 }
 
-func New(cfg *config.Config, parser *gitops.Parser, gl *gitops.GitLabClient, kc *keycloak.Client, k8sClients map[string]*kubernetes.StatusClient, rc *rancher.Client, ghReleases *github.ReleaseClient, helmUpdater *helmcharts.Updater, argoUpdater *argocd.Updater, vc *vault.Client, notifier *notify.Notifier, templateDir string) *Handlers {
+// Deps groups the dependencies required to construct a Handlers. Using a
+// struct (vs 12 positional args) keeps the call site self-documenting and
+// makes future additions / removals localized.
+type Deps struct {
+	Config         *config.Config
+	Parser         *gitops.Parser
+	GitLab         *gitops.GitLabClient
+	Keycloak       *keycloak.Client
+	K8sClients     map[string]*kubernetes.StatusClient
+	Rancher        *rancher.Client
+	GitHubReleases *github.ReleaseClient
+	HelmUpdater    *helmcharts.Updater
+	ArgoCDUpdater  *argocd.Updater
+	Vault          *vault.Client
+	Notifier       *notify.Notifier
+	TemplateDir    string
+}
+
+func New(d Deps) *Handlers {
+	cfg := d.Config
 	h := &Handlers{
 		cfg:    cfg,
-		parser: parser,
+		parser: d.Parser,
 		generator: gitops.NewGenerator(gitops.GeneratorConfig{
 			BaseDomainPreprod:   cfg.BaseDomainPreprod,
 			BaseDomainProd:      cfg.BaseDomainProd,
@@ -85,19 +104,19 @@ func New(cfg *config.Config, parser *gitops.Parser, gl *gitops.GitLabClient, kc 
 			VClusterPodSecurity: cfg.VClusterPodSecurity,
 			ArgoCDDefaultPolicy: cfg.ArgoCDDefaultPolicy,
 		}),
-		gitlab:        gl,
-		keycloak:      kc,
-		k8sClients:    k8sClients,
-		rancher:       rc,
-		vault:         vc,
-		ghReleases:    ghReleases,
-		helmUpdater:   helmUpdater,
-		argocdUpdater: argoUpdater,
+		gitlab:        d.GitLab,
+		keycloak:      d.Keycloak,
+		k8sClients:    d.K8sClients,
+		rancher:       d.Rancher,
+		vault:         d.Vault,
+		ghReleases:    d.GitHubReleases,
+		helmUpdater:   d.HelmUpdater,
+		argocdUpdater: d.ArgoCDUpdater,
 		pages:         make(map[string]*template.Template),
-		templateDir:   templateDir,
+		templateDir:   d.TemplateDir,
 		migrations:    make(map[string]migrationEntry),
 		vaultStates:   make(map[string]*vaultSetupState),
-		notifier:      notifier,
+		notifier:      d.Notifier,
 	}
 
 	funcMap := template.FuncMap{
@@ -125,11 +144,11 @@ func New(cfg *config.Config, parser *gitops.Parser, gl *gitops.GitLabClient, kc 
 		},
 	}
 
-	layoutFile := filepath.Join(templateDir, "layout.html")
-	partialFiles, _ := filepath.Glob(filepath.Join(templateDir, "partials", "*.html"))
+	layoutFile := filepath.Join(d.TemplateDir, "layout.html")
+	partialFiles, _ := filepath.Glob(filepath.Join(d.TemplateDir, "partials", "*.html"))
 
 	// Parse each page template with layout + partials
-	pageFiles, _ := filepath.Glob(filepath.Join(templateDir, "*.html"))
+	pageFiles, _ := filepath.Glob(filepath.Join(d.TemplateDir, "*.html"))
 	for _, pf := range pageFiles {
 		name := filepath.Base(pf)
 		if name == "layout.html" {
