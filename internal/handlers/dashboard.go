@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
@@ -19,13 +19,13 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 	// Load preprod vclusters (from preprod branch)
 	preprodVClusters, err := h.parser.ListVClusters("preprod")
 	if err != nil {
-		log.Printf("Error listing vclusters for preprod: %v", err)
+		slog.Warn("error listing vclusters", "env", "preprod", "err", err)
 	}
 
 	// Load prod vclusters config (from preprod branch, clusters/prod/)
 	prodVClusters, err := h.parser.ListVClusters("prod")
 	if err != nil {
-		log.Printf("Error listing vclusters for prod: %v", err)
+		slog.Warn("error listing vclusters", "env", "prod", "err", err)
 	}
 
 	// Check what's actually deployed on master branch
@@ -172,7 +172,7 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 		if release, err := h.ghReleases.GetLatestVClusterRelease(); err == nil {
 			data["LatestRelease"] = release
 		} else {
-			log.Printf("Could not fetch latest vcluster release: %v", err)
+			slog.Warn("could not fetch latest vcluster release", "err", err)
 		}
 	}
 
@@ -182,23 +182,23 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 		if version, err := h.helmUpdater.GetCurrentChartVersion("preprod"); err == nil {
 			data["PreprodChartVersion"] = version
 		} else {
-			log.Printf("Could not fetch preprod chart version: %v", err)
+			slog.Warn("could not fetch chart version", "branch", "preprod", "err", err)
 		}
 		if k8s, err := h.helmUpdater.GetDefaultK8sVersion("preprod"); err == nil {
 			data["PreprodK8sVersion"] = k8s
 		} else {
-			log.Printf("Could not fetch preprod K8s version: %v", err)
+			slog.Warn("could not fetch K8s version", "branch", "preprod", "err", err)
 		}
 		// Prod (branch master)
 		if version, err := h.helmUpdater.GetCurrentChartVersion("master"); err == nil {
 			data["ProdChartVersion"] = version
 		} else {
-			log.Printf("Could not fetch prod chart version: %v", err)
+			slog.Warn("could not fetch chart version", "branch", "master", "err", err)
 		}
 		if k8s, err := h.helmUpdater.GetDefaultK8sVersion("master"); err == nil {
 			data["ProdK8sVersion"] = k8s
 		} else {
-			log.Printf("Could not fetch prod K8s version: %v", err)
+			slog.Warn("could not fetch K8s version", "branch", "master", "err", err)
 		}
 		// Pending MRs
 		if mr := h.helmUpdater.GetPendingChartMR(); mr != nil {
@@ -213,12 +213,12 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 		if versions, err := h.ghReleases.GetAvailableK8sVersions(); err == nil {
 			data["K8sVersions"] = versions
 		} else {
-			log.Printf("Could not fetch available K8s versions: %v", err)
+			slog.Warn("could not fetch available K8s versions", "err", err)
 		}
 		if release, err := h.ghReleases.GetLatestArgoCDRelease(); err == nil {
 			data["LatestArgoCDRelease"] = release
 		} else {
-			log.Printf("Could not fetch latest ArgoCD release: %v", err)
+			slog.Warn("could not fetch latest ArgoCD release", "err", err)
 		}
 	}
 
@@ -227,12 +227,12 @@ func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
 		if version, err := h.argocdUpdater.GetGlobalVersion("preprod"); err == nil {
 			data["PreprodArgoCDVersion"] = version
 		} else {
-			log.Printf("Could not fetch preprod ArgoCD version: %v", err)
+			slog.Warn("could not fetch ArgoCD version", "branch", "preprod", "err", err)
 		}
 		if version, err := h.argocdUpdater.GetGlobalVersion("master"); err == nil {
 			data["ProdArgoCDVersion"] = version
 		} else {
-			log.Printf("Could not fetch prod ArgoCD version: %v", err)
+			slog.Warn("could not fetch ArgoCD version", "branch", "master", "err", err)
 		}
 		if mr := h.argocdUpdater.GetPendingMR(); mr != nil {
 			data["PendingArgoCDMR"] = mr

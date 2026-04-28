@@ -2,7 +2,7 @@ package config
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/gmalfray/vcluster-manager/internal/metrics"
@@ -108,7 +108,7 @@ func (c *Config) loadDeletingLocked() []DeletingEntry {
 	}
 	var entries []DeletingEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		log.Printf("Warning: could not parse deleting state: %v", err)
+		slog.Warn("could not parse deleting state", "err", err)
 		return nil
 	}
 	return entries
@@ -118,10 +118,10 @@ func (c *Config) loadDeletingLocked() []DeletingEntry {
 func (c *Config) saveDeletingLocked(entries []DeletingEntry) {
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
-		log.Printf("Warning: could not marshal deleting entries: %v", err)
+		slog.Warn("could not marshal deleting entries", "err", err)
 		return
 	}
 	if err := c.backend.writeDeleting(data); err != nil {
-		log.Printf("Warning: could not write deleting state: %v", err)
+		slog.Warn("could not write deleting state", "err", err)
 	}
 }

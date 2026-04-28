@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/gmalfray/vcluster-manager/internal/audit"
@@ -102,7 +102,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("Reconfiguration ArgoCD du vcluster **%s** en production (argocd=%v).\n\nCréé automatiquement par vcluster-manager.", name, newArgoCD),
 					actions,
 				); err != nil {
-					log.Printf("MR creation error for ArgoCD reconfigure: %v", err)
+					slog.Error("MR creation failed for ArgoCD reconfigure", "vcluster", name, "err", err)
 				}
 			}
 
@@ -110,21 +110,21 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 				// Enabling: create repo only if it doesn't exist, create Keycloak clients
 				if !h.gitlab.AppManifestsRepoExists(name) {
 					if _, err := h.gitlab.CreateAppManifestsRepo(name); err != nil {
-						log.Printf("Erreur création repo app-manifests-%s: %v", name, err)
+						slog.Error("app-manifests repo creation failed", "vcluster", name, "err", err)
 					}
 				} else {
-					log.Printf("Repo app-manifests-%s already exists, skipping creation", name)
+					slog.Info("app-manifests repo already exists, skipping creation", "vcluster", name)
 				}
 				if h.keycloak != nil {
 					if err := h.keycloak.CreateArgoCDClients(name, env); err != nil {
-						log.Printf("Erreur création clients Keycloak: %v", err)
+						slog.Error("Keycloak ArgoCD clients creation failed", "vcluster", name, "err", err)
 					}
 				}
 			} else {
 				// Disabling: delete repo only if explicitly requested
 				if deleteRepo {
 					if err := h.gitlab.DeleteProject(name); err != nil {
-						log.Printf("Erreur suppression repo app-manifests-%s: %v", name, err)
+						slog.Error("app-manifests repo deletion failed", "vcluster", name, "err", err)
 					}
 				}
 			}
@@ -190,7 +190,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("Reconfiguration FluxCD du vcluster **%s** en production (fluxcd=%v).\n\nCréé automatiquement par vcluster-manager.", name, newFluxCD),
 					actions,
 				); err != nil {
-					log.Printf("MR creation error for FluxCD reconfigure: %v", err)
+					slog.Error("MR creation failed for FluxCD reconfigure", "vcluster", name, "err", err)
 				}
 			}
 
@@ -235,7 +235,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: update vcluster %s settings", name), preprodActions); err != nil {
-			log.Printf("GitLab commit error: %v", err)
+			slog.Error("GitLab commit failed", "vcluster", name, "env", "preprod", "err", err)
 			h.renderToast(w, "error", "Erreur commit : "+err.Error())
 			return
 		}
@@ -268,7 +268,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 		if isPending {
 			if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: update vcluster %s settings (prod)", name), prodActions); err != nil {
-				log.Printf("GitLab commit error (prod pending): %v", err)
+				slog.Error("GitLab commit failed (prod pending)", "vcluster", name, "err", err)
 				h.renderToast(w, "error", "Erreur commit : "+err.Error())
 				return
 			}
@@ -279,9 +279,9 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 				prodActions,
 			)
 			if err != nil {
-				log.Printf("MR creation error for settings update: %v", err)
+				slog.Error("MR creation failed for settings update", "vcluster", name, "err", err)
 			} else {
-				log.Printf("MR created for prod settings update: %s", mrURL)
+				slog.Info("MR created for prod settings update", "vcluster", name, "url", mrURL)
 			}
 		}
 	}

@@ -2,7 +2,7 @@ package gitops
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -100,7 +100,7 @@ func (p *Parser) ListVClusters(env string) ([]models.VCluster, error) {
 	var vclusters []models.VCluster
 	for i, r := range results {
 		if r.err != nil {
-			log.Printf("Warning: skipping vcluster %s/%s: %v", env, dirs[i], r.err)
+			slog.Warn("skipping vcluster", "env", env, "name", dirs[i], "err", r.err)
 			continue
 		}
 		vclusters = append(vclusters, *r.vc)

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -115,7 +115,8 @@ func (c *Client) ImportCluster(name string) (clusterID, manifestURL string, err 
 			return clusterID, "", fmt.Errorf("creating registration token for cluster %s: %w", clusterID, err)
 		}
 		if attempt < maxAttempts {
-			log.Printf("Rancher: 403 on token creation for %s (attempt %d/%d, role not yet propagated), retrying in %s...", clusterID, attempt, maxAttempts, retryDelay)
+			slog.Warn("rancher: 403 on token creation, role not yet propagated; retrying",
+				"cluster_id", clusterID, "attempt", attempt, "max", maxAttempts, "delay", retryDelay)
 			time.Sleep(retryDelay)
 		}
 	}
@@ -147,7 +148,7 @@ func (c *Client) createRegistrationToken(clusterID string) (string, error) {
 
 	if resp.StatusCode == http.StatusForbidden {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("Rancher: 403 creating token for %s: %s", clusterID, string(respBody))
+		slog.Warn("rancher: 403 creating token", "cluster_id", clusterID, "body", string(respBody))
 		return "", errForbidden
 	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
@@ -159,7 +160,7 @@ func (c *Client) createRegistrationToken(clusterID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	log.Printf("Rancher: createRegistrationToken response for %s: %s", clusterID, string(respBody))
+	slog.Debug("rancher: createRegistrationToken response", "cluster_id", clusterID, "body", string(respBody))
 
 	var token registrationTokenResponse
 	if err := json.Unmarshal(respBody, &token); err != nil {
@@ -176,18 +177,18 @@ func (c *Client) createRegistrationToken(clusterID string) (string, error) {
 	if token.ID == "" {
 		return "", fmt.Errorf("token created but no manifest URL and no ID to poll")
 	}
-	log.Printf("Rancher: manifest URL not yet ready for token %s, polling...", token.ID)
+	slog.Info("rancher: manifest URL not yet ready, polling", "token_id", token.ID)
 	for i := 0; i < 10; i++ {
 		time.Sleep(3 * time.Second)
 		url, err := c.getRegistrationTokenByID(token.ID)
 		if err != nil {
-			log.Printf("Rancher: error polling token %s: %v", token.ID, err)
+			slog.Warn("rancher: error polling token", "token_id", token.ID, "err", err)
 			continue
 		}
 		if url != "" {
 			return url, nil
 		}
-		log.Printf("Rancher: manifest URL still empty for token %s (attempt %d/10)", token.ID, i+1)
+		slog.Debug("rancher: manifest URL still empty", "token_id", token.ID, "attempt", i+1, "max", 10)
 	}
 	return "", fmt.Errorf("token %s created but manifest URL never populated after 30s", token.ID)
 }
@@ -247,7 +248,7 @@ func (c *Client) getManifestURL(clusterID string) (string, error) {
 		return url, nil
 	}
 	if err != nil {
-		log.Printf("Rancher: cluster subresource endpoint error for %s: %v", clusterID, err)
+		slog.Warn("rancher: cluster subresource endpoint error", "cluster_id", clusterID, "err", err)
 	}
 	// Fallback: global endpoint filtered by clusterId
 	url, err = c.getManifestURLFromEndpoint(c.baseURL+"/v3/clusterregistrationtokens?clusterId="+clusterID, clusterID)
@@ -278,7 +279,7 @@ func (c *Client) getManifestURLFromEndpoint(endpoint, clusterID string) (string,
 	if err != nil {
 		return "", err
 	}
-	log.Printf("Rancher: tokens response from %s: %s", endpoint, string(body))
+	slog.Debug("rancher: tokens response", "endpoint", endpoint, "body", string(body))
 
 	var tokens registrationTokenListResponse
 	if err := json.Unmarshal(body, &tokens); err != nil {

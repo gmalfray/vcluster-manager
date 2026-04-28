@@ -2,7 +2,7 @@ package config
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -130,7 +130,7 @@ func (c *Config) loadCleaningLocked() []CleaningEntry {
 	}
 	var entries []CleaningEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		log.Printf("Warning: could not parse %s: %v", c.cleaningPath(), err)
+		slog.Warn("could not parse cleaning state", "path", c.cleaningPath(), "err", err)
 		return nil
 	}
 	return entries
@@ -138,15 +138,15 @@ func (c *Config) loadCleaningLocked() []CleaningEntry {
 
 func (c *Config) saveCleaningLocked(entries []CleaningEntry) {
 	if err := os.MkdirAll(c.dataDir, 0755); err != nil {
-		log.Printf("Warning: could not create data dir: %v", err)
+		slog.Warn("could not create data dir", "dir", c.dataDir, "err", err)
 		return
 	}
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
-		log.Printf("Warning: could not marshal cleaning entries: %v", err)
+		slog.Warn("could not marshal cleaning entries", "err", err)
 		return
 	}
 	if err := os.WriteFile(c.cleaningPath(), data, 0644); err != nil {
-		log.Printf("Warning: could not write %s: %v", c.cleaningPath(), err)
+		slog.Warn("could not write cleaning state", "path", c.cleaningPath(), "err", err)
 	}
 }

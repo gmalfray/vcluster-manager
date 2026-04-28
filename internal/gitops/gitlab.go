@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -76,7 +76,8 @@ func withRetry(op string, fn func() (*gitlab.Response, error)) error {
 			return err
 		}
 		if i < len(delays)-1 {
-			log.Printf("GitLab API transient error (attempt %d/3, op=%s): %v — retrying in %s", i+1, op, err, delay)
+			slog.Warn("GitLab API transient error, retrying",
+				"op", op, "attempt", i+1, "max", 3, "delay", delay, "err", err)
 			metrics.GitLabAPIRetries.WithLabelValues(op).Inc()
 			time.Sleep(delay)
 		}
@@ -287,7 +288,7 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 			Image:    bytes.NewReader(argocdAvatarPNG),
 		},
 	}); err != nil {
-		log.Printf("CreateAppManifestsRepo(%s): set avatar failed: %v", name, err)
+		slog.Warn("CreateAppManifestsRepo: set avatar failed", "name", name, "err", err)
 		setupErrs = append(setupErrs, fmt.Errorf("set avatar: %w", err))
 	}
 
@@ -304,7 +305,7 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 			},
 		},
 	}); err != nil {
-		log.Printf("CreateAppManifestsRepo(%s): commit README failed: %v", name, err)
+		slog.Warn("CreateAppManifestsRepo: commit README failed", "name", name, "err", err)
 		setupErrs = append(setupErrs, fmt.Errorf("commit README: %w", err))
 	}
 
@@ -313,7 +314,7 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 		Branch: gitlab.Ptr("preprod"),
 		Ref:    gitlab.Ptr("master"),
 	}); err != nil {
-		log.Printf("CreateAppManifestsRepo(%s): create preprod branch failed: %v", name, err)
+		slog.Warn("CreateAppManifestsRepo: create preprod branch failed", "name", name, "err", err)
 		setupErrs = append(setupErrs, fmt.Errorf("create preprod branch: %w", err))
 	}
 
@@ -321,7 +322,8 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 	for _, branch := range []string{"preprod", "master"} {
 		if _, err := g.client.ProtectedBranches.UnprotectRepositoryBranches(projectID, url.PathEscape(branch)); err != nil {
 			// 404 is expected when the branch isn't yet protected — log only at debug level.
-			log.Printf("CreateAppManifestsRepo(%s): unprotect %s skipped: %v", name, branch, err)
+			slog.Debug("CreateAppManifestsRepo: unprotect skipped (probably 404, branch not yet protected)",
+				"name", name, "branch", branch, "err", err)
 		}
 		if _, _, err := g.client.ProtectedBranches.ProtectRepositoryBranches(projectID, &gitlab.ProtectRepositoryBranchesOptions{
 			Name:             gitlab.Ptr(branch),
@@ -329,14 +331,16 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 			MergeAccessLevel: gitlab.Ptr(gitlab.MaintainerPermissions),
 			AllowForcePush:   gitlab.Ptr(false),
 		}); err != nil {
-			log.Printf("CreateAppManifestsRepo(%s): protect %s failed: %v", name, branch, err)
+			slog.Warn("CreateAppManifestsRepo: protect branch failed",
+				"name", name, "branch", branch, "err", err)
 			setupErrs = append(setupErrs, fmt.Errorf("protect %s: %w", branch, err))
 		}
 	}
 
 	// Enable FluxCD deploy key
 	if _, _, err := g.client.DeployKeys.EnableDeployKey(projectID, g.fluxDeployKeyID); err != nil {
-		log.Printf("CreateAppManifestsRepo(%s): enable deploy key %d failed: %v", name, g.fluxDeployKeyID, err)
+		slog.Warn("CreateAppManifestsRepo: enable deploy key failed",
+			"name", name, "key_id", g.fluxDeployKeyID, "err", err)
 		setupErrs = append(setupErrs, fmt.Errorf("enable deploy key: %w", err))
 	}
 
