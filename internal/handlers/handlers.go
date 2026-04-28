@@ -389,11 +389,11 @@ func (h *Handlers) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 
 // sendNotification fires a webhook notification if one is configured.
 // Errors are only logged (non-blocking).
-func (h *Handlers) sendNotification(text string) {
+func (h *Handlers) sendNotification(ctx context.Context, text string) {
 	if h.notifier == nil {
 		return
 	}
-	if err := h.notifier.Send(text); err != nil {
+	if err := h.notifier.Send(ctx, text); err != nil {
 		slog.Warn("webhook notification failed", "err", err)
 	}
 }

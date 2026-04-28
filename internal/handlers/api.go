@@ -103,7 +103,7 @@ func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 				slog.Warn("namespace cleanup failed", "env", env, "vcluster", name, "err", err)
 			}
 			h.cfg.RemoveDeleting(name, env)
-			go h.sendNotification(fmt.Sprintf("vcluster *%s* (%s) supprime avec succes.", name, env))
+			go h.sendNotification(context.Background(), fmt.Sprintf("vcluster *%s* (%s) supprime avec succes.", name, env))
 			w.Header().Set("HX-Redirect", "/")
 			w.WriteHeader(http.StatusOK)
 			return
