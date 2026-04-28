@@ -18,11 +18,11 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       embarque un cache `map+sync.RWMutex+TTL 30s` (~40 LOC). `samber/hot`
       apporte LRU/TinyLFU, métriques Prometheus, et purge des entrées expirées
       (le maison ne purge jamais : croissance mémoire non bornée).
-- [ ] **`errgroup` au lieu de `WaitGroup`** dans `parser.ListVClusters` : pas de
-      propagation d'erreur, pas d'annulation si un parse échoue.
-- [ ] **`withRetry` cancellable** : `time.Sleep` bloquant dans
+- [x] ~~**`errgroup` au lieu de `WaitGroup`** dans `parser.ListVClusters` : pas
+      de propagation d'erreur, pas d'annulation si un parse échoue.~~
+- [x] ~~**`withRetry` cancellable** : `time.Sleep` bloquant dans
       `gitops/gitlab.go:80` retarde le shutdown jusqu'à 17s. Ajouter `ctx` et
-      `select { case <-ctx.Done(): ...; case <-time.After(delay): }`.
+      `select { case <-ctx.Done(): ...; case <-time.After(delay): }`.~~
 - [ ] **`notify.Send` avec contexte** : `n.client.Post(...)` → utiliser
       `http.NewRequestWithContext(ctx, ...)`. Permet d'annuler un webhook
       bloqué quand l'utilisateur ferme l'onglet.
