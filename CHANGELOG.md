@@ -60,6 +60,12 @@ Toutes les modifications notables sont documentées ici. Le format suit
   les parses en cours au lieu de continuer en pure perte. Les échecs
   par-vcluster restent non fatals (warning + skip), seul `ctx.Err()`
   remonte.
+- **`notify.Notifier.Send(ctx, text)`** utilise
+  `http.NewRequestWithContext` au lieu de `client.Post` ; le webhook
+  honore désormais le `ctx` du caller en plus du timeout 10 s du
+  client. Les deux call sites actuels (`go h.sendNotification(...)`)
+  sont déjà détachés et passent `context.Background()` — la mécanique
+  est en place pour des futurs callers synchrones.
 
 ### Logging
 - **Phase 1 de la migration `log` → `slog`** : initialisation d'un handler

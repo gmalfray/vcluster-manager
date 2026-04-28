@@ -23,9 +23,9 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 - [x] ~~**`withRetry` cancellable** : `time.Sleep` bloquant dans
       `gitops/gitlab.go:80` retarde le shutdown jusqu'à 17s. Ajouter `ctx` et
       `select { case <-ctx.Done(): ...; case <-time.After(delay): }`.~~
-- [ ] **`notify.Send` avec contexte** : `n.client.Post(...)` → utiliser
+- [x] ~~**`notify.Send` avec contexte** : `n.client.Post(...)` → utiliser
       `http.NewRequestWithContext(ctx, ...)`. Permet d'annuler un webhook
-      bloqué quand l'utilisateur ferme l'onglet.
+      bloqué quand l'utilisateur ferme l'onglet.~~
 - [ ] **Constructeur `handlers.New` à 12 args** : remplacer par struct config
       ou functional options.
 - [ ] **Découpe `internal/handlers/api.go`** (1275 LOC) : `api_velero.go`,
