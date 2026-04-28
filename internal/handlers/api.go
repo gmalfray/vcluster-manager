@@ -250,7 +250,7 @@ func (h *Handlers) QuotaForm(w http.ResponseWriter, r *http.Request) {
 		env = "preprod"
 	}
 
-	vc, err := h.parser.ParseVCluster(env, name)
+	vc, err := h.parser.ParseVCluster(r.Context(), env, name)
 	if err != nil {
 		http.Error(w, "VCluster not found", http.StatusNotFound)
 		return
@@ -278,7 +278,7 @@ func (h *Handlers) UpdateChart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mrURL, err := h.helmUpdater.UpdateChart(version)
+	mrURL, err := h.helmUpdater.UpdateChart(r.Context(), version)
 	if err != nil {
 		h.renderToast(w, "error", fmt.Sprintf("Erreur lors de la mise a jour : %v", err))
 		return
@@ -304,7 +304,7 @@ func (h *Handlers) UpdateK8sVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mrURL, err := h.helmUpdater.UpdateK8sVersion(version)
+	mrURL, err := h.helmUpdater.UpdateK8sVersion(r.Context(), version)
 	if err != nil {
 		h.renderToast(w, "error", fmt.Sprintf("Erreur lors de la mise a jour K8s : %v", err))
 		return
@@ -330,7 +330,7 @@ func (h *Handlers) UpdateArgoCDVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mrURL, err := h.argocdUpdater.UpdateGlobalVersion(version)
+	mrURL, err := h.argocdUpdater.UpdateGlobalVersion(r.Context(), version)
 	if err != nil {
 		h.renderToast(w, "error", fmt.Sprintf("Erreur lors de la mise a jour ArgoCD : %v", err))
 		return
@@ -634,7 +634,7 @@ func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// List target vclusters (ArgoCD enabled, not the source) — needed for migration
-	vclusters, _ := h.parser.ListVClusters(env)
+	vclusters, _ := h.parser.ListVClusters(r.Context(), env)
 	var targetVClusters []string
 	for _, vc := range vclusters {
 		if vc.ArgoCD && vc.Name != name {

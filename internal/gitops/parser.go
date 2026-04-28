@@ -1,13 +1,14 @@
 package gitops
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
+	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
@@ -16,8 +17,8 @@ import (
 // fileProvider is the subset of GitLabClient used by the parser.
 // Keeping it as an interface enables unit-testing with a fake implementation.
 type fileProvider interface {
-	GetFile(branch, path string) (string, error)
-	ListFiles(branch, path string) ([]string, error)
+	GetFile(ctx context.Context, branch, path string) (string, error)
+	ListFiles(ctx context.Context, branch, path string) ([]string, error)
 }
 
 // Parser reads vcluster configurations via GitLab API.
@@ -36,8 +37,8 @@ func (p *Parser) SetGitLabClient(gl *GitLabClient) {
 }
 
 // readFile reads a file via GitLab API.
-func (p *Parser) readFile(path string) ([]byte, error) {
-	content, err := p.gitlab.GetFile(p.branch, path)
+func (p *Parser) readFile(ctx context.Context, path string) ([]byte, error) {
+	content, err := p.gitlab.GetFile(ctx, p.branch, path)
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +46,8 @@ func (p *Parser) readFile(path string) ([]byte, error) {
 }
 
 // listDirs lists subdirectories under a path via GitLab API.
-func (p *Parser) listDirs(path string) ([]string, error) {
-	files, err := p.gitlab.ListFiles(p.branch, path)
+func (p *Parser) listDirs(ctx context.Context, path string) ([]string, error) {
+	files, err := p.gitlab.ListFiles(ctx, p.branch, path)
 	if err != nil {
 		return nil, err
 	}
@@ -66,54 +67,58 @@ func (p *Parser) listDirs(path string) ([]string, error) {
 }
 
 // pathExists checks if a path exists via GitLab API.
-func (p *Parser) pathExists(path string) bool {
-	files, err := p.gitlab.ListFiles(p.branch, path)
+func (p *Parser) pathExists(ctx context.Context, path string) bool {
+	files, err := p.gitlab.ListFiles(ctx, p.branch, path)
 	return err == nil && len(files) > 0
 }
 
 // ListVClusters discovers all vclusters for a given environment.
-func (p *Parser) ListVClusters(env string) ([]models.VCluster, error) {
+func (p *Parser) ListVClusters(ctx context.Context, env string) ([]models.VCluster, error) {
 	vclusterPath := fmt.Sprintf("clusters/%s/vclusters", env)
 
-	dirs, err := p.listDirs(vclusterPath)
+	dirs, err := p.listDirs(ctx, vclusterPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading vclusters dir: %w", err)
 	}
 
-	type result struct {
-		vc  *models.VCluster
-		err error
-	}
-	results := make([]result, len(dirs))
-	var wg sync.WaitGroup
-
+	results := make([]*models.VCluster, len(dirs))
+	g, gctx := errgroup.WithContext(ctx)
 	for i, name := range dirs {
-		wg.Add(1)
-		go func(idx int, n string) {
-			defer wg.Done()
-			vc, err := p.parseVClusterEnv(env, n)
-			results[idx] = result{vc, err}
-		}(i, name)
+		g.Go(func() error {
+			vc, err := p.parseVClusterEnv(gctx, env, name)
+			if err != nil {
+				// Per-vcluster parse failures are non-fatal: log and keep going
+				// (a single broken values.yaml shouldn't blank the dashboard).
+				// errgroup ctx cancellation is the only error worth surfacing.
+				if gctx.Err() != nil {
+					return gctx.Err()
+				}
+				slog.Warn("skipping vcluster", "env", env, "name", name, "err", err)
+				return nil
+			}
+			results[i] = vc
+			return nil
+		})
 	}
-	wg.Wait()
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
 
-	var vclusters []models.VCluster
-	for i, r := range results {
-		if r.err != nil {
-			slog.Warn("skipping vcluster", "env", env, "name", dirs[i], "err", r.err)
-			continue
+	vclusters := make([]models.VCluster, 0, len(results))
+	for _, vc := range results {
+		if vc != nil {
+			vclusters = append(vclusters, *vc)
 		}
-		vclusters = append(vclusters, *r.vc)
 	}
 	return vclusters, nil
 }
 
 // ParseVCluster reads a single vcluster configuration.
-func (p *Parser) ParseVCluster(env, name string) (*models.VCluster, error) {
-	return p.parseVClusterEnv(env, name)
+func (p *Parser) ParseVCluster(ctx context.Context, env, name string) (*models.VCluster, error) {
+	return p.parseVClusterEnv(ctx, env, name)
 }
 
-func (p *Parser) parseVClusterEnv(env, name string) (*models.VCluster, error) {
+func (p *Parser) parseVClusterEnv(ctx context.Context, env, name string) (*models.VCluster, error) {
 	basePath := fmt.Sprintf("clusters/%s/vclusters/%s", env, name)
 
 	vc := &models.VCluster{
@@ -123,18 +128,18 @@ func (p *Parser) parseVClusterEnv(env, name string) (*models.VCluster, error) {
 
 	// Check if ArgoCD is enabled by looking for argocd directory
 	argocdPath := basePath + "/tenant/argocd"
-	if p.pathExists(argocdPath) {
+	if p.pathExists(ctx, argocdPath) {
 		vc.ArgoCD = true
-		if err := p.parseRBACGroups(basePath, vc); err != nil {
+		if err := p.parseRBACGroups(ctx, basePath, vc); err != nil {
 			vc.RBACGroups = []string{}
 		}
-		if err := p.parseArgoCDVersion(basePath, vc); err != nil {
+		if err := p.parseArgoCDVersion(ctx, basePath, vc); err != nil {
 			// Not critical, just means no per-vcluster override
 		}
 	}
 
 	// Parse values.yaml
-	if err := p.parseValues(basePath, vc); err != nil {
+	if err := p.parseValues(ctx, basePath, vc); err != nil {
 		return nil, err
 	}
 
@@ -165,8 +170,8 @@ type valuesFile struct {
 	} `yaml:"vcluster"`
 }
 
-func (p *Parser) parseValues(basePath string, vc *models.VCluster) error {
-	data, err := p.readFile(basePath + "/values.yaml")
+func (p *Parser) parseValues(ctx context.Context, basePath string, vc *models.VCluster) error {
+	data, err := p.readFile(ctx, basePath+"/values.yaml")
 	if err != nil {
 		return fmt.Errorf("reading values.yaml: %w", err)
 	}
@@ -257,8 +262,8 @@ func parseVeleroCron(schedule string) (hour, minute int) {
 	return
 }
 
-func (p *Parser) parseRBACGroups(basePath string, vc *models.VCluster) error {
-	data, err := p.readFile(basePath + "/tenant/argocd/argocd-rbac-cm.yaml")
+func (p *Parser) parseRBACGroups(ctx context.Context, basePath string, vc *models.VCluster) error {
+	data, err := p.readFile(ctx, basePath+"/tenant/argocd/argocd-rbac-cm.yaml")
 	if err != nil {
 		return err
 	}
@@ -288,8 +293,8 @@ func (p *Parser) parseRBACGroups(basePath string, vc *models.VCluster) error {
 	return nil
 }
 
-func (p *Parser) parseArgoCDVersion(basePath string, vc *models.VCluster) error {
-	data, err := p.readFile(basePath + "/tenant/argocd/kustomization.yaml")
+func (p *Parser) parseArgoCDVersion(ctx context.Context, basePath string, vc *models.VCluster) error {
+	data, err := p.readFile(ctx, basePath+"/tenant/argocd/kustomization.yaml")
 	if err != nil {
 		return err
 	}
@@ -314,12 +319,12 @@ func (p *Parser) parseArgoCDVersion(basePath string, vc *models.VCluster) error 
 
 // ListVClusterNamesOnBranch returns vcluster names found on a specific branch via GitLab API.
 // Returns nil if no GitLab client is configured.
-func (p *Parser) ListVClusterNamesOnBranch(branch, env string) []string {
+func (p *Parser) ListVClusterNamesOnBranch(ctx context.Context, branch, env string) []string {
 	if p.gitlab == nil {
 		return nil
 	}
 	path := fmt.Sprintf("clusters/%s/vclusters", env)
-	files, err := p.gitlab.ListFiles(branch, path)
+	files, err := p.gitlab.ListFiles(ctx, branch, path)
 	if err != nil {
 		return nil
 	}
@@ -338,14 +343,14 @@ func (p *Parser) ListVClusterNamesOnBranch(branch, env string) []string {
 }
 
 // Exists checks if a vcluster exists for the given env.
-func (p *Parser) Exists(env, name string) bool {
+func (p *Parser) Exists(ctx context.Context, env, name string) bool {
 	path := fmt.Sprintf("clusters/%s/vclusters/%s", env, name)
-	return p.pathExists(path)
+	return p.pathExists(ctx, path)
 }
 
 // UsedVeleroSlots returns all velero times currently in use.
-func (p *Parser) UsedVeleroSlots(env string) []string {
-	vclusters, err := p.ListVClusters(env)
+func (p *Parser) UsedVeleroSlots(ctx context.Context, env string) []string {
+	vclusters, err := p.ListVClusters(ctx, env)
 	if err != nil {
 		return nil
 	}

@@ -15,6 +15,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
 	}
+	ctx := r.Context()
 	name := r.PathValue("name")
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
@@ -46,11 +47,11 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if env == "" {
 		env = "preprod"
 	}
-	isPending := env == "prod" && h.isPendingProd(name)
+	isPending := env == "prod" && h.isPendingProd(ctx, name)
 
 	// Handle ArgoCD toggle (any env, any deployment state)
 	if argoCDToggle != "" {
-		currentVC, err := h.parser.ParseVCluster(env, name)
+		currentVC, err := h.parser.ParseVCluster(ctx, env, name)
 		if err != nil {
 			h.renderToast(w, "error", "VCluster introuvable : "+err.Error())
 			return
@@ -60,7 +61,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if newArgoCD != currentVC.ArgoCD {
 			// Rebuild all files with the new ArgoCD flag
 			vcPath := fmt.Sprintf("clusters/%s/vclusters/%s", env, name)
-			existingFiles, _ := h.gitlab.ListFiles("preprod", vcPath)
+			existingFiles, _ := h.gitlab.ListFiles(ctx, "preprod", vcPath)
 
 			var actions []gitops.CommitAction
 			for _, f := range existingFiles {
@@ -91,13 +92,14 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 			commitMsg := fmt.Sprintf("feat: reconfigure vcluster %s (%s, argocd=%v)", name, env, newArgoCD)
 
 			if env == "preprod" || isPending {
-				if err := h.gitlab.Commit("preprod", commitMsg, actions); err != nil {
+				if err := h.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
 					h.renderToast(w, "error", "Erreur commit : "+err.Error())
 					return
 				}
 			} else {
 				// Deployed prod: via MR
 				if _, err := h.commitProdMRActions(
+					ctx,
 					commitMsg,
 					fmt.Sprintf("Reconfiguration ArgoCD du vcluster **%s** en production (argocd=%v).\n\nCréé automatiquement par vcluster-manager.", name, newArgoCD),
 					actions,
@@ -136,7 +138,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	// Handle FluxCD toggle
 	if fluxCDToggle != "" {
-		currentVC, err := h.parser.ParseVCluster(env, name)
+		currentVC, err := h.parser.ParseVCluster(ctx, env, name)
 		if err != nil {
 			h.renderToast(w, "error", "VCluster introuvable : "+err.Error())
 			return
@@ -145,7 +147,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 		if newFluxCD != currentVC.FluxCD.Enabled {
 			vcPath := fmt.Sprintf("clusters/%s/vclusters/%s", env, name)
-			existingFiles, _ := h.gitlab.ListFiles("preprod", vcPath)
+			existingFiles, _ := h.gitlab.ListFiles(ctx, "preprod", vcPath)
 
 			var actions []gitops.CommitAction
 			for _, f := range existingFiles {
@@ -180,12 +182,13 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 			commitMsg := fmt.Sprintf("feat: reconfigure vcluster %s (%s, fluxcd=%v)", name, env, newFluxCD)
 
 			if env == "preprod" || isPending {
-				if err := h.gitlab.Commit("preprod", commitMsg, actions); err != nil {
+				if err := h.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
 					h.renderToast(w, "error", "Erreur commit : "+err.Error())
 					return
 				}
 			} else {
 				if _, err := h.commitProdMRActions(
+					ctx,
 					commitMsg,
 					fmt.Sprintf("Reconfiguration FluxCD du vcluster **%s** en production (fluxcd=%v).\n\nCréé automatiquement par vcluster-manager.", name, newFluxCD),
 					actions,
@@ -208,7 +211,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 			Path:    vf.Path,
 			Content: vf.Content,
 		})
-		vc, err := h.parser.ParseVCluster("preprod", name)
+		vc, err := h.parser.ParseVCluster(ctx, "preprod", name)
 		if err == nil && vc.ArgoCD {
 			if len(req.RBACGroups) > 0 {
 				rf := h.generator.GenerateUpdatedRBAC(name, "preprod", req.RBACGroups)
@@ -234,7 +237,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: update vcluster %s settings", name), preprodActions); err != nil {
+		if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: update vcluster %s settings", name), preprodActions); err != nil {
 			slog.Error("GitLab commit failed", "vcluster", name, "env", "preprod", "err", err)
 			h.renderToast(w, "error", "Erreur commit : "+err.Error())
 			return
@@ -246,7 +249,7 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		prodActions = append(prodActions, gitops.CommitAction{
 			Action: "update", Path: pvf.Path, Content: pvf.Content,
 		})
-		vcProd, err := h.parser.ParseVCluster("prod", name)
+		vcProd, err := h.parser.ParseVCluster(ctx, "prod", name)
 		if err == nil && vcProd.ArgoCD {
 			if len(req.RBACGroups) > 0 {
 				rf := h.generator.GenerateUpdatedRBAC(name, "prod", req.RBACGroups)
@@ -267,13 +270,14 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if isPending {
-			if err := h.gitlab.Commit("preprod", fmt.Sprintf("feat: update vcluster %s settings (prod)", name), prodActions); err != nil {
+			if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: update vcluster %s settings (prod)", name), prodActions); err != nil {
 				slog.Error("GitLab commit failed (prod pending)", "vcluster", name, "err", err)
 				h.renderToast(w, "error", "Erreur commit : "+err.Error())
 				return
 			}
 		} else {
 			mrURL, err := h.commitProdMRActions(
+				ctx,
 				fmt.Sprintf("feat: update vcluster %s settings", name),
 				fmt.Sprintf("Mise à jour des paramètres du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", name),
 				prodActions,

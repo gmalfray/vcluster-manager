@@ -161,7 +161,7 @@ func (h *Handlers) startVaultReconciler() {
 	}
 
 	for _, env := range []string{"preprod", "prod"} {
-		vclusters, err := h.parser.ListVClusters(env)
+		vclusters, err := h.parser.ListVClusters(context.Background(), env)
 		if err != nil {
 			slog.Warn("vault startup: could not list vclusters", "env", env, "err", err)
 			continue
@@ -448,6 +448,7 @@ func (h *Handlers) UpdateVeleroConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Commit BSL values.yaml to fluxprod for both envs if bucket or S3 URL is set
 	if h.gitlab != nil && (h.cfg.VeleroS3URL != "" || h.cfg.VeleroBucketPreprod != "" || h.cfg.VeleroBucketProd != "") {
+		ctx := r.Context()
 		var actions []gitops.CommitAction
 		for _, env := range []string{"preprod", "prod"} {
 			bucket := h.cfg.VeleroBucketPreprod
@@ -459,7 +460,7 @@ func (h *Handlers) UpdateVeleroConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			path := fmt.Sprintf("%s/%s/velero/values.yaml", h.cfg.FluxprodClustersPath, env)
 			action := "update"
-			if _, err := h.gitlab.GetFile("preprod", path); err != nil {
+			if _, err := h.gitlab.GetFile(ctx, "preprod", path); err != nil {
 				action = "create"
 			}
 			actions = append(actions, gitops.CommitAction{
@@ -469,7 +470,7 @@ func (h *Handlers) UpdateVeleroConfig(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		if len(actions) > 0 {
-			if err := h.gitlab.Commit("preprod", "chore: update Velero BSL configuration", actions); err != nil {
+			if err := h.gitlab.Commit(ctx, "preprod", "chore: update Velero BSL configuration", actions); err != nil {
 				slog.Error("UpdateVeleroConfig: commit failed", "err", err)
 				h.renderToast(w, "error", fmt.Sprintf("Settings sauvegardés mais erreur commit fluxprod : %v", err))
 				return

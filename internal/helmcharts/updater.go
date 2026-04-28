@@ -1,6 +1,7 @@
 package helmcharts
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -25,8 +26,8 @@ func NewUpdater(gl *gitops.GitLabClient, chartPath string) *Updater {
 }
 
 // GetCurrentChartVersion reads the chart version from charts/vcluster/Chart.yaml on the given branch.
-func (u *Updater) GetCurrentChartVersion(branch string) (string, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath+"/Chart.yaml")
+func (u *Updater) GetCurrentChartVersion(ctx context.Context, branch string) (string, error) {
+	content, err := u.gitlab.GetFile(ctx, branch, u.chartPath+"/Chart.yaml")
 	if err != nil {
 		return "", fmt.Errorf("reading Chart.yaml: %w", err)
 	}
@@ -42,8 +43,8 @@ func (u *Updater) GetCurrentChartVersion(branch string) (string, error) {
 
 // GetDefaultK8sVersion reads the default K8s version from charts/vcluster/values.yaml.
 // Path: vcluster.controlPlane.distro.k8s.image.tag
-func (u *Updater) GetDefaultK8sVersion(branch string) (string, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath+"/values.yaml")
+func (u *Updater) GetDefaultK8sVersion(ctx context.Context, branch string) (string, error) {
+	content, err := u.gitlab.GetFile(ctx, branch, u.chartPath+"/values.yaml")
 	if err != nil {
 		return "", fmt.Errorf("reading values.yaml: %w", err)
 	}
@@ -103,17 +104,17 @@ func (u *Updater) GetPendingK8sMR() *PendingMR {
 
 // UpdateChart bumps the chart version (and dependency version) in Chart.yaml.
 // Commits on preprod, then creates a MR preprod → master for prod (if no MR already open).
-func (u *Updater) UpdateChart(tag string) (string, error) {
+func (u *Updater) UpdateChart(ctx context.Context, tag string) (string, error) {
 	semver := trimV(tag)
 
 	// Commit on preprod (always)
-	actions, err := u.buildChartVersionActions("preprod", semver)
+	actions, err := u.buildChartVersionActions(ctx, "preprod", semver)
 	if err != nil {
 		return "", fmt.Errorf("building actions: %w", err)
 	}
 
 	commitMsg := fmt.Sprintf("feat: update vcluster chart to %s", tag)
-	if err := u.gitlab.Commit("preprod", commitMsg, actions); err != nil {
+	if err := u.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 
@@ -137,15 +138,15 @@ func (u *Updater) UpdateChart(tag string) (string, error) {
 
 // UpdateK8sVersion updates vcluster.controlPlane.distro.k8s.image.tag in values.yaml.
 // Commits on preprod, then creates a MR preprod → master for prod (if no MR already open).
-func (u *Updater) UpdateK8sVersion(version string) (string, error) {
+func (u *Updater) UpdateK8sVersion(ctx context.Context, version string) (string, error) {
 	// Commit on preprod (always)
-	actions, err := u.buildK8sVersionActions("preprod", version)
+	actions, err := u.buildK8sVersionActions(ctx, "preprod", version)
 	if err != nil {
 		return "", fmt.Errorf("building actions: %w", err)
 	}
 
 	commitMsg := fmt.Sprintf("feat: update default K8s version to %s", version)
-	if err := u.gitlab.Commit("preprod", commitMsg, actions); err != nil {
+	if err := u.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 
@@ -169,8 +170,8 @@ func (u *Updater) UpdateK8sVersion(version string) (string, error) {
 
 // buildChartVersionActions reads Chart.yaml from the given branch and updates
 // both the chart version and the vcluster dependency version.
-func (u *Updater) buildChartVersionActions(branch, semver string) ([]gitops.CommitAction, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath+"/Chart.yaml")
+func (u *Updater) buildChartVersionActions(ctx context.Context, branch, semver string) ([]gitops.CommitAction, error) {
+	content, err := u.gitlab.GetFile(ctx, branch, u.chartPath+"/Chart.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("reading Chart.yaml on %s: %w", branch, err)
 	}
@@ -203,8 +204,8 @@ func (u *Updater) buildChartVersionActions(branch, semver string) ([]gitops.Comm
 
 // buildK8sVersionActions reads values.yaml from the given branch and updates
 // vcluster.controlPlane.distro.k8s.image.tag.
-func (u *Updater) buildK8sVersionActions(branch, version string) ([]gitops.CommitAction, error) {
-	content, err := u.gitlab.GetFile(branch, u.chartPath+"/values.yaml")
+func (u *Updater) buildK8sVersionActions(ctx context.Context, branch, version string) ([]gitops.CommitAction, error) {
+	content, err := u.gitlab.GetFile(ctx, branch, u.chartPath+"/values.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("reading values.yaml on %s: %w", branch, err)
 	}

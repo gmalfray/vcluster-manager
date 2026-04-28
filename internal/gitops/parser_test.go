@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
@@ -30,14 +31,14 @@ func (f *fakeFileProvider) addDir(branch, path string, filePaths []string) {
 	f.dirs[branch+":"+path] = filePaths
 }
 
-func (f *fakeFileProvider) GetFile(branch, path string) (string, error) {
+func (f *fakeFileProvider) GetFile(_ context.Context, branch, path string) (string, error) {
 	if v, ok := f.files[branch+":"+path]; ok {
 		return v, nil
 	}
 	return "", fmt.Errorf("file not found: %s on %s", path, branch)
 }
 
-func (f *fakeFileProvider) ListFiles(branch, path string) ([]string, error) {
+func (f *fakeFileProvider) ListFiles(_ context.Context, branch, path string) ([]string, error) {
 	if v, ok := f.dirs[branch+":"+path]; ok {
 		return v, nil
 	}
@@ -83,7 +84,7 @@ func TestListDirs(t *testing.T) {
 	})
 	p := newTestParser(fp)
 
-	dirs, err := p.listDirs("clusters/preprod/vclusters")
+	dirs, err := p.listDirs(context.Background(), "clusters/preprod/vclusters")
 	if err != nil {
 		t.Fatalf("listDirs error: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestListDirs_NoDuplicates(t *testing.T) {
 	})
 	p := newTestParser(fp)
 
-	dirs, err := p.listDirs("clusters/preprod/vclusters")
+	dirs, err := p.listDirs(context.Background(), "clusters/preprod/vclusters")
 	if err != nil {
 		t.Fatalf("listDirs error: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestParseValues_Velero(t *testing.T) {
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/values.yaml", valuesYAML(""))
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -169,7 +170,7 @@ vcluster:
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/values.yaml", content)
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestParseValues_Quotas(t *testing.T) {
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/values.yaml", valuesYAML(""))
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -218,7 +219,7 @@ vcluster:
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/values.yaml", content)
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -246,7 +247,7 @@ vcluster:
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/values.yaml", content)
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -275,7 +276,7 @@ fluxcd:
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/values.yaml", content)
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -338,7 +339,7 @@ func TestParseRBACGroups(t *testing.T) {
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/tenant/argocd/kustomization.yaml", "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: []\n")
 
 	p := newTestParser(fp)
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -369,7 +370,7 @@ func TestParseRBACGroups_Empty(t *testing.T) {
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/tenant/argocd/kustomization.yaml", "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: []\n")
 
 	p := newTestParser(fp)
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -404,7 +405,7 @@ func TestParseArgoCDVersion_WithPin(t *testing.T) {
 	})
 
 	p := newTestParser(fp)
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -424,7 +425,7 @@ func TestParseArgoCDVersion_NoPin(t *testing.T) {
 	})
 
 	p := newTestParser(fp)
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -442,7 +443,7 @@ func TestParseVClusterEnv_ArgoCDDisabled(t *testing.T) {
 	// pathExists calls ListFiles; return error to signal "not found"
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -456,7 +457,7 @@ func TestParseVClusterEnv_NameAndEnv(t *testing.T) {
 	fp.set("preprod", "clusters/preprod/vclusters/myvc/values.yaml", valuesYAML(""))
 	p := newTestParser(fp)
 
-	vc, err := p.parseVClusterEnv("preprod", "myvc")
+	vc, err := p.parseVClusterEnv(context.Background(), "preprod", "myvc")
 	if err != nil {
 		t.Fatalf("parseVClusterEnv error: %v", err)
 	}
@@ -484,7 +485,7 @@ func TestListVClusters(t *testing.T) {
 	fp.set("preprod", "clusters/preprod/vclusters/demos/values.yaml", valuesYAML(""))
 
 	p := newTestParser(fp)
-	vclusters, err := p.ListVClusters("preprod")
+	vclusters, err := p.ListVClusters(context.Background(), "preprod")
 	if err != nil {
 		t.Fatalf("ListVClusters error: %v", err)
 	}
@@ -504,7 +505,7 @@ func TestListVClusters_SkipsParseError(t *testing.T) {
 
 	p := newTestParser(fp)
 	// Should return only "good" and log a warning for "bad"
-	vclusters, err := p.ListVClusters("preprod")
+	vclusters, err := p.ListVClusters(context.Background(), "preprod")
 	if err != nil {
 		t.Fatalf("ListVClusters error: %v", err)
 	}
