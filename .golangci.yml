@@ -45,9 +45,7 @@ linters:
     staticcheck:
       checks:
         - all
-        # ST1000/ST1020 require package/exported-symbol comments — re-enable when
-        # the doc.go pass lands across packages.
-        - "-ST1000"
+        # ST1000/ST1020 require package and exported-symbol comments.
         - "-ST1020"
         # QF*/S* are quickfix style suggestions, not bugs.
         - "-QF1001"
