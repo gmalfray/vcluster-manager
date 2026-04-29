@@ -53,9 +53,9 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       `internal/gitops/gitlab.go` (commits multi-fichiers atomiques, MR→PR,
       deploy keys, création de repos dans une org). Voir analyse dans
       `FORK.md`. Grosse feature, à planifier séparément.
-- [ ] **Migration `xanzy/go-gitlab` → `gitlab.com/gitlab-org/api/client-go`** :
+- [x] ~~**Migration `xanzy/go-gitlab` → `gitlab.com/gitlab-org/api/client-go`** :
       le module `xanzy` est archivé depuis 2024. La migration permet aussi de
-      retirer l'exclusion `SA1019` au lint.
+      retirer l'exclusion `SA1019` au lint.~~
 
 ## UX / Internationalisation
 
