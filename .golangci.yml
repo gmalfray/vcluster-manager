@@ -45,10 +45,6 @@ linters:
     staticcheck:
       checks:
         - all
-        # SA1019 deprecation warnings: xanzy/go-gitlab is archived; the migration
-        # to gitlab.com/gitlab-org/api/client-go is tracked separately. Re-enable
-        # once that work lands.
-        - "-SA1019"
         # ST1000/ST1020 require package/exported-symbol comments — re-enable when
         # the doc.go pass lands across packages.
         - "-ST1000"

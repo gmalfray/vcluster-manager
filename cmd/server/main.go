@@ -107,7 +107,7 @@ func run() error {
 		ProjectID:             cfg.GitLabProjectID,
 		ArgoCDGroupID:         cfg.GitLabGroupID,
 		ArgoCDPath:            cfg.GitLabArgoCDPath,
-		FluxDeployKeyID:       cfg.FluxCDDeployKey,
+		FluxDeployKeyID:       int64(cfg.FluxCDDeployKey),
 		DomainPreprod:         cfg.BaseDomainPreprod,
 		DomainProd:            cfg.BaseDomainProd,
 		VaultAddr:             cfg.VaultAddr,

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/samber/hot"
-	"github.com/xanzy/go-gitlab"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 
 	"github.com/gmalfray/vcluster-manager/internal/metrics"
 )
@@ -26,7 +26,7 @@ type GitLabClientConfig struct {
 	ProjectID       string
 	ArgoCDGroupID   string // numeric group ID (as string) for creating repos via API
 	ArgoCDPath      string // namespace path for repo lookups, e.g. "ops/argocd"
-	FluxDeployKeyID int
+	FluxDeployKeyID int64
 	// Fields used for app-manifests README generation:
 	DomainPreprod string
 	DomainProd    string
@@ -44,7 +44,7 @@ type GitLabClient struct {
 	projectID             string
 	argocdGroupID         string
 	argocdPath            string // namespace path for repo lookups, e.g. "ops/argocd"
-	fluxDeployKeyID       int
+	fluxDeployKeyID       int64
 	domainPreprod         string
 	domainProd            string
 	vaultAddr             string
@@ -237,7 +237,7 @@ func (g *GitLabClient) Commit(ctx context.Context, branch, message string, actio
 	for _, a := range actions {
 		actionValue := gitlab.FileActionValue(a.Action)
 		opt := &gitlab.CommitActionOptions{
-			Action:   gitlab.FileAction(actionValue),
+			Action:   &actionValue,
 			FilePath: gitlab.Ptr(a.Path),
 		}
 		if a.Action != "delete" {
@@ -261,7 +261,7 @@ func (g *GitLabClient) Commit(ctx context.Context, branch, message string, actio
 }
 
 // CreateAppManifestsRepo creates a new app-manifests repo for ArgoCD.
-func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
+func (g *GitLabClient) CreateAppManifestsRepo(name string) (int64, error) {
 	repoName := "app-manifests-" + name
 
 	groupID, err := strconv.Atoi(g.argocdGroupID)
@@ -273,7 +273,7 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 	proj, _, err := g.client.Projects.CreateProject(&gitlab.CreateProjectOptions{
 		Name:                 gitlab.Ptr(repoName),
 		Path:                 gitlab.Ptr(repoName),
-		NamespaceID:          gitlab.Ptr(groupID),
+		NamespaceID:          gitlab.Ptr(int64(groupID)),
 		DefaultBranch:        gitlab.Ptr("master"),
 		InitializeWithReadme: gitlab.Ptr(true),
 		Visibility:           gitlab.Ptr(gitlab.PrivateVisibility),
@@ -320,7 +320,7 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int, error) {
 		CommitMessage: gitlab.Ptr("docs: add project README"),
 		Actions: []*gitlab.CommitActionOptions{
 			{
-				Action:   gitlab.FileAction(gitlab.FileActionValue("update")),
+				Action:   gitlab.Ptr(gitlab.FileActionValue("update")),
 				FilePath: gitlab.Ptr("README.md"),
 				Content:  gitlab.Ptr(readmeContent),
 			},
