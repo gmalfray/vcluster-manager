@@ -37,8 +37,9 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       `github/releases.go` et `config/config.go`.
 - [ ] **`/metrics` derrière le rate limiter ?** Aujourd'hui sur le mux global
       sans middleware. À décider : assumé (Prom scrape interne) vs DoS-vector.
-- [ ] **`doc.go` par package** : permettrait de réactiver `ST1000/ST1020` au
-      lint. Une passe mécanique.
+- [x] ~~**`doc.go` par package** : permettrait de réactiver `ST1000/ST1020` au
+      lint. Une passe mécanique.~~ ST1000 activé ; ST1020 (exported symbols)
+      reste désactivé — une passe godoc complète est un effort séparé.
 - [ ] **Tests manquants** : `internal/gitops/gitlab.go` (`withRetry` testable
       avec `httptest`), `internal/notify/webhook.go`, `internal/auth/oidc.go`,
       `internal/rancher/client.go`.
