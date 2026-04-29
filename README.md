@@ -263,7 +263,7 @@ Le role admin est attribue aux utilisateurs appartenant aux groupes OIDC definis
 | Mecanisme | Detail |
 |-----------|--------|
 | **CSRF** | Double-submit cookie (`csrf_token` SameSite=Strict + header `X-CSRF-Token`). Le hook HTMX `htmx:configRequest` injecte automatiquement le header sur chaque requete. |
-| **Rate limiting** | 20 req/s, burst 50 par IP. Applique avant l'authentification. |
+| **Rate limiting** | 20 req/s, burst 50 par IP sur toutes les routes applicatives. `/metrics` dispose d'un limiteur dédié (5 req/s, burst 10). |
 | **Auth OIDC** | Keycloak (ou tout provider OIDC), groupes admin configurables via `ADMIN_GROUPS`. |
 | **Auth locale** | Mot de passe + JWT (fallback dev). |
 | **Secrets** | Tokens GitLab/Rancher/Vault dans `vcluster-manager-secrets`. `WEBHOOK_URL` dans le meme secret (URL avec token). |
@@ -282,7 +282,7 @@ go build -o vcluster-manager ./cmd/server
 go test ./...
 ```
 
-Les tests couvrent : generateur GitOps (`generator_test.go`, 25 tests), parser (`parser_test.go`, 17 tests), handlers (`handlers_test.go`, 17 tests), CSRF (`csrf_test.go`, 12 tests).
+Les tests couvrent : generateur GitOps (`generator_test.go`, 25 tests), parser (`parser_test.go`, 17 tests), handlers (`handlers_test.go`, 17 tests), CSRF (`csrf_test.go`, 12 tests), webhook notify (`notify/webhook_test.go`, 5 tests), retry GitLab (`gitops/gitlab_retry_test.go`, 7 tests), auth OIDC (`auth/oidc_test.go`, 13 tests), client Rancher (`rancher/client_test.go`, 13 tests).
 
 ### Docker
 
@@ -308,10 +308,16 @@ internal/
     parser.go                 # Lecture des vclusters depuis fluxprod (parallelise, interface fileProvider)
     generator.go              # Generation des fichiers YAML GitOps
     templates/                # Templates YAML embarques (go:embed)
-    gitlab.go                 # Client GitLab API (cache TTL 30s)
+    gitlab.go                 # Client GitLab API (samber/hot W-TinyLFU TTL 30s, retry avec backoff)
+    apps.go                   # Gestion des repos app-manifests ArgoCD
   helmcharts/updater.go       # Mise a jour chart vcluster (platform-helm-charts)
   keycloak/client.go          # Client Keycloak Admin API (client_credentials, token cache)
-  kubernetes/status.go        # client-go : HelmRelease/Kustomization + versions + quotas + Rancher agents
+  kubernetes/
+    status.go                 # StatusClient, quotas, HelmRelease/Kustomization, versions
+    vcluster_access.go        # Kubeconfig, port-forward, apply manifests, ArgoCD apps
+    velero.go                 # Backups/restores Velero, suspend Flux, scale StatefulSet
+    rancher.go                # Detection agents Rancher
+    protection.go             # Annotation protect-deletion namespace
   metrics/                    # Middleware Prometheus + handler /metrics
   models/vcluster.go          # Structs Go (VCluster, CreateRequest, UpdateRequest, StatusInfo...)
   notify/webhook.go           # Notifier webhook generique (Slack/Mattermost/RC)

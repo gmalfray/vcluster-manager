@@ -6,14 +6,16 @@ Toutes les modifications notables sont documentées ici. Le format suit
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-04-29
+
 ### Added
 - `Makefile` : cibles `build`, `test`, `test-short`, `vet`, `fmt`, `lint`,
   `lint-fix`, `coverage`, `tidy`, `check`, `clean`. Exporte
   `GOTMPDIR=$HOME/.cache/go-tmp` pour les workstations avec `/tmp` monté `noexec`.
 - `.golangci.yml` (v2) : baseline de linters (errcheck, govet, staticcheck,
   ineffassign, unused, bodyclose, misspell, unconvert, gocritic, revive,
-  copyloopvar). Exclusions ciblées : `SA1019` (deprecation `xanzy/go-gitlab`,
-  migration séparée) et `ST1000/ST1020` (passe `doc.go` à venir).
+  copyloopvar). Toutes les exclusions temporaires levées en fin de release
+  (`SA1019` après migration gitlab, `ST1000`/`ST1020` après passe doc.go).
 - Documentation séparée : `AGENTS.md` (règles agent), `docs/ARCHITECTURE.md`
   (patterns détaillés), `CHANGELOG.md`, `TODO.md`. `CLAUDE.md` devient un shim
   pointant vers ces fichiers.
