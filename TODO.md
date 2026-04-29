@@ -30,8 +30,8 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       ou functional options.~~ Struct `handlers.Deps`.
 - [x] ~~**Découpe `internal/handlers/api.go`** (1275 LOC) : `api_velero.go`,
       `api_rancher.go`, `api_protection.go`, `api_chart.go`, `api_apps.go`.~~
-- [ ] **Découpe `internal/kubernetes/status.go`** (1413 LOC) : `status.go`,
-      `vcluster_access.go`, `velero.go`, `rancher.go`, `protection.go`.
+- [x] ~~**Découpe `internal/kubernetes/status.go`** (1413 LOC) : `status.go`,
+      `vcluster_access.go`, `velero.go`, `rancher.go`, `protection.go`.~~
 - [x] ~~**`atoi` avec `fmt.Sscanf`** dans `gitlab.go` → `strconv.Atoi` (plus
       rapide, erreur explicite).~~ Étendu à `gitops/generator.go`,
       `github/releases.go` et `config/config.go`.
