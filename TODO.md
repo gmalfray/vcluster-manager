@@ -35,14 +35,15 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 - [x] ~~**`atoi` avec `fmt.Sscanf`** dans `gitlab.go` → `strconv.Atoi` (plus
       rapide, erreur explicite).~~ Étendu à `gitops/generator.go`,
       `github/releases.go` et `config/config.go`.
-- [ ] **`/metrics` derrière le rate limiter ?** Aujourd'hui sur le mux global
-      sans middleware. À décider : assumé (Prom scrape interne) vs DoS-vector.
+- [x] ~~**`/metrics` derrière le rate limiter ?** Aujourd'hui sur le mux global
+      sans middleware. À décider : assumé (Prom scrape interne) vs DoS-vector.~~
+      Rate-limiter dédié (5 req/s, burst 10) sans auth.
 - [x] ~~**`doc.go` par package** : permettrait de réactiver `ST1000/ST1020` au
       lint. Une passe mécanique.~~ ST1000 activé ; ST1020 (exported symbols)
       reste désactivé — une passe godoc complète est un effort séparé.
-- [ ] **Tests manquants** : `internal/gitops/gitlab.go` (`withRetry` testable
+- [x] ~~**Tests manquants** : `internal/gitops/gitlab.go` (`withRetry` testable
       avec `httptest`), `internal/notify/webhook.go`, `internal/auth/oidc.go`,
-      `internal/rancher/client.go`.
+      `internal/rancher/client.go`.~~
 - [x] ~~**Errcheck cleanup** : ~21 erreurs réelles non check via `go fmt` dans
       handlers et clients. Soit fix soit `//nolint:errcheck` motivé.~~
 
