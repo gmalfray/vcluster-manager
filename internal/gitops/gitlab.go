@@ -55,11 +55,15 @@ type GitLabClient struct {
 	cache                 *hot.HotCache[string, string]
 }
 
+// retryDelays controls the back-off between withRetry attempts.
+// Tests override this to zero-duration slices for fast execution.
+var retryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+
 // withRetry retries fn up to 3 times on transient errors (network, 429, 5xx).
 // The ctx aborts the back-off sleep so a server shutdown does not block on
 // the longest delay (~17s cumulated).
 func withRetry(ctx context.Context, op string, fn func() (*gitlab.Response, error)) error {
-	delays := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+	delays := retryDelays
 	var lastErr error
 	for i, delay := range delays {
 		resp, err := fn()
