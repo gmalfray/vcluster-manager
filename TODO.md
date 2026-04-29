@@ -28,8 +28,8 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       bloqué quand l'utilisateur ferme l'onglet.~~
 - [x] ~~**Constructeur `handlers.New` à 12 args** : remplacer par struct config
       ou functional options.~~ Struct `handlers.Deps`.
-- [ ] **Découpe `internal/handlers/api.go`** (1275 LOC) : `api_velero.go`,
-      `api_rancher.go`, `api_protection.go`, `api_chart.go`, `api_apps.go`.
+- [x] ~~**Découpe `internal/handlers/api.go`** (1275 LOC) : `api_velero.go`,
+      `api_rancher.go`, `api_protection.go`, `api_chart.go`, `api_apps.go`.~~
 - [ ] **Découpe `internal/kubernetes/status.go`** (1413 LOC) : `status.go`,
       `vcluster_access.go`, `velero.go`, `rancher.go`, `protection.go`.
 - [x] ~~**`atoi` avec `fmt.Sscanf`** dans `gitlab.go` → `strconv.Atoi` (plus
