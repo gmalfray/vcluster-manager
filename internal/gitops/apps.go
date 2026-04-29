@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xanzy/go-gitlab"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"gopkg.in/yaml.v3"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
 )
 
 // findAppManifestsProjectID searches the GitLab project ID for app-manifests-{vcName}.
-func (g *GitLabClient) findAppManifestsProjectID(vcName string) (int, error) {
+func (g *GitLabClient) findAppManifestsProjectID(vcName string) (int64, error) {
 	repoName := "app-manifests-" + vcName
 	projects, _, err := g.client.Projects.ListProjects(&gitlab.ListProjectsOptions{
 		Search: gitlab.Ptr(repoName),
@@ -99,7 +99,7 @@ func (g *GitLabClient) CommitToAppManifests(vcName, branch, message string, acti
 	for _, a := range actions {
 		actionValue := gitlab.FileActionValue(a.Action)
 		opt := &gitlab.CommitActionOptions{
-			Action:   gitlab.FileAction(actionValue),
+			Action:   &actionValue,
 			FilePath: gitlab.Ptr(a.Path),
 		}
 		if a.Action != "delete" {
