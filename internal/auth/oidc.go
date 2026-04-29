@@ -195,7 +195,7 @@ func generateState() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-// UserFromContext is a helper for templates - returns user info as JSON-safe map.
+// UserFromRequest returns the authenticated user's claims as a JSON-safe map for use in templates.
 func UserFromRequest(r *http.Request) map[string]interface{} {
 	cookie, err := r.Cookie("session_token")
 	if err != nil {

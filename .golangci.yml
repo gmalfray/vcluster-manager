@@ -45,8 +45,6 @@ linters:
     staticcheck:
       checks:
         - all
-        # ST1000/ST1020 require package and exported-symbol comments.
-        - "-ST1020"
         # QF*/S* are quickfix style suggestions, not bugs.
         - "-QF1001"
         - "-QF1003"
