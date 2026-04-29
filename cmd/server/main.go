@@ -317,8 +317,10 @@ func run() error {
 		slog.Warn("running without authentication", "mode", "dev")
 	}
 
-	// Metrics endpoint (unauthenticated, scraping by Prometheus)
-	http.Handle("GET /metrics", metrics.Handler())
+	// Metrics endpoint: unauthenticated (Prometheus scraper), but rate-limited
+	// to prevent abuse. 5 req/s with burst 10 covers any reasonable scrape interval.
+	metricsLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
+	http.Handle("GET /metrics", metricsLimiter.Middleware(metrics.Handler()))
 
 	// Static files
 	http.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
