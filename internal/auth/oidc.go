@@ -241,6 +241,14 @@ func SetAdminGroups(groups []string) {
 // Admin access is granted if:
 // - The JWT issuer is "vcluster-manager-local" (local admin login)
 // - The user belongs to one of the adminGroups
+//
+// Invariant: this reads the token's claims without checking its signature —
+// it trusts that CombinedMiddleware already verified it earlier in the
+// request. Only call IsAdmin on a request that went through that middleware;
+// every mutating route MUST sit behind authMiddleware (see cmd/server/main.go)
+// or this check is worthless. Known debt: claims should instead be verified
+// once by the middleware and passed down via request context, so nothing
+// downstream can call IsAdmin on an unverified request by mistake.
 func IsAdmin(r *http.Request) bool {
 	cookie, err := r.Cookie("session_token")
 	if err != nil {
