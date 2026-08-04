@@ -3,16 +3,32 @@ package handlers
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"time"
 
 	"github.com/gmalfray/vcluster-manager/internal/audit"
+	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 )
+
+// backupNameRegex is the accepted shape of a Velero backup name: what Velero
+// itself generates for a manual backup ("manual-<vcluster>-<millis>", see
+// CreateVeleroBackup) and what a Schedule-driven one looks like
+// ("<schedule>-<timestamp>") — lowercase alphanumerics, dots and dashes, i.e. a
+// normal Kubernetes resource name. That rules out "/" and "..", which is what
+// matters here: the name flows into a DownloadRequest object and an S3 URL,
+// and gets fetched from an admin browser.
+var backupNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
+
+func validBackupName(backup string) bool {
+	return backupNameRegex.MatchString(backup)
+}
 
 // VeleroBackupList returns an HTMX fragment listing Velero backups for a vcluster.
 func (h *Handlers) VeleroBackupList(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +81,14 @@ func (h *Handlers) VeleroBackupContent(w http.ResponseWriter, r *http.Request) {
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		env = "preprod"
+	}
+
+	if !validBackupName(backup) {
+		h.renderPartial(w, "velero_backup_content.html", map[string]interface{}{
+			"Error":      "Nom de backup invalide",
+			"BackupName": backup,
+		})
+		return
 	}
 
 	k8s := h.k8sForEnv(env)
@@ -161,6 +185,10 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 		h.renderToast(w, "error", "Nom du backup manquant")
 		return
 	}
+	if !validBackupName(backupName) {
+		h.renderToast(w, "error", "Nom de backup invalide")
+		return
+	}
 
 	k8s := h.k8sForEnv(env)
 	if k8s == nil {
@@ -175,16 +203,32 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 		targetNS = "vcluster-" + targetName
 	}
 
-	// For in-place restores: suspend Flux, scale down vcluster, delete PVC so Velero can restore it.
+	// An in-place restore overwrites the source vcluster: suspend Flux, scale it
+	// down and delete its PVC so Velero can recreate it. Confirming the backup is
+	// actually restorable comes first — finding out after the PVC is gone would
+	// leave the vcluster on an empty volume.
 	if inPlace {
+		phase, err := k8s.GetVeleroBackupPhase(r.Context(), backupName, h.cfg.VeleroNamespace)
+		if err != nil {
+			h.renderToast(w, "error", fmt.Sprintf("Backup introuvable : %v", err))
+			return
+		}
+		if phase != "Completed" {
+			h.renderToast(w, "error", fmt.Sprintf("Backup non restaurable (phase : %s)", phase))
+			return
+		}
+
 		if err := k8s.SetFluxSuspend(r.Context(), name, true); err != nil {
 			slog.Warn("could not suspend flux", "vcluster", name, "err", err)
 		}
 		if err := k8s.ScaleVClusterStatefulSet(r.Context(), name, 0); err != nil {
 			slog.Warn("could not scale down vcluster", "vcluster", name, "err", err)
 		} else {
-			// Give the StatefulSet a moment to release the PVC before deleting it.
-			time.Sleep(5 * time.Second)
+			// Wait for the pod to really terminate: deleting a still-mounted PVC
+			// leaves it stuck Terminating.
+			if err := k8s.WaitForVClusterPodGone(r.Context(), name, 30*time.Second); err != nil {
+				slog.Warn("pod didn't terminate in time, deleting PVC anyway", "vcluster", name, "err", err)
+			}
 			if err := k8s.DeleteVClusterPVC(r.Context(), name); err != nil {
 				slog.Warn("could not delete PVC", "vcluster", name, "err", err)
 			}
@@ -204,6 +248,14 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	audit.Log(r, "velero-restore", name, env, "backup="+backupName, "target="+targetNS)
+
+	// An in-place restore leaves Flux suspended and the StatefulSet at zero until
+	// it ends. Browser polling can't be trusted with that — close the tab and the
+	// vcluster stays down — so watch it server-side too.
+	if inPlace {
+		go h.resumeAfterInPlaceRestore(k8s, name, restoreName, h.cfg.VeleroNamespace)
+	}
+
 	h.renderPartial(w, "velero_restore_status.html", map[string]interface{}{
 		"RestoreName": restoreName,
 		"Phase":       "New",
@@ -212,6 +264,47 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 		"BackupName":  backupName,
 		"InPlace":     inPlace,
 	})
+}
+
+// resumeAfterInPlaceRestore watches an in-place restore to completion and resumes
+// Flux (which rescales the vcluster) independently of the browser. On timeout it
+// resumes anyway rather than leave the vcluster stuck at zero replicas.
+func (h *Handlers) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, restoreName, veleroNamespace string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Warn("restore timed out, resuming flux as a safety net", "restore", restoreName, "vcluster", name)
+			if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
+				slog.Error("could not resume flux after timeout", "vcluster", name, "err", err)
+			}
+			return
+		case <-ticker.C:
+			phase, err := k8s.GetRestoreStatus(ctx, restoreName, veleroNamespace)
+			if err != nil {
+				slog.Warn("polling restore failed", "restore", restoreName, "err", err)
+				continue
+			}
+			if isTerminalRestorePhase(phase) {
+				if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
+					slog.Error("could not resume flux after restore", "vcluster", name, "phase", phase, "err", err)
+				} else {
+					slog.Info("restore reached terminal phase, flux resumed", "restore", restoreName, "phase", phase, "vcluster", name)
+				}
+				return
+			}
+		}
+	}
+}
+
+// isTerminalRestorePhase reports whether a restore is over, whatever the outcome.
+func isTerminalRestorePhase(phase string) bool {
+	return phase == "Completed" || phase == "Failed" || phase == "PartiallyFailed"
 }
 
 // VeleroRestoreStatus returns the status of a Velero restore (HTMX polling).
@@ -246,8 +339,7 @@ func (h *Handlers) VeleroRestoreStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resume Flux when restore is complete (in-place only).
-	terminal := phase == "Completed" || phase == "Failed" || phase == "PartiallyFailed"
-	if inPlace && terminal {
+	if inPlace && isTerminalRestorePhase(phase) {
 		if resumeErr := k8s.SetFluxSuspend(r.Context(), name, false); resumeErr != nil {
 			slog.Warn("could not resume flux after restore", "vcluster", name, "err", resumeErr)
 		}
@@ -302,6 +394,10 @@ func (h *Handlers) DeleteVeleroBackup(w http.ResponseWriter, r *http.Request) {
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		env = "preprod"
+	}
+	if !validBackupName(backup) {
+		h.renderToast(w, "error", "Nom de backup invalide")
+		return
 	}
 
 	k8s := h.k8sForEnv(env)
