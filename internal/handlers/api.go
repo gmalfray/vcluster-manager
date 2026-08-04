@@ -46,34 +46,14 @@ func (h *Handlers) RetryVaultSetup(w http.ResponseWriter, r *http.Request) {
 
 // FluxSummaryFragment returns an HTMX fragment with HelmRelease counts for the dashboard Flux Status card.
 func (h *Handlers) FluxSummaryFragment(w http.ResponseWriter, r *http.Request) {
-	type envCount struct {
-		Total int
-		Ready int
-	}
-	counts := map[string]envCount{}
-
-	for _, env := range []string{"preprod", "prod"} {
-		k8s := h.k8sForEnv(env)
-		if k8s == nil {
-			continue
-		}
-		total, ready, err := k8s.CountReadyHelmReleases(r.Context())
-		if err != nil {
-			slog.Error("error counting helm releases", "env", env, "err", err)
-			continue
-		}
-		counts[env] = envCount{Total: total, Ready: ready}
-	}
-
-	pp := counts["preprod"]
-	pr := counts["prod"]
+	summary := h.svc.GetFluxSummary(r.Context())
 	h.renderPartial(w, "flux_summary.html", map[string]interface{}{
-		"Total":        pp.Total + pr.Total,
-		"Ready":        pp.Ready + pr.Ready,
-		"PreprodTotal": pp.Total,
-		"PreprodReady": pp.Ready,
-		"ProdTotal":    pr.Total,
-		"ProdReady":    pr.Ready,
+		"Total":        summary.Total,
+		"Ready":        summary.Ready,
+		"PreprodTotal": summary.PreprodTotal,
+		"PreprodReady": summary.PreprodReady,
+		"ProdTotal":    summary.ProdTotal,
+		"ProdReady":    summary.ProdReady,
 	})
 }
 
@@ -85,8 +65,16 @@ func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 		env = "preprod"
 	}
 
-	// Handle deleting mode: check if HelmRelease still exists
-	if r.URL.Query().Get("deleting") == "true" {
+	// Handle deleting mode: check if HelmRelease still exists. This branch stays in
+	// the web adapter — it drives HTMX-specific side effects (RemoveDeleting,
+	// notifications, HX-Redirect) that don't belong in the read-only service.
+	//
+	// The ?deleting= flag is a rendering hint from the poller, never the authority:
+	// the branch mutates the cluster (CleanupNamespace strips finalizers) and fires
+	// a webhook, so it only runs for a vcluster the server itself recorded as being
+	// deleted. Trusting the query string let any authenticated caller — a reader
+	// included — trigger a finalizer cleanup on an arbitrary name.
+	if deleting, _ := h.cfg.IsDeleting(name, env); deleting && r.URL.Query().Get("deleting") == "true" {
 		k8s := h.k8sForEnv(env)
 		if k8s != nil && !k8s.HelmReleaseExists(r.Context(), name) {
 			// HelmRelease gone: remove any stuck FluxCD finalizers then cleanup
@@ -106,17 +94,16 @@ func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	k8s := h.k8sForEnv(env)
-	if k8s == nil {
-		h.renderPartial(w, "status_badge.html", map[string]interface{}{
-			"HelmRelease":   "N/A",
-			"Kustomization": "N/A",
-		})
-		return
-	}
-
-	status, err := k8s.GetVClusterStatus(r.Context(), name)
+	// Normal path: the service resolves the real-time status.
+	status, err := h.svc.GetStatus(r.Context(), name, env)
 	if err != nil {
+		if errors.Is(err, service.ErrK8sUnavailable) {
+			h.renderPartial(w, "status_badge.html", map[string]interface{}{
+				"HelmRelease":   "N/A",
+				"Kustomization": "N/A",
+			})
+			return
+		}
 		h.renderPartial(w, "status_badge.html", map[string]interface{}{
 			"HelmRelease":   "Error",
 			"Kustomization": "Error",
@@ -128,7 +115,7 @@ func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]interface{}{
 		"HelmRelease":    status.HelmRelease,
-		"Kustomization":  status.FluxKustomization,
+		"Kustomization":  status.Kustomization,
 		"K8sVersion":     status.K8sVersion,
 		"ConfigVersion":  configVersion,
 		"CPUUsage":       status.CPUUsage,
@@ -247,7 +234,7 @@ func (h *Handlers) QuotaForm(w http.ResponseWriter, r *http.Request) {
 		env = "preprod"
 	}
 
-	vc, err := h.parser.ParseVCluster(r.Context(), env, name)
+	vc, err := h.svc.GetQuotaForm(r.Context(), env, name)
 	if err != nil {
 		http.Error(w, "VCluster not found", http.StatusNotFound)
 		return
