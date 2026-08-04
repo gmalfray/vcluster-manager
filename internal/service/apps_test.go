@@ -46,6 +46,22 @@ func TestMigrateApp_ForbiddenForNonAdmin(t *testing.T) {
 	}
 }
 
+func TestMigrateApp_RejectsInvalidSourceName(t *testing.T) {
+	s := newTestService()
+	_, err := s.MigrateApp(context.Background(), models.Actor{Username: "alice", IsAdmin: true}, "../etc/passwd", "preprod", "myapp", "apps/myapp.yaml", "target", false)
+	if !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("expected ErrInvalidName for a malformed source name, got %v", err)
+	}
+}
+
+func TestMigrateApp_RejectsInvalidTargetName(t *testing.T) {
+	s := newTestService()
+	_, err := s.MigrateApp(context.Background(), models.Actor{Username: "alice", IsAdmin: true}, "source", "preprod", "myapp", "apps/myapp.yaml", "../etc/passwd", false)
+	if !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("expected ErrInvalidName for a malformed target name, got %v", err)
+	}
+}
+
 func TestMigrateApp_InvalidTarget_Empty(t *testing.T) {
 	s := newTestService()
 	_, err := s.MigrateApp(context.Background(), models.Actor{Username: "alice", IsAdmin: true}, "source", "preprod", "myapp", "apps/myapp.yaml", "", false)

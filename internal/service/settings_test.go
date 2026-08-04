@@ -36,6 +36,14 @@ func TestUpdateSettings_ForbiddenForNonAdmin(t *testing.T) {
 // broken out of its quotes, and a shell command appended to the flux
 // bootstrap command line.
 
+func TestUpdateSettings_RejectsInvalidName(t *testing.T) {
+	s := newTestService()
+	_, err := s.UpdateSettings(context.Background(), models.Actor{Username: "alice", IsAdmin: true}, "../etc/passwd", "preprod", UpdateSettingsInput{})
+	if !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("expected ErrInvalidName, got %v", err)
+	}
+}
+
 func TestUpdateSettings_RejectsYAMLInjectionInCPU(t *testing.T) {
 	s := newTestService()
 	_, err := s.UpdateSettings(context.Background(), models.Actor{Username: "alice", IsAdmin: true}, "demo", "preprod",

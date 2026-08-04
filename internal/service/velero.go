@@ -225,6 +225,9 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 	if !validBackupName(backupName) {
 		return VeleroRestoreView{}, ErrInvalidBackupName
 	}
+	if targetName != "" && !validName(targetName) {
+		return VeleroRestoreView{}, ErrInvalidName
+	}
 	env = envOrDefault(env)
 	k8s := s.k8sForEnv(env)
 	if k8s == nil {
