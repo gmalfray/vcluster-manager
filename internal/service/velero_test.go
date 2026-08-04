@@ -249,8 +249,31 @@ func TestGetVeleroBackups_K8sUnavailable(t *testing.T) {
 
 func TestGetVeleroBackupContent_RejectsInvalidBackupName(t *testing.T) {
 	s := newVeleroTestService(nil)
-	_, err := s.GetVeleroBackupContent(context.Background(), "demo", "../etc/passwd", "preprod")
+	_, err := s.GetVeleroBackupContent(context.Background(), adminActor(), "demo", "../etc/passwd", "preprod")
 	if !errors.Is(err, ErrInvalidBackupName) {
 		t.Fatalf("expected ErrInvalidBackupName, got %v", err)
+	}
+}
+
+// --- GetVeleroBackupContent: RBAC -------------------------------------------
+//
+// The backup content is the tenant's raw resource dump, secrets included —
+// unlike GetVeleroBackups (metadata only), a plain reader must not see it.
+
+func TestGetVeleroBackupContent_ForbiddenForNonAdmin(t *testing.T) {
+	s := newVeleroTestService(nil)
+	_, err := s.GetVeleroBackupContent(context.Background(), plainActor(), "demo", "manual-demo-1", "preprod")
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for non-admin, got %v", err)
+	}
+}
+
+func TestGetVeleroBackupContent_ForbiddenCheckedBeforeBackupName(t *testing.T) {
+	// The admin check must run first: a non-admin probing an invalid name
+	// should still get ErrForbidden, not a hint about name validation.
+	s := newVeleroTestService(nil)
+	_, err := s.GetVeleroBackupContent(context.Background(), plainActor(), "demo", "../etc/passwd", "preprod")
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden to be checked before the backup name, got %v", err)
 	}
 }

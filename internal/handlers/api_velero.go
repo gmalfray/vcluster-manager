@@ -48,8 +48,13 @@ func (h *Handlers) VeleroBackupContent(w http.ResponseWriter, r *http.Request) {
 		env = "preprod"
 	}
 
-	view, err := h.svc.GetVeleroBackupContent(r.Context(), name, backup, env)
+	view, err := h.svc.GetVeleroBackupContent(r.Context(), h.actor(r), name, backup, env)
 	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			w.WriteHeader(http.StatusForbidden)
+			h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+			return
+		}
 		var msg string
 		switch {
 		case errors.Is(err, service.ErrInvalidBackupName):
