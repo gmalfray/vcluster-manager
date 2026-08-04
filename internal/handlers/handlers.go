@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -28,7 +29,6 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/service"
 	"github.com/gmalfray/vcluster-manager/internal/vault"
 	"github.com/gmalfray/vcluster-manager/internal/version"
-	"gopkg.in/yaml.v3"
 )
 
 // migrationEntry tracks an in-progress app migration (expires after 15 minutes).
@@ -469,81 +469,41 @@ func (h *Handlers) addMigration(env, sourceName, targetName, appName string) {
 
 // UpdateVeleroConfig updates the global Velero settings and commits BSL config to fluxprod (admin only).
 func (h *Handlers) UpdateVeleroConfig(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		h.renderToast(w, "error", "Formulaire invalide")
 		return
 	}
 
-	newS3URL := r.FormValue("velero_s3_url")
-	newBucketPreprod := r.FormValue("velero_bucket_preprod")
-	newBucketProd := r.FormValue("velero_bucket_prod")
+	in := service.VeleroConfigInput{
+		TTL:           parseTTLText(r.FormValue("velero_ttl")),
+		S3URL:         r.FormValue("velero_s3_url"),
+		BucketPreprod: r.FormValue("velero_bucket_preprod"),
+		BucketProd:    r.FormValue("velero_bucket_prod"),
+	}
 
-	if err := firstValidationError(
-		validateS3URL("velero_s3_url", newS3URL),
-		validateBucket("velero_bucket_preprod", newBucketPreprod),
-		validateBucket("velero_bucket_prod", newBucketProd),
-	); err != nil {
-		h.renderToast(w, "error", err.Error())
+	if err := h.svc.UpdateVeleroConfig(r.Context(), h.actor(r), in); err != nil {
+		h.handleUpdateVeleroConfigError(w, err)
 		return
 	}
 
-	newTTL := parseTTLText(r.FormValue("velero_ttl"))
-	h.cfg.SetVeleroConfig(newTTL, newS3URL, newBucketPreprod, newBucketProd)
-
-	// Refresh the generator with the new TTL
-	h.generator = gitops.NewGenerator(gitops.GeneratorConfig{
-		BaseDomainPreprod:   h.cfg.BaseDomainPreprod,
-		BaseDomainProd:      h.cfg.BaseDomainProd,
-		TLSSecretPreprod:    h.cfg.TLSSecretPreprod,
-		TLSSecretProd:       h.cfg.TLSSecretProd,
-		OIDCIssuer:          h.cfg.KeycloakURL + "/auth/realms/" + h.cfg.KeycloakRealm,
-		GitLabSSHURL:        h.cfg.GitLabSSHURL,
-		GitLabArgoCDPath:    h.cfg.GitLabArgoCDPath,
-		DefaultCPU:          h.cfg.DefaultCPU,
-		DefaultMemory:       h.cfg.DefaultMemory,
-		DefaultStorage:      h.cfg.DefaultStorage,
-		VeleroTimezone:      h.cfg.VeleroTimezone,
-		VeleroDefaultTTL:    h.cfg.VeleroDefaultTTL,
-		VClusterPodSecurity: h.cfg.VClusterPodSecurity,
-		ArgoCDDefaultPolicy: h.cfg.ArgoCDDefaultPolicy,
-	})
-
-	// Commit BSL values.yaml to fluxprod for both envs if bucket or S3 URL is set
-	if h.gitlab != nil && (h.cfg.VeleroS3URL != "" || h.cfg.VeleroBucketPreprod != "" || h.cfg.VeleroBucketProd != "") {
-		ctx := r.Context()
-		var actions []gitops.CommitAction
-		for _, env := range []string{"preprod", "prod"} {
-			bucket := h.cfg.VeleroBucketPreprod
-			if env == "prod" {
-				bucket = h.cfg.VeleroBucketProd
-			}
-			if bucket == "" {
-				continue
-			}
-			path := fmt.Sprintf("%s/%s/velero/values.yaml", h.cfg.FluxprodClustersPath, env)
-			action := "update"
-			if _, err := h.gitlab.GetFile(ctx, "preprod", path); err != nil {
-				action = "create"
-			}
-			actions = append(actions, gitops.CommitAction{
-				Action:  action,
-				Path:    path,
-				Content: generateVeleroValuesYAML(bucket, h.cfg.VeleroS3URL),
-			})
-		}
-		if len(actions) > 0 {
-			if err := h.gitlab.Commit(ctx, "preprod", "chore: update Velero BSL configuration", actions); err != nil {
-				slog.Error("UpdateVeleroConfig: commit failed", "err", err)
-				h.renderToast(w, "error", fmt.Sprintf("Settings sauvegardés mais erreur commit fluxprod : %v", err))
-				return
-			}
-		}
-	}
-
 	h.renderToast(w, "success", "Configuration Velero mise à jour et commitée dans fluxprod")
+}
+
+// handleUpdateVeleroConfigError maps service.UpdateVeleroConfig's typed errors
+// back to the exact toasts the inline handler used to render.
+func (h *Handlers) handleUpdateVeleroConfigError(w http.ResponseWriter, err error) {
+	var commitErr *service.CommitError
+	switch {
+	case errors.Is(err, service.ErrForbidden):
+		w.WriteHeader(http.StatusForbidden)
+		h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+	case errors.As(err, &commitErr):
+		h.renderToast(w, "error", fmt.Sprintf("Settings sauvegardés mais erreur commit fluxprod : %v", commitErr.Err))
+	default:
+		// Field-validation errors (velero_s3_url/velero_bucket_preprod/velero_bucket_prod)
+		// come through here as plain "field : reason" errors.
+		h.renderToast(w, "error", err.Error())
+	}
 }
 
 // parseTTLText parses a short TTL string ("30j", "12h", "90m") into a Velero-compatible
@@ -600,47 +560,6 @@ func ttlToText(ttl string) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	return fmt.Sprintf("%dm", total)
-}
-
-// veleroValuesConfig / veleroValuesLocation / veleroValues mirror the
-// values.yaml shape generateVeleroValuesYAML used to build by hand with
-// fmt.Sprintf. Marshaling a typed struct instead of interpolating strings means
-// bucket and s3URL can never break out of their YAML string — no quote or
-// newline in either field can reach the committed file unescaped.
-type veleroValuesConfig struct {
-	S3URL             string `yaml:"s3Url,omitempty"`
-	S3ForcePathStyle  string `yaml:"s3ForcePathStyle"`
-	ChecksumAlgorithm string `yaml:"checksumAlgorithm"`
-}
-
-type veleroValuesLocation struct {
-	Name     string             `yaml:"name"`
-	Provider string             `yaml:"provider"`
-	Bucket   string             `yaml:"bucket"`
-	Config   veleroValuesConfig `yaml:"config"`
-}
-
-type veleroValues struct {
-	Configuration struct {
-		BackupStorageLocation []veleroValuesLocation `yaml:"backupStorageLocation"`
-	} `yaml:"configuration"`
-}
-
-// generateVeleroValuesYAML generates the velero values.yaml content for a given env.
-func generateVeleroValuesYAML(bucket, s3URL string) string {
-	var v veleroValues
-	v.Configuration.BackupStorageLocation = []veleroValuesLocation{{
-		Name:     "default",
-		Provider: "aws",
-		Bucket:   bucket,
-		Config: veleroValuesConfig{
-			S3URL:            s3URL,
-			S3ForcePathStyle: "true",
-		},
-	}}
-	// Marshal cannot fail on a plain struct of strings — safe to drop the error.
-	out, _ := yaml.Marshal(v)
-	return string(out)
 }
 
 // getMigrationLabel returns a non-empty label if the app is currently being migrated,
