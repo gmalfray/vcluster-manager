@@ -47,9 +47,8 @@ var (
 	// ErrVClusterNotFound means the fluxprod files for that name/env couldn't
 	// be parsed.
 	ErrVClusterNotFound = errors.New("vcluster not found")
-	// ErrCleaningInProgress means a Rancher cleanup job is already running for
-	// that vcluster — the deletion has to wait for it.
-	ErrCleaningInProgress = errors.New("rancher cleanup in progress")
+	// ErrCleaningInProgress (a Rancher cleanup job is already running) is
+	// declared in rancher.go — the deletion path reuses that same sentinel.
 )
 
 // ExistsError carries the environment where the name is already taken, so the
