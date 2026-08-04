@@ -1,14 +1,11 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
-	"path"
-	"strings"
 
-	"github.com/gmalfray/vcluster-manager/internal/gitops"
-	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 )
 
 // ListApps returns an HTMX fragment listing ArgoCD Applications.
@@ -21,70 +18,14 @@ func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 		env = "preprod"
 	}
 
-	// List target vclusters (ArgoCD enabled, not the source) — needed for migration
-	vclusters, _ := h.parser.ListVClusters(r.Context(), env)
-	var targetVClusters []string
-	for _, vc := range vclusters {
-		if vc.ArgoCD && vc.Name != name {
-			targetVClusters = append(targetVClusters, vc.Name)
-		}
-	}
+	targetVClusters := h.svc.MigrationTargets(r.Context(), name, env)
 
-	renderData := map[string]interface{}{
-		"SourceVCluster":  name,
-		"Env":             env,
-		"User":            h.getUser(r),
-		"TargetVClusters": targetVClusters,
-	}
+	// GetApps never actually returns an error today (see its doc comment) —
+	// the return value is kept for symmetry with the REST adapter.
+	apps, source, _ := h.svc.GetApps(r.Context(), name, env)
 
-	// Try to read Application objects directly from the vcluster
-	k8s := h.k8sForEnv(env)
-	if k8s != nil {
-		apps, err := k8s.ListVClusterArgoApps(r.Context(), name)
-		if err == nil {
-			// Annotate with migration state
-			for i := range apps {
-				if label := h.getMigrationLabel(env, name, apps[i].Name); label != "" {
-					apps[i].Migrating = true
-					apps[i].MigratingLabel = label
-				}
-			}
-			renderData["Apps"] = apps
-			renderData["AppsSource"] = "live"
-			h.renderPartial(w, "apps_list.html", renderData)
-			return
-		}
-		slog.Warn("ListApps: vcluster API unavailable, falling back to repo", "vcluster", name, "err", err)
-	}
-
-	// Fallback: read from app-manifests GitLab repo
-	if h.gitlab == nil {
-		h.renderPartial(w, "apps_list.html", renderData)
-		return
-	}
-
-	branch := "preprod"
-	if env == "prod" {
-		branch = "master"
-	}
-
-	files, err := h.gitlab.ListAppManifestFiles(name, branch)
-	if err != nil {
-		slog.Error("ListApps: list files failed", "vcluster", name, "err", err)
-		h.renderPartial(w, "apps_list.html", renderData)
-		return
-	}
-
-	var apps []models.ArgoApp
-	for _, filePath := range files {
-		content, err := h.gitlab.GetAppManifestFile(name, branch, filePath)
-		if err != nil {
-			slog.Warn("ListApps: get file failed", "path", filePath, "err", err)
-			continue
-		}
-		apps = append(apps, gitops.ParseArgoApps(filePath, content)...)
-	}
-
+	// Migration state is tracked in memory by this adapter (getMigrationLabel),
+	// not by the service — annotate the raw apps before rendering.
 	for i := range apps {
 		if label := h.getMigrationLabel(env, name, apps[i].Name); label != "" {
 			apps[i].Migrating = true
@@ -92,17 +33,18 @@ func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	renderData["Apps"] = apps
-	renderData["AppsSource"] = "repo"
-	h.renderPartial(w, "apps_list.html", renderData)
+	h.renderPartial(w, "apps_list.html", map[string]interface{}{
+		"SourceVCluster":  name,
+		"Env":             env,
+		"User":            h.getUser(r),
+		"TargetVClusters": targetVClusters,
+		"Apps":            apps,
+		"AppsSource":      source,
+	})
 }
 
 // MigrateApp copies an ArgoCD Application from one vcluster's app-manifests to another (admin only).
 func (h *Handlers) MigrateApp(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
-
 	sourceName := r.PathValue("name")
 	env := r.URL.Query().Get("env")
 	if env == "" {
@@ -114,92 +56,49 @@ func (h *Handlers) MigrateApp(w http.ResponseWriter, r *http.Request) {
 	targetName := r.FormValue("target_vcluster")
 	deleteSource := r.FormValue("delete_source") != ""
 
-	if targetName == "" || targetName == sourceName {
-		h.renderToast(w, "error", "Vcluster cible invalide")
-		return
-	}
-	if filePath == "" {
-		h.renderToast(w, "error", "Chemin du fichier manquant")
-		return
-	}
-
-	if h.gitlab == nil {
-		h.renderToast(w, "error", "GitLab client non disponible")
-		return
-	}
-
-	branch := "preprod"
-	if env == "prod" {
-		branch = "master"
-	}
-
-	// Determine which files to migrate: all files in the same directory as the Application manifest.
-	dir := path.Dir(filePath)
-	allFiles, err := h.gitlab.ListAppManifestFiles(sourceName, branch)
+	result, err := h.svc.MigrateApp(r.Context(), h.actor(r), sourceName, env, appName, filePath, targetName, deleteSource)
 	if err != nil {
-		h.renderToast(w, "error", fmt.Sprintf("Erreur liste fichiers source : %v", err))
+		h.renderMigrateAppError(w, err, targetName)
 		return
 	}
 
-	var dirFiles []string
-	if dir == "." {
-		// Application at repo root: migrate only this file
-		dirFiles = []string{filePath}
-	} else {
-		prefix := dir + "/"
-		for _, f := range allFiles {
-			if strings.HasPrefix(f, prefix) {
-				dirFiles = append(dirFiles, f)
-			}
-		}
-		if len(dirFiles) == 0 {
-			dirFiles = []string{filePath}
-		}
-	}
-
-	// List files already in target to determine create vs update per file
-	existingInTarget := map[string]bool{}
-	if targetFiles, err2 := h.gitlab.ListAppManifestFiles(targetName, branch); err2 == nil {
-		for _, f := range targetFiles {
-			existingInTarget[f] = true
-		}
-	}
-
-	// Read source files and build per-file commit actions
-	var commitActions []gitops.CommitAction
-	for _, f := range dirFiles {
-		content, err := h.gitlab.GetAppManifestFile(sourceName, branch, f)
-		if err != nil {
-			h.renderToast(w, "error", fmt.Sprintf("Erreur lecture %s : %v", f, err))
-			return
-		}
-		action := "create"
-		if existingInTarget[f] {
-			action = "update"
-		}
-		commitActions = append(commitActions, gitops.CommitAction{Action: action, Path: f, Content: content})
-	}
-
-	// Commit to target in a single atomic commit
-	commitMsg := fmt.Sprintf("feat: migrate app %s from %s (%d files)", appName, sourceName, len(dirFiles))
-	if err = h.gitlab.CommitToAppManifests(targetName, branch, commitMsg, commitActions); err != nil {
-		h.renderToast(w, "error", fmt.Sprintf("Erreur migration vers %s : %v", targetName, err))
+	if result.DeleteSourceFailed {
+		h.renderToast(w, "warning", fmt.Sprintf("App migree vers %s mais erreur suppression source : %s", targetName, result.DeleteSourceError))
 		return
-	}
-
-	// Optionally delete all directory files from source
-	if deleteSource {
-		var delActions []gitops.CommitAction
-		for _, f := range dirFiles {
-			delActions = append(delActions, gitops.CommitAction{Action: "delete", Path: f})
-		}
-		delMsg := fmt.Sprintf("feat: remove migrated app %s (%d files)", appName, len(dirFiles))
-		if err := h.gitlab.CommitToAppManifests(sourceName, branch, delMsg, delActions); err != nil {
-			h.renderToast(w, "warning", fmt.Sprintf("App migree vers %s mais erreur suppression source : %v", targetName, err))
-			return
-		}
 	}
 
 	h.addMigration(env, sourceName, targetName, appName)
-	h.renderToast(w, "success", fmt.Sprintf("App %s migree vers %s (%d fichiers)", appName, targetName, len(dirFiles)))
+	h.renderToast(w, "success", fmt.Sprintf("App %s migree vers %s (%d fichiers)", appName, targetName, result.FilesMigrated))
+}
+
+// renderMigrateAppError maps a service.MigrateApp error to the exact toast
+// (and status, for the forbidden case) the pre-extraction handler produced.
+func (h *Handlers) renderMigrateAppError(w http.ResponseWriter, err error, targetName string) {
+	switch {
+	case errors.Is(err, service.ErrForbidden):
+		w.WriteHeader(http.StatusForbidden)
+		h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+	case errors.Is(err, service.ErrAppInvalidTarget):
+		h.renderToast(w, "error", "Vcluster cible invalide")
+	case errors.Is(err, service.ErrAppMissingFilePath):
+		h.renderToast(w, "error", "Chemin du fichier manquant")
+	case errors.Is(err, service.ErrAppGitLabUnavailable):
+		h.renderToast(w, "error", "GitLab client non disponible")
+	default:
+		var opErr *service.MigrateOpError
+		if errors.As(err, &opErr) {
+			switch opErr.Stage {
+			case "list-source":
+				h.renderToast(w, "error", fmt.Sprintf("Erreur liste fichiers source : %v", opErr.Err))
+			case "read-file":
+				h.renderToast(w, "error", fmt.Sprintf("Erreur lecture %s : %v", opErr.File, opErr.Err))
+			case "commit-target":
+				h.renderToast(w, "error", fmt.Sprintf("Erreur migration vers %s : %v", targetName, opErr.Err))
+			default:
+				h.renderToast(w, "error", fmt.Sprintf("Erreur migration : %v", opErr.Err))
+			}
+			return
+		}
+		h.renderToast(w, "error", fmt.Sprintf("Erreur migration : %v", err))
+	}
 }
