@@ -97,10 +97,9 @@ func (e *CommitError) Unwrap() error { return e.Err }
 
 // --- field validation --------------------------------------------------
 //
-// These mirror internal/handlers/validate.go. Duplicated rather than shared:
-// settings.go (out of scope for this extraction) still calls the handlers
-// copy directly for UpdateSettings, and moving these regexes to a common spot
-// is better done in one pass once that handler moves to the service too.
+// Shared by every domain in this package that commits generated YAML to
+// fluxprod, settings.go included (UpdateSettings calls these same functions
+// directly, they're not duplicated elsewhere).
 
 var (
 	quantityRegex    = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|Ki|Mi|Gi|Ti|Pi)?$`)
@@ -420,7 +419,6 @@ func (s *Service) Create(ctx context.Context, actor models.Actor, req *models.Cr
 		mrURL, err := s.commitProdMRActions(
 			ctx,
 			fmt.Sprintf("feat: add vcluster %s (prod)", req.Name),
-			fmt.Sprintf("Ajout du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", req.Name),
 			actions,
 		)
 		if err != nil {
@@ -663,7 +661,6 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 				mrURL, err := s.commitProdMRActions(
 					ctx,
 					fmt.Sprintf("feat: remove vcluster %s", name),
-					fmt.Sprintf("Suppression du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", name),
 					actions,
 				)
 				if err != nil {
@@ -703,15 +700,11 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 }
 
 // --- shared gitops helpers -----------------------------------------------
-//
-// Duplicated from internal/handlers/vcluster.go on purpose: settings.go (out
-// of scope for this extraction) still owns its own copies and calls them
-// directly. They'll merge into one once settings.go moves to the service too.
 
 // commitProdMRActions commits prod file changes to the preprod branch (source
 // of truth), then gets or creates the standing MR preprod→master that
 // promotes them.
-func (s *Service) commitProdMRActions(ctx context.Context, commitMsg, mrDescription string, actions []gitops.CommitAction) (string, error) {
+func (s *Service) commitProdMRActions(ctx context.Context, commitMsg string, actions []gitops.CommitAction) (string, error) {
 	if err := s.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}

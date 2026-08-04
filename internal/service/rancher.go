@@ -247,7 +247,7 @@ func (s *Service) UnpairRancher(ctx context.Context, actor models.Actor, name, e
 		s.cfg.AddCleaning(name, env, false, false, false, false)
 		go func() {
 			bg := context.Background()
-			if err := k8s.ApplyManifestToVClusterViaPortForward(bg, name, []byte(rancherCleanupManifest)); err != nil {
+			if err := k8s.ApplyManifestToVClusterViaPortForward(bg, name, []byte(RancherCleanupManifest)); err != nil {
 				slog.Warn("could not deploy rancher-cleanup in vcluster", "vcluster", name, "err", err)
 				s.cfg.RemoveCleaning(name, env)
 				return
@@ -266,9 +266,11 @@ func (s *Service) UnpairRancher(ctx context.Context, actor models.Actor, name, e
 	return RancherStatus{Enabled: true, Cleaning: true, Name: name, Env: env}, nil
 }
 
-// rancherCleanupManifest is the official rancher-cleanup job manifest.
+// RancherCleanupManifest is the official rancher-cleanup job manifest,
+// exported so internal/handlers can deploy it directly ahead of a deletion
+// (vcluster.go's delete flow) without keeping its own copy.
 // See https://github.com/rancher/rancher-cleanup
-const rancherCleanupManifest = `---
+const RancherCleanupManifest = `---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
