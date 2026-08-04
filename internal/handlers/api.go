@@ -155,6 +155,10 @@ func (h *Handlers) DownloadKubeconfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := r.PathValue("name")
+	if !nameRegex.MatchString(name) {
+		http.Error(w, "Invalid vcluster name", http.StatusBadRequest)
+		return
+	}
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		env = "preprod"
