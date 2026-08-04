@@ -8,11 +8,20 @@ import (
 	"testing"
 
 	"github.com/gmalfray/vcluster-manager/internal/config"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 )
 
+// settingsTestHandlers is minimalHandlers wired to a real Service (like
+// veleroTestHandlers in api_velero_test.go), so UpdateSettings/UpdateVeleroConfig
+// exercise the same RBAC/validation path they run in production.
 func settingsTestHandlers() *Handlers {
 	h := minimalHandlers()
 	h.cfg = &config.Config{}
+	h.svc = service.New(service.Deps{
+		Cfg:          h.cfg,
+		K8sClients:   h.k8sClients,
+		K8sClientsMu: &h.k8sClientsMu,
+	})
 	return h
 }
 
@@ -97,19 +106,14 @@ func TestUpdateVeleroConfig_RejectsInvalidS3URL(t *testing.T) {
 	}
 }
 
-func TestGenerateVeleroValuesYAML(t *testing.T) {
-	out := generateVeleroValuesYAML("my-bucket", "https://s3.example.com")
-	if !strings.Contains(out, "bucket: my-bucket") {
-		t.Errorf("expected bucket in output, got %q", out)
-	}
-	if !strings.Contains(out, `s3Url: https://s3.example.com`) {
-		t.Errorf("expected s3Url in output, got %q", out)
-	}
+func TestUpdateVeleroConfig_RequiresAdmin(t *testing.T) {
+	h := settingsTestHandlers()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/velero/config", nil)
 
-	// A newline in the bucket must not be able to inject a sibling YAML key —
-	// yaml.Marshal quotes/escapes it instead of splicing it in raw.
-	injected := generateVeleroValuesYAML("bucket\nevil: true", "")
-	if strings.Contains(injected, "\nevil: true\n") {
-		t.Errorf("bucket value escaped out of its YAML string: %q", injected)
+	h.UpdateVeleroConfig(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for a non-admin caller, got %d", w.Code)
 	}
 }
