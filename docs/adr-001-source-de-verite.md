@@ -43,6 +43,18 @@ automatique : la cérémonie ne se justifie pas davantage à mesure que l'équip
   ArgoCD, TTL — au lieu d'être le rendu. C'est le seul format de revue qui a une chance d'être lu.
   Ce gate est une politique du dépôt, pas une fonctionnalité de vcluster-manager.
 
+### Comment le CR est expansé — controller-runtime, pas kro seul
+
+Le CR est appliqué par Flux puis expansé côté cluster. Le « qui expanse » n'est pas neutre : **kro
+seul est écarté.** Il sait produire le graphe de ressources Kubernetes statiques, mais pas les
+étapes impératives et asynchrones du cycle de vie (Keycloak/GitLab/Rancher/Vault, séquençage,
+attentes, séquence de suppression) — aujourd'hui hand-rollées dans l'app avec des goroutines et des
+états en mémoire (`vaultStates`, `startCleaningReconciler`, `resumeAfterInPlaceRestore`), la partie
+la plus fragile du code et la source des bugs récents. L'opérateur est donc un **contrôleur
+controller-runtime** qui possède le lifecycle complet en boucle de reconcile (level-triggered,
+requeue/backoff, reprise au redémarrage native) ; il *peut* embarquer kro pour la seule expansion du
+graphe statique. Détail et découpage : `docs/crd-vcluster.md` §3.2bis.
+
 ## Ce que la MR protégeait vraiment, et par quoi on la remplace
 
 La MR servait deux intentions différentes, traitées avec le même outil : **contrôler la création**
@@ -141,6 +153,9 @@ ne changent pas de forme : `Create` construit un CR, `Delete` le supprime.
 
 1. Concevoir le CR `VCluster` — avec un discriminant `type: vcluster | capi` dès le départ, pour ne
    pas avoir à casser le schéma quand Cluster API arrivera (voir `docs/etude-cluster-api.md`).
-2. POC kro sur un vcluster preprod : expansion du graphe, `status`, prune.
+2. POC **controller-runtime** (embarquant kro pour le graphe statique) sur **le chemin le plus
+   fragile** — suppression + finalizer + reprise du cleaning après redémarrage — et non la seule
+   expansion du graphe. C'est ce chemin qui valide que le contrôleur remplace bien la machinerie
+   async hand-rollée. Si le POC tient, le reste du lifecycle suit par phases.
 3. Finalizer et politique de suppression, condition du retrait de la MR.
 4. Inventaire des écarts sur les vclusters existants, puis migration.

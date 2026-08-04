@@ -137,6 +137,34 @@ système externe à Kubernetes.
   imbriqué dans la séquence de suppression au bon moment, même si le geste lui-même n'est qu'un
   patch d'annotation.
 
+### 3.2bis — kro seul ou controller-runtime ? Je tranche pour controller-runtime
+
+kro sait faire **une** chose : expanser un CR en un graphe de ressources Kubernetes statiques
+(§3.1). Tout ce qui est listé en §3.2 — appels API externes (Keycloak, GitLab, Rancher, Vault),
+séquençage conditionnel, attentes actives, séquence de suppression — **sort de son modèle**. Un
+opérateur qui ne serait *que* kro laisserait donc toute cette moitié dans l'app, telle quelle.
+
+Or c'est précisément cette moitié qui est aujourd'hui **hand-rollée** dans l'app avec des
+goroutines et des états en mémoire : `vaultStates` (machine à états de polling), `setupVaultAuthWhenReady`,
+`startCleaningReconciler` (reprise au démarrage, reconstruite à la main), `resumeAfterInPlaceRestore`
+(goroutine + timeout 2 h). C'est fragile par nature — edge-triggered, non idempotent au redémarrage,
+dépendant du process vivant — et c'est là qu'on a trouvé de vrais bugs (reprise Flux qui dépendait du
+navigateur, reprise du cleaning au restart). Une **reconcile loop controller-runtime** fait exactement
+ça, mais level-triggered, avec requeue/backoff, et **survit au redémarrage sans code de reprise
+maison** : l'état désiré est dans le CR, on re-réconcilie, point.
+
+**Décision : l'opérateur est un contrôleur controller-runtime.** Il peut *embarquer* kro (ou un
+équivalent CEL/templating) pour la partie graphe statique de §3.1 — inutile de réécrire ce gabarit à
+la main — mais le cœur est une boucle de reconcile qui possède le cycle de vie complet, y compris les
+étapes impératives et asynchrones de §3.2, modélisées en **phases de reconcile** avec des conditions
+typées (§3.3) plutôt qu'en goroutines. kro-seul est écarté : il ne couvre pas ce qui coûte le plus
+cher à opérer.
+
+> POC ciblé avant de tout migrer : porter **le chemin de suppression + finalizer + reprise du
+> cleaning** (le plus fragile aujourd'hui) sur controller-runtime, et vérifier qu'il reprend bien
+> une suppression interrompue par un redémarrage. Si ce chemin tient, le reste du lifecycle suit par
+> phases. Voir ADR-001, section « Suite ».
+
 ### 3.3 Conditions typées proposées
 
 `Ready`, `ResourcesProvisioned` (le graphe kro est appliqué et sain), `BudgetOK` /
