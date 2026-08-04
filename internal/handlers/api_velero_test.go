@@ -95,10 +95,27 @@ func TestCreateVeleroRestore_K8sUnavailable(t *testing.T) {
 	}
 }
 
+func TestVeleroBackupContent_RequiresAdmin(t *testing.T) {
+	h := veleroTestHandlers()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/vclusters/demo/velero/backups/manual-demo-1/content", nil)
+	r.SetPathValue("name", "demo")
+	r.SetPathValue("backup", "manual-demo-1")
+
+	h.VeleroBackupContent(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for a non-admin caller, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "error:Accès refusé : droits administrateur requis" {
+		t.Errorf("expected the forbidden toast, got %q", got)
+	}
+}
+
 func TestVeleroBackupContent_RejectsInvalidBackupName(t *testing.T) {
 	h := veleroTestHandlers()
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/api/vclusters/demo/velero/backups/..%2f..%2fetc/content", nil)
+	r := adminRequest(http.MethodGet, "/api/vclusters/demo/velero/backups/..%2f..%2fetc/content")
 	r.SetPathValue("name", "demo")
 	r.SetPathValue("backup", "../../etc/passwd")
 

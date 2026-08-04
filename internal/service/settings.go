@@ -83,6 +83,9 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 	if !actor.IsAdmin {
 		return UpdateSettingsResult{}, ErrForbidden
 	}
+	if !validName(name) {
+		return UpdateSettingsResult{}, ErrInvalidName
+	}
 
 	// These fields land in fluxprod YAML through a text/template that doesn't
 	// escape anything (internal/gitops/generator.go), so they're checked

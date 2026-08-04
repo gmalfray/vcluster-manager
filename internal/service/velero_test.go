@@ -149,6 +149,25 @@ func TestCreateVeleroRestore_RejectsInvalidBackupName(t *testing.T) {
 	}
 }
 
+func TestCreateVeleroRestore_RejectsInvalidTargetName(t *testing.T) {
+	s := newVeleroTestService(nil)
+	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "../etc/passwd")
+	if !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("expected ErrInvalidName, got %v", err)
+	}
+}
+
+func TestCreateVeleroRestore_AllowsEmptyTargetName(t *testing.T) {
+	// Empty target means "in-place restore of the same vcluster" — not a name
+	// to validate, so it must fall through to the next guard (no k8s client
+	// configured here), not ErrInvalidName.
+	s := newVeleroTestService(nil)
+	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+	if !errors.Is(err, ErrK8sUnavailable) {
+		t.Fatalf("expected ErrK8sUnavailable (empty target should not trip ErrInvalidName), got %v", err)
+	}
+}
+
 func TestCreateVeleroRestore_K8sUnavailable(t *testing.T) {
 	s := newVeleroTestService(nil)
 	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")

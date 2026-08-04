@@ -149,10 +149,16 @@ func (s *Service) MigrateApp(ctx context.Context, actor models.Actor, sourceName
 	if !actor.IsAdmin {
 		return MigrateResult{}, ErrForbidden
 	}
+	if !validName(sourceName) {
+		return MigrateResult{}, ErrInvalidName
+	}
 	env = envOrDefault(env)
 
 	if targetName == "" || targetName == sourceName {
 		return MigrateResult{}, ErrAppInvalidTarget
+	}
+	if !validName(targetName) {
+		return MigrateResult{}, ErrInvalidName
 	}
 	if filePath == "" {
 		return MigrateResult{}, ErrAppMissingFilePath

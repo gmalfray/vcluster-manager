@@ -80,6 +80,8 @@ func (h *Handlers) renderMigrateAppError(w http.ResponseWriter, err error, targe
 		h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
 	case errors.Is(err, service.ErrAppInvalidTarget):
 		h.renderToast(w, "error", "Vcluster cible invalide")
+	case errors.Is(err, service.ErrInvalidName):
+		h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
 	case errors.Is(err, service.ErrAppMissingFilePath):
 		h.renderToast(w, "error", "Chemin du fichier manquant")
 	case errors.Is(err, service.ErrAppGitLabUnavailable):

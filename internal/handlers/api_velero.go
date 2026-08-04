@@ -105,6 +105,8 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 			h.renderToast(w, "error", "Nom du backup manquant")
 		case errors.Is(err, service.ErrInvalidBackupName):
 			h.renderToast(w, "error", "Nom de backup invalide")
+		case errors.Is(err, service.ErrInvalidName):
+			h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
 		case errors.Is(err, service.ErrK8sUnavailable):
 			h.renderToast(w, "error", "Client Kubernetes non configuré")
 		case errors.Is(err, service.ErrBackupLookupFailed):

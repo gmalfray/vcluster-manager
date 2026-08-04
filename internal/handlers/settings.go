@@ -56,6 +56,8 @@ func (h *Handlers) handleUpdateSettingsError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrForbidden):
 		w.WriteHeader(http.StatusForbidden)
 		h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+	case errors.Is(err, service.ErrInvalidName):
+		h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
 	case errors.As(err, &notFoundErr):
 		h.renderToast(w, "error", "VCluster introuvable : "+notFoundErr.Err.Error())
 	case errors.As(err, &commitErr):
