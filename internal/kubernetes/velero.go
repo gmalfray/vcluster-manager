@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
@@ -143,6 +145,46 @@ func (s *StatusClient) GetBackupContentURL(ctx context.Context, backupName, vele
 		}
 	}
 	return "", fmt.Errorf("timeout waiting for download request to be processed")
+}
+
+// GetVeleroBackupPhase returns the phase of a single Velero backup (e.g.
+// "Completed", "Failed", "InProgress"). Used to confirm a backup is restorable
+// BEFORE a destructive in-place restore (which deletes the vcluster PVC).
+func (s *StatusClient) GetVeleroBackupPhase(ctx context.Context, backupName, veleroNamespace string) (string, error) {
+	obj, err := s.client.Resource(veleroBackupGVR).Namespace(veleroNamespace).Get(ctx, backupName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
+	return phase, nil
+}
+
+// WaitForVClusterPodGone waits until the vcluster pod (vcluster-<name>-0) is really
+// gone, which is what actually releases the PVC. Beats a fixed sleep: we return as
+// soon as the pod disappears, and we don't delete a PVC that's still mounted (which
+// would leave it stuck Terminating). Returns an error if it's still there after timeout.
+func (s *StatusClient) WaitForVClusterPodGone(ctx context.Context, name string, timeout time.Duration) error {
+	podGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
+	ns := "vcluster-" + name
+	podName := "vcluster-" + name + "-0"
+
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		_, err := s.client.Resource(podGVR).Namespace(ns).Get(ctx, podName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("pod %s/%s still there after %s", ns, podName, timeout)
+		case <-ticker.C:
+		}
+	}
 }
 
 // CreateVeleroRestore creates a Velero Restore for backupName targeting targetNS (may differ from sourceNS for cross-vcluster restores).
