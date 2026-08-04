@@ -197,12 +197,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 				// Deployed prod: via MR. A failure here is logged only — it
 				// mirrors the former handler, which never turned it into a
 				// user-facing error.
-				if _, err := s.commitProdMRActions(
-					ctx,
-					commitMsg,
-					fmt.Sprintf("Reconfiguration ArgoCD du vcluster **%s** en production (argocd=%v).\n\nCréé automatiquement par vcluster-manager.", name, newArgoCD),
-					actions,
-				); err != nil {
+				if _, err := s.commitProdMRActions(ctx, commitMsg, actions); err != nil {
 					slog.Error("MR creation failed for ArgoCD reconfigure", "vcluster", name, "err", err)
 				}
 			}
@@ -288,12 +283,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 					return UpdateSettingsResult{}, &CommitError{Err: err}
 				}
 			} else {
-				if _, err := s.commitProdMRActions(
-					ctx,
-					commitMsg,
-					fmt.Sprintf("Reconfiguration FluxCD du vcluster **%s** en production (fluxcd=%v).\n\nCréé automatiquement par vcluster-manager.", name, newFluxCD),
-					actions,
-				); err != nil {
+				if _, err := s.commitProdMRActions(ctx, commitMsg, actions); err != nil {
 					slog.Error("MR creation failed for FluxCD reconfigure", "vcluster", name, "err", err)
 				}
 			}
@@ -386,7 +376,6 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 			url, err := s.commitProdMRActions(
 				ctx,
 				fmt.Sprintf("feat: update vcluster %s settings", name),
-				fmt.Sprintf("Mise à jour des paramètres du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", name),
 				prodActions,
 			)
 			if err != nil {

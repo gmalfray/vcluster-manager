@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gmalfray/vcluster-manager/internal/gitops"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
 )
@@ -370,7 +369,7 @@ func (h *Handlers) runCleanupAndDelete(name, env string, k8s interface {
 }, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak bool) {
 	ctx := context.Background()
 	if k8s != nil {
-		if err := k8s.ApplyManifestToVClusterViaPortForward(ctx, name, []byte(rancherCleanupManifest)); err != nil {
+		if err := k8s.ApplyManifestToVClusterViaPortForward(ctx, name, []byte(service.RancherCleanupManifest)); err != nil {
 			slog.Warn("delete: rancher-cleanup deploy failed", "vcluster", name, "err", err)
 		} else if err := k8s.WaitForJobComplete(ctx, name, "rancher-cleanup", "kube-system", 10*time.Minute); err != nil {
 			slog.Warn("delete: rancher-cleanup job did not complete", "vcluster", name, "err", err)
@@ -393,67 +392,6 @@ func (h *Handlers) startCleaningReconciler() {
 		go h.runCleanupAndDelete(entry.Name, entry.Env, k8s,
 			entry.DeletePreprod, entry.DeleteProd, entry.DeleteGitlab, entry.DeleteKeycloak)
 	}
-}
-
-// commitProdMRActions commits prod file changes to the preprod branch (source of truth),
-// then gets or creates a single MR preprod→master to promote all pending prod changes.
-//
-// Duplicated in internal/service/vcluster.go: settings.go (UpdateSettings, out of scope
-// for this extraction) still calls this copy directly. They'll merge into one once
-// settings.go moves to the service too.
-func (h *Handlers) commitProdMRActions(ctx context.Context, commitMsg, mrDescription string, actions []gitops.CommitAction) (string, error) {
-	// 1. Commit to preprod (source of truth for both envs)
-	if err := h.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
-		return "", fmt.Errorf("committing to preprod: %w", err)
-	}
-
-	// 2. Get or create the standing MR preprod→master
-	// preprod is the source of truth; master mirrors it once the MR is merged.
-	// The description explains the diff structure (preprod files + prod files).
-	mrNote := "Promotion des changements de preprod vers la production.\n\n" +
-		"Créé automatiquement par vcluster-manager.\n\n---\n\n" +
-		"> ℹ️ **Note sur le diff** : Ce MR contient des fichiers sous `clusters/preprod/` **et** `clusters/prod/`.\n" +
-		"> Seuls les fichiers sous **`clusters/prod/`** ont un impact sur la production.\n" +
-		"> Les fichiers `clusters/preprod/` sont présents car la branche **preprod est la source de vérité** pour les deux environnements."
-	mrURL, err := h.gitlab.GetOrCreateMergeRequest(
-		"preprod", "master",
-		"feat: promote preprod to prod",
-		mrNote,
-	)
-	if err != nil {
-		return "", fmt.Errorf("creating MR: %w", err)
-	}
-
-	return mrURL, nil
-}
-
-// kustomizationAction reads the cluster kustomization.yaml and returns a CommitAction to add/remove a vcluster entry.
-//
-// Duplicated in internal/service/vcluster.go for the same reason as commitProdMRActions above.
-func (h *Handlers) kustomizationAction(ctx context.Context, env, branch, name string, add bool) (gitops.CommitAction, error) {
-	kustPath := fmt.Sprintf("%s/%s/kustomization.yaml", h.cfg.FluxprodClustersPath, env)
-	content, err := h.gitlab.GetFile(ctx, branch, kustPath)
-	if err != nil {
-		return gitops.CommitAction{}, fmt.Errorf("reading %s: %w", kustPath, err)
-	}
-	updated := gitops.UpdateKustomization(content, name, add)
-	return gitops.CommitAction{
-		Action:  "update",
-		Path:    kustPath,
-		Content: updated,
-	}, nil
-}
-
-// isPendingProd returns true if a prod vcluster exists on preprod but not yet on master.
-//
-// Duplicated in internal/service/vcluster.go for the same reason as commitProdMRActions above.
-func (h *Handlers) isPendingProd(ctx context.Context, name string) bool {
-	for _, n := range h.parser.ListVClusterNamesOnBranch(ctx, "master", "prod") {
-		if n == name {
-			return false
-		}
-	}
-	return true
 }
 
 func splitGroups(s, defaultGroup string) []string {
