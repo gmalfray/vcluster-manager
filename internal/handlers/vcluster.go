@@ -2,13 +2,13 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/gitops"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
@@ -95,16 +95,16 @@ func (h *Handlers) CreateForm(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Create handles vcluster creation via GitOps.
+// Create handles vcluster creation via GitOps. Field parsing and rendering
+// stay here; the business logic (validation, fluxprod commits, side
+// integrations) lives in service.Create — RBAC included, which is why there's
+// no requireAdmin gate at the top: a non-admin request reaches the service
+// and comes back as service.ErrForbidden, handled the same way below.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return
 	}
-	ctx := r.Context()
 
 	req := &models.CreateRequest{
 		Name:          r.FormValue("name"),
@@ -121,165 +121,59 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		FluxCDBranch:  r.FormValue("fluxcd_branch"),
 		FluxCDPath:    r.FormValue("fluxcd_path"),
 	}
-	scope := r.FormValue("scope") // "preprod" or "both"
-	if scope == "" {
-		scope = "both"
-	}
+	scope := r.FormValue("scope") // "preprod", "prod" or "both" ("" defaults to "both" in the service)
 
-	// Validation
-	if !service.ValidName(req.Name) {
-		h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
+	res, err := h.svc.Create(r.Context(), h.actor(r), req, scope)
+	if err != nil {
+		h.handleCreateError(w, err)
 		return
 	}
-	// These fields land in fluxprod YAML through an unescaped text/template, so
-	// they're checked before the vcluster is declared to exist anywhere.
-	if err := firstValidationError(
-		validateQuantity("cpu", req.CPU),
-		validateQuantity("memory", req.Memory),
-		validateQuantity("storage", req.Storage),
-		validateFluxRepoURL("fluxcd_repo_url", req.FluxCDRepoURL),
-		validateBranchOrPath("fluxcd_branch", req.FluxCDBranch),
-		validateBranchOrPath("fluxcd_path", req.FluxCDPath),
-		validateVeleroHour("velero_hour", req.VeleroHour),
-	); err != nil {
-		h.renderToast(w, "error", err.Error())
-		return
-	}
-	if scope == "prod" {
-		if h.parser.Exists(ctx, "prod", req.Name) {
-			h.renderToast(w, "error", fmt.Sprintf("Le vcluster '%s' existe deja en prod", req.Name))
-			return
-		}
-	} else {
-		if h.parser.Exists(ctx, "preprod", req.Name) {
-			h.renderToast(w, "error", fmt.Sprintf("Le vcluster '%s' existe deja", req.Name))
-			return
-		}
+
+	// Vault auth-backend setup is async and waits on the fresh vcluster's
+	// vault-webhook to come up — the goroutine stays here, the service just
+	// says which environments need it.
+	for _, env := range res.VaultSetupEnvs {
+		go h.setupVaultAuthWhenReady(req.Name, env)
 	}
 
-	var warnings []string
-
-	// 1. Commit preprod files (if scope includes preprod)
-	if scope == "preprod" || scope == "both" {
-		preprodFiles := h.generator.GenerateVCluster(req, "preprod")
-		var preprodActions []gitops.CommitAction
-		for _, f := range preprodFiles {
-			preprodActions = append(preprodActions, gitops.CommitAction{
-				Action:  "create",
-				Path:    f.Path,
-				Content: f.Content,
-			})
-		}
-		kustAction, err := h.kustomizationAction(ctx, "preprod", "preprod", req.Name, true)
-		if err != nil {
-			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
-		} else {
-			preprodActions = append(preprodActions, kustAction)
-		}
-		if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: add vcluster %s", req.Name), preprodActions); err != nil {
-			slog.Error("GitLab commit failed", "vcluster", req.Name, "err", err)
-			h.renderToast(w, "error", "Erreur lors du commit GitLab : "+err.Error())
-			return
-		}
-	}
-
-	// 2. Commit prod files (if scope includes prod)
-	if scope == "prod" || scope == "both" {
-		var prodActions []gitops.CommitAction
-		for _, f := range h.generator.GenerateVCluster(req, "prod") {
-			prodActions = append(prodActions, gitops.CommitAction{
-				Action:  "create",
-				Path:    f.Path,
-				Content: f.Content,
-			})
-		}
-		kustAction, err := h.kustomizationAction(ctx, "prod", "preprod", req.Name, true)
-		if err != nil {
-			slog.Warn("could not read prod kustomization.yaml", "err", err)
-		} else {
-			prodActions = append(prodActions, kustAction)
-		}
-
-		if scope == "prod" {
-			// Prod-only: create a MR so the change goes through review before reaching master
-			mrURL, err := h.commitProdMRActions(
-				ctx,
-				fmt.Sprintf("feat: add vcluster %s (prod)", req.Name),
-				fmt.Sprintf("Ajout du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", req.Name),
-				prodActions,
-			)
-			if err != nil {
-				slog.Error("MR creation failed for prod-only vcluster", "vcluster", req.Name, "err", err)
-				warnings = append(warnings, "Erreur création MR prod : "+err.Error())
-			} else {
-				slog.Info("MR created for prod-only vcluster", "vcluster", req.Name, "url", mrURL)
-			}
-		} else {
-			// Both: commit prod files on preprod branch then create/get the MR preprod→master
-			mrURL, err := h.commitProdMRActions(
-				ctx,
-				fmt.Sprintf("feat: add vcluster %s (prod)", req.Name),
-				fmt.Sprintf("Ajout du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", req.Name),
-				prodActions,
-			)
-			if err != nil {
-				slog.Error("MR creation failed for vcluster", "vcluster", req.Name, "err", err)
-				warnings = append(warnings, "Erreur création MR prod : "+err.Error())
-			} else {
-				slog.Info("MR created/found for vcluster", "vcluster", req.Name, "url", mrURL)
-			}
-		}
-	}
-
-	// 3. Create GitLab repo for ArgoCD
-	if req.ArgoCD {
-		if _, err := h.gitlab.CreateAppManifestsRepo(req.Name); err != nil {
-			slog.Error("GitLab repo creation failed", "vcluster", req.Name, "err", err)
-			warnings = append(warnings, "Erreur repo GitLab : "+err.Error())
-		}
-	}
-
-	// 4. Create Keycloak clients
-	if req.ArgoCD {
-		if h.keycloak != nil {
-			if err := h.keycloak.CreateArgoCDClients(req.Name, scope); err != nil {
-				slog.Error("Keycloak client creation failed", "vcluster", req.Name, "err", err)
-				warnings = append(warnings, "Erreur Keycloak : "+err.Error())
-			} else {
-				slog.Info("Keycloak OIDC clients created", "vcluster", req.Name)
-			}
-		} else {
-			slog.Warn("Keycloak not configured, skipping OIDC client creation", "vcluster", req.Name)
-			warnings = append(warnings, "Keycloak non configure : le client OIDC d'ArgoCD ne sera pas cree")
-		}
-	}
-
-	// 5. Vault Kubernetes auth backend setup (async — waits for vault-webhook to be deployed)
-	if h.vault != nil {
-		var envs []string
-		if scope == "preprod" || scope == "both" {
-			envs = append(envs, "preprod")
-		}
-		if scope == "prod" || scope == "both" {
-			envs = append(envs, "prod")
-		}
-		for _, env := range envs {
-			go h.setupVaultAuthWhenReady(req.Name, env)
-		}
-	}
-
-	audit.Log(r, "create", req.Name, scope)
-	// Always redirect to dashboard
-	msg := fmt.Sprintf("vcluster %s créé avec succès", req.Name)
-	if len(warnings) > 0 {
-		msg += " (warnings : " + strings.Join(warnings, " ; ") + ")"
+	msg := fmt.Sprintf("vcluster %s créé avec succès", res.Name)
+	if len(res.Warnings) > 0 {
+		msg += " (warnings : " + strings.Join(res.Warnings, " ; ") + ")"
 	}
 	h.redirectWithFlash(w, "/", "success", msg)
 }
 
+// handleCreateError maps service.Create's typed errors back to the exact
+// toasts the inline handler used to render.
+func (h *Handlers) handleCreateError(w http.ResponseWriter, err error) {
+	var existsErr *service.ExistsError
+	var commitErr *service.CommitError
+	switch {
+	case errors.Is(err, service.ErrForbidden):
+		w.WriteHeader(http.StatusForbidden)
+		h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+	case errors.Is(err, service.ErrInvalidName):
+		h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
+	case errors.As(err, &existsErr):
+		if existsErr.Env == "prod" {
+			h.renderToast(w, "error", fmt.Sprintf("Le vcluster '%s' existe deja en prod", existsErr.Name))
+		} else {
+			h.renderToast(w, "error", fmt.Sprintf("Le vcluster '%s' existe deja", existsErr.Name))
+		}
+	case errors.As(err, &commitErr):
+		h.renderToast(w, "error", "Erreur lors du commit GitLab : "+commitErr.Err.Error())
+	default:
+		// Field-validation errors (cpu/memory/storage/fluxcd_*/velero_hour) come
+		// through here as plain "field : reason" errors.
+		h.renderToast(w, "error", err.Error())
+	}
+}
+
 // setupVaultAuthWhenReady waits for the vault-webhook Kustomization to be Ready, then
 // configures the Vault Kubernetes auth backend for the given vcluster and environment.
-// Runs as a goroutine — errors are only logged.
+// Runs as a goroutine — errors are only logged. Kept in the handler (not the service)
+// because it's an async polling loop, launched by Create and by the vault reconciler
+// in handlers.go.
 func (h *Handlers) setupVaultAuthWhenReady(name, env string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
@@ -324,89 +218,42 @@ func (h *Handlers) setupVaultAuthWhenReady(name, env string) {
 
 // Detail shows a single vcluster's details.
 func (h *Handlers) Detail(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	name := r.PathValue("name")
 	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
 
-	vc, err := h.parser.ParseVCluster(ctx, env, name)
+	detail, err := h.svc.GetVCluster(r.Context(), name, env)
 	if err != nil {
+		var notFound *service.VClusterNotFoundError
+		if errors.As(err, &notFound) {
+			http.Error(w, "VCluster not found: "+notFound.Err.Error(), http.StatusNotFound)
+			return
+		}
 		http.Error(w, "VCluster not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
 
-	var apiHost, argoURL string
-	if env == "preprod" {
-		apiHost = name + ".api." + h.cfg.BaseDomainPreprod
-		if vc.ArgoCD {
-			argoURL = "https://argocd." + name + "." + h.cfg.BaseDomainPreprod
-		}
-	} else {
-		apiHost = name + ".api." + h.cfg.BaseDomainProd
-		if vc.ArgoCD {
-			argoURL = "https://argocd." + name + "." + h.cfg.BaseDomainProd
-		}
-	}
-
-	// Check if app-manifests repo exists (for ArgoCD vclusters)
-	appManifestsExists := false
-	if vc.ArgoCD && h.gitlab != nil {
-		appManifestsExists = h.gitlab.AppManifestsRepoExists(name)
-	}
-
-	// Check if this is a pending prod vcluster (not yet on master)
-	isPending := env == "prod" && h.isPendingProd(ctx, name)
-	// Deployed prod vclusters are read-only (modifications go through preprod editing)
-	prodDeployed := env == "prod" && !isPending
-
 	data := map[string]interface{}{
-		"VCluster":           vc,
-		"Env":                env,
-		"EnvLabel":           h.cfg.ClusterLabel(env),
-		"APIHost":            apiHost,
-		"ArgoURL":            argoURL,
-		"AppManifestsExists": appManifestsExists,
-		"Pending":            isPending,
-		"ProdDeployed":       prodDeployed,
+		"VCluster":           detail.VCluster,
+		"Env":                detail.Env,
+		"EnvLabel":           detail.EnvLabel,
+		"APIHost":            detail.APIHost,
+		"ArgoURL":            detail.ArgoURL,
+		"AppManifestsExists": detail.AppManifestsExists,
+		"Pending":            detail.Pending,
+		"ProdDeployed":       detail.ProdDeployed,
 		"User":               h.getUser(r),
+		"PendingMRURL":       detail.PendingMRURL,
+		"HasPendingMRChange": detail.HasPendingMRChange,
+		"RancherEnabled":     detail.RancherEnabled,
+		"RancherPaired":      detail.RancherPaired,
+		"K8sVersions":        detail.K8sVersions,
+		"ArgoCDVersions":     detail.ArgoCDVersions,
 	}
 
-	// For all prod vclusters, fetch the open MR URL
-	if env == "prod" && h.gitlab != nil {
-		mrURL, mrChangedNames, _ := h.gitlab.GetOpenPreprodMRInfo()
-		data["PendingMRURL"] = mrURL
-		if isPending {
-			// Pending: vcluster exists only on preprod, MR will deploy it
-			data["HasPendingMRChange"] = mrURL != ""
-		} else {
-			// Deployed: check if the MR touches this specific vcluster
-			data["HasPendingMRChange"] = mrChangedNames[name]
-		}
-	}
-
-	// Rancher pairing status (if enabled for env, non-pending)
-	data["RancherEnabled"] = h.rancher != nil && h.cfg.RancherEnabledForEnv(env)
-	if h.rancher != nil && h.cfg.RancherEnabledForEnv(env) && !isPending {
-		info, found, err := h.rancher.FindClusterByName(name)
-		if err != nil {
-			slog.Warn("Rancher lookup failed", "vcluster", name, "err", err)
-		}
-		data["RancherPaired"] = found && info.State == "active"
-	}
-
-	if h.ghReleases != nil {
-		if versions, err := h.ghReleases.GetAvailableK8sVersions(); err == nil {
-			data["K8sVersions"] = versions
-		}
-		if versions, err := h.ghReleases.GetAvailableArgoCDVersions(); err == nil {
-			data["ArgoCDVersions"] = versions
-		}
-	}
-
+	// TTL formatting stays here: it's display-only, the service hands over the
+	// raw value.
 	data["DefaultVeleroTTL"] = h.cfg.VeleroDefaultTTL
-	ttlText := ttlToText(vc.Velero.TTL)
+	ttlText := ttlToText(detail.VCluster.Velero.TTL)
 	if ttlText == "" {
 		ttlText = ttlToText(h.cfg.VeleroDefaultTTL)
 	}
@@ -417,54 +264,38 @@ func (h *Handlers) Detail(w http.ResponseWriter, r *http.Request) {
 
 // DeleteConfirm shows the deletion confirmation page.
 func (h *Handlers) DeleteConfirm(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
-	ctx := r.Context()
 	name := r.PathValue("name")
 	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
 
-	// Get vcluster details for the targeted env
-	vc, _ := h.parser.ParseVCluster(ctx, env, name)
-
-	// Check if a counterpart exists in the other env
-	var counterpartPath string
-	if env == "prod" {
-		counterpartPath = fmt.Sprintf("%s/preprod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
-	} else {
-		counterpartPath = fmt.Sprintf("%s/prod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
-	}
-	counterpartFiles, _ := h.gitlab.ListFiles(ctx, "preprod", counterpartPath)
-	hasCounterpart := len(counterpartFiles) > 0
-
-	// Check if namespace-protection is active (warn the user it will be auto-disabled)
-	protectionEnabled := false
-	if k8s := h.k8sForEnv(env); k8s != nil {
-		protectionEnabled = k8s.GetNamespaceProtection(r.Context(), name)
+	confirm, err := h.svc.GetDeleteConfirm(r.Context(), h.actor(r), name, env)
+	if err != nil {
+		if errors.Is(err, service.ErrForbidden) {
+			w.WriteHeader(http.StatusForbidden)
+			h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+			return
+		}
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	data := map[string]interface{}{
-		"Name":              name,
-		"Env":               env,
-		"HasCounterpart":    hasCounterpart,
-		"ProtectionEnabled": protectionEnabled,
+		"Name":              confirm.Name,
+		"Env":               confirm.Env,
+		"HasCounterpart":    confirm.HasCounterpart,
+		"ProtectionEnabled": confirm.ProtectionEnabled,
 		"User":              h.getUser(r),
 	}
-	if vc != nil {
-		data["VCluster"] = vc
+	if confirm.VCluster != nil {
+		data["VCluster"] = confirm.VCluster
 	}
 
 	h.render(w, "vcluster_delete.html", data)
 }
 
-// Delete handles vcluster deletion via GitOps.
+// Delete handles vcluster deletion via GitOps. Form parsing, the confirm_name
+// guard and rendering stay here; the Rancher-first decision and the actual
+// GitOps teardown live in service.Delete / service.PerformDeletion.
 func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
 	name := r.PathValue("name")
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
@@ -477,66 +308,62 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	env := r.FormValue("env")
-	if env == "" {
-		env = "preprod"
-	}
-	deleteCounterpart := r.FormValue("delete_counterpart") == "on"
-	deleteGitlab := r.FormValue("delete_gitlab") == "on"
-	deleteKeycloak := h.keycloak != nil // always delete OIDC clients when Keycloak is configured
-
-	deletePreprod := env == "preprod" || (env == "prod" && deleteCounterpart)
-	deleteProd := env == "prod" || (env == "preprod" && deleteCounterpart)
-
-	// Rancher must be unpaired BEFORE the vcluster is deleted (the cleanup job runs inside
-	// the vcluster; if the vcluster is destroyed first the job never runs).
-	if h.rancher != nil {
-		for _, e := range []string{"preprod", "prod"} {
-			if (e == "preprod" && !deletePreprod) || (e == "prod" && !deleteProd) {
-				continue
-			}
-			if !h.cfg.RancherEnabledForEnv(e) {
-				continue
-			}
-			if h.cfg.IsCleaning(name, e) {
-				h.renderToast(w, "error", fmt.Sprintf("Nettoyage Rancher en cours pour %s (%s) — attendez la fin avant de supprimer", name, e))
-				return
-			}
-			info, found, err := h.rancher.FindClusterByName(name)
-			if err != nil || !found {
-				continue
-			}
-			// Still paired: auto-unpair then delete in background
-			k8s := h.k8sForEnv(e)
-			if err := h.rancher.DeleteCluster(info.ID); err != nil {
-				h.renderToast(w, "error", fmt.Sprintf("Erreur dépairage Rancher : %v", err))
-				return
-			}
-			slog.Info("delete: Rancher cluster deleted, launching cleanup then deletion", "vcluster", name, "rancher_id", info.ID)
-			h.cfg.AddCleaning(name, e, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
-			go h.runCleanupAndDelete(name, e, k8s, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
-			h.redirectWithFlash(w, "/", "info", fmt.Sprintf("Dépairage Rancher en cours — la suppression de %s sera lancée automatiquement", name))
-			return
-		}
+	in := service.DeleteInput{
+		Env:               r.FormValue("env"),
+		DeleteCounterpart: r.FormValue("delete_counterpart") == "on",
+		DeleteGitlab:      r.FormValue("delete_gitlab") == "on",
 	}
 
-	audit.Log(r, "delete", name, env)
-	// performDeletion goes through GitOps and must complete even if the user closes the
-	// tab; detach from r.Context() and use a fresh background context for the chain.
-	h.performDeletion(context.Background(), name, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
+	res, err := h.svc.Delete(r.Context(), h.actor(r), name, in)
+	if err != nil {
+		h.handleDeleteError(w, err)
+		return
+	}
+
+	if res.Async {
+		// Still Rancher-paired: the service already unpaired it and recorded the
+		// cleaning state. The wait-for-job-then-delete goroutine is an async
+		// concern, so it's launched here, not inside the service.
+		k8s := h.k8sForEnv(res.CleaningEnv)
+		go h.runCleanupAndDelete(name, res.CleaningEnv, k8s, res.DeletePreprod, res.DeleteProd, res.DeleteGitlab, res.DeleteKeycloak)
+		h.redirectWithFlash(w, "/", "info", fmt.Sprintf("Dépairage Rancher en cours — la suppression de %s sera lancée automatiquement", name))
+		return
+	}
+
 	var msg string
-	if deletePreprod && deleteProd {
+	switch {
+	case res.DeletePreprod && res.DeleteProd:
 		msg = fmt.Sprintf("vcluster %s supprimé", name)
-	} else if deleteProd {
+	case res.DeleteProd:
 		msg = fmt.Sprintf("vcluster %s (prod) supprimé", name)
-	} else {
+	default:
 		msg = fmt.Sprintf("vcluster %s (preprod) supprimé", name)
 	}
 	h.redirectWithFlash(w, "/", "success", msg)
 }
 
-// runCleanupAndDelete runs the rancher-cleanup job then calls performDeletion.
-// It is used both inline (initial delete request) and by startCleaningReconciler (restart recovery).
+// handleDeleteError maps service.Delete's typed errors back to the exact
+// toasts the inline handler used to render.
+func (h *Handlers) handleDeleteError(w http.ResponseWriter, err error) {
+	var cleaningErr *service.CleaningError
+	var unpairErr *service.UnpairError
+	switch {
+	case errors.Is(err, service.ErrForbidden):
+		w.WriteHeader(http.StatusForbidden)
+		h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+	case errors.As(err, &cleaningErr):
+		h.renderToast(w, "error", fmt.Sprintf("Nettoyage Rancher en cours pour %s (%s) — attendez la fin avant de supprimer", cleaningErr.Name, cleaningErr.Env))
+	case errors.As(err, &unpairErr):
+		h.renderToast(w, "error", fmt.Sprintf("Erreur dépairage Rancher : %v", unpairErr.Err))
+	default:
+		h.renderToast(w, "error", err.Error())
+	}
+}
+
+// runCleanupAndDelete runs the rancher-cleanup job then calls PerformDeletion.
+// It is used both inline (initial delete request) and by startCleaningReconciler
+// (restart recovery). Stays in the handler: it's an async polling wait, not
+// business logic.
 func (h *Handlers) runCleanupAndDelete(name, env string, k8s interface {
 	ApplyManifestToVClusterViaPortForward(context.Context, string, []byte) error
 	WaitForJobComplete(context.Context, string, string, string, time.Duration) error
@@ -550,7 +377,7 @@ func (h *Handlers) runCleanupAndDelete(name, env string, k8s interface {
 		}
 	}
 	h.cfg.RemoveCleaning(name, env)
-	h.performDeletion(ctx, name, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
+	h.svc.PerformDeletion(ctx, name, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak)
 }
 
 // startCleaningReconciler runs at startup: for every active cleaning entry in cleaning.json,
@@ -568,136 +395,12 @@ func (h *Handlers) startCleaningReconciler() {
 	}
 }
 
-// performDeletion executes the GitOps deletion steps (K8s cleanup, GitLab commits, Keycloak, Vault).
-// It is called either inline (when not Rancher-paired) or from a goroutine after Rancher cleanup.
-func (h *Handlers) performDeletion(ctx context.Context, name string, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak bool) {
-	// Cleanup K8s finalizers + disable namespace-protection before GitOps deletion
-	for _, e := range []string{"preprod", "prod"} {
-		if (e == "preprod" && !deletePreprod) || (e == "prod" && !deleteProd) {
-			continue
-		}
-		if k8s := h.k8sForEnv(e); k8s != nil {
-			// Disable namespace-protection so FluxCD can delete the namespace cleanly
-			if k8s.GetNamespaceProtection(ctx, name) {
-				if err := k8s.SetNamespaceProtection(ctx, name, false); err != nil {
-					slog.Warn("disabling namespace-protection failed", "vcluster", name, "env", e, "err", err)
-				} else {
-					slog.Info("delete: namespace-protection disabled", "vcluster", name, "env", e)
-				}
-			}
-			if err := k8s.CleanupNamespace(ctx, name); err != nil {
-				slog.Warn("K8s cleanup failed", "vcluster", name, "env", e, "err", err)
-			}
-		}
-	}
-
-	// 1. Delete preprod files + update kustomization.yaml on preprod branch
-	if deletePreprod {
-		preprodPath := fmt.Sprintf("%s/preprod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
-		preprodFiles, err := h.gitlab.ListFiles(ctx, "preprod", preprodPath)
-		if err != nil {
-			slog.Error("error listing preprod files", "vcluster", name, "err", err)
-		}
-		var preprodActions []gitops.CommitAction
-		for _, f := range preprodFiles {
-			preprodActions = append(preprodActions, gitops.CommitAction{
-				Action: "delete",
-				Path:   f,
-			})
-		}
-		kustAction, err := h.kustomizationAction(ctx, "preprod", "preprod", name, false)
-		if err != nil {
-			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
-		} else {
-			preprodActions = append(preprodActions, kustAction)
-		}
-		if len(preprodActions) > 0 {
-			if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: remove vcluster %s", name), preprodActions); err != nil {
-				slog.Error("error committing preprod deletion", "vcluster", name, "err", err)
-				return
-			}
-			h.cfg.AddDeleting(name, "preprod", "")
-			go h.sendNotification(context.Background(), fmt.Sprintf("Suppression du vcluster *%s* (preprod) en cours...", name))
-		}
-	}
-
-	// 2. Handle prod deletion
-	if deleteProd {
-		prodPath := fmt.Sprintf("%s/prod/vclusters/%s", h.cfg.FluxprodClustersPath, name)
-		prodFiles, err := h.gitlab.ListFiles(ctx, "preprod", prodPath)
-		if err != nil {
-			slog.Error("error listing prod files", "vcluster", name, "err", err)
-		}
-		if len(prodFiles) > 0 {
-			isPending := h.isPendingProd(ctx, name)
-			var prodActions []gitops.CommitAction
-			for _, f := range prodFiles {
-				prodActions = append(prodActions, gitops.CommitAction{
-					Action: "delete",
-					Path:   f,
-				})
-			}
-			kustAction, err := h.kustomizationAction(ctx, "prod", "preprod", name, false)
-			if err != nil {
-				slog.Warn("could not update prod kustomization.yaml", "err", err)
-			} else {
-				prodActions = append(prodActions, kustAction)
-			}
-
-			if isPending {
-				// Pending prod: delete directly on preprod branch (no MR, no HelmRelease to wait for)
-				if err := h.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: remove vcluster %s (prod)", name), prodActions); err != nil {
-					slog.Error("error deleting pending prod files", "vcluster", name, "err", err)
-				}
-				// No AddDeleting: no K8s HelmRelease exists for pending vclusters
-			} else {
-				// Deployed prod: create MR for deletion
-				mrURL, err := h.commitProdMRActions(
-					ctx,
-					fmt.Sprintf("feat: remove vcluster %s", name),
-					fmt.Sprintf("Suppression du vcluster **%s** en production.\n\nCréé automatiquement par vcluster-manager.", name),
-					prodActions,
-				)
-				if err != nil {
-					slog.Error("error creating MR for prod deletion", "vcluster", name, "err", err)
-				} else {
-					slog.Info("MR created for prod deletion", "vcluster", name, "url", mrURL)
-					h.cfg.AddDeleting(name, "prod", mrURL)
-				}
-			}
-		}
-	}
-
-	if deleteGitlab {
-		if err := h.gitlab.DeleteProject(name); err != nil {
-			slog.Error("error deleting GitLab repo", "vcluster", name, "err", err)
-		}
-	}
-
-	if deleteKeycloak && h.keycloak != nil {
-		if err := h.keycloak.DeleteArgoCDClients(name); err != nil {
-			slog.Error("error deleting Keycloak clients", "vcluster", name, "err", err)
-		}
-	}
-
-	// Cleanup Vault Kubernetes auth backends
-	if h.vault != nil {
-		if deletePreprod {
-			if err := h.vault.DisableAuth(context.Background(), "kubernetes-vcluster-"+name+"-preprod"); err != nil {
-				slog.Warn("vault cleanup failed", "env", "preprod", "vcluster", name, "err", err)
-			}
-		}
-		if deleteProd {
-			if err := h.vault.DisableAuth(context.Background(), "kubernetes-vcluster-"+name+"-prod"); err != nil {
-				slog.Warn("vault cleanup failed", "env", "prod", "vcluster", name, "err", err)
-			}
-		}
-	}
-
-}
-
 // commitProdMRActions commits prod file changes to the preprod branch (source of truth),
 // then gets or creates a single MR preprod→master to promote all pending prod changes.
+//
+// Duplicated in internal/service/vcluster.go: settings.go (UpdateSettings, out of scope
+// for this extraction) still calls this copy directly. They'll merge into one once
+// settings.go moves to the service too.
 func (h *Handlers) commitProdMRActions(ctx context.Context, commitMsg, mrDescription string, actions []gitops.CommitAction) (string, error) {
 	// 1. Commit to preprod (source of truth for both envs)
 	if err := h.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
@@ -725,6 +428,8 @@ func (h *Handlers) commitProdMRActions(ctx context.Context, commitMsg, mrDescrip
 }
 
 // kustomizationAction reads the cluster kustomization.yaml and returns a CommitAction to add/remove a vcluster entry.
+//
+// Duplicated in internal/service/vcluster.go for the same reason as commitProdMRActions above.
 func (h *Handlers) kustomizationAction(ctx context.Context, env, branch, name string, add bool) (gitops.CommitAction, error) {
 	kustPath := fmt.Sprintf("%s/%s/kustomization.yaml", h.cfg.FluxprodClustersPath, env)
 	content, err := h.gitlab.GetFile(ctx, branch, kustPath)
@@ -740,6 +445,8 @@ func (h *Handlers) kustomizationAction(ctx context.Context, env, branch, name st
 }
 
 // isPendingProd returns true if a prod vcluster exists on preprod but not yet on master.
+//
+// Duplicated in internal/service/vcluster.go for the same reason as commitProdMRActions above.
 func (h *Handlers) isPendingProd(ctx context.Context, name string) bool {
 	for _, n := range h.parser.ListVClusterNamesOnBranch(ctx, "master", "prod") {
 		if n == name {
