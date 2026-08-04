@@ -43,6 +43,23 @@ func (h *Handlers) UpdateSettings(w http.ResponseWriter, r *http.Request) {
 	fluxCDToggle := r.FormValue("fluxcd") // "on", "off", or "" (not changing)
 	deleteRepo := r.FormValue("delete_repo") == "on"
 
+	// These fields land in fluxprod YAML through an unescaped text/template, so
+	// they're checked before anything gets committed.
+	if err := firstValidationError(
+		validateQuantity("cpu", req.CPU),
+		validateQuantity("memory", req.Memory),
+		validateQuantity("storage", req.Storage),
+		validateVersion("k8s_version", req.K8sVersion),
+		validateVersion("argocd_version", req.ArgoCDVersion),
+		validateFluxRepoURL("fluxcd_repo_url", req.FluxCDRepoURL),
+		validateBranchOrPath("fluxcd_branch", req.FluxCDBranch),
+		validateBranchOrPath("fluxcd_path", req.FluxCDPath),
+		validateVeleroHour("velero_hour", req.VeleroHour),
+	); err != nil {
+		h.renderToast(w, "error", err.Error())
+		return
+	}
+
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		env = "preprod"

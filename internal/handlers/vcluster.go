@@ -133,6 +133,20 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
 		return
 	}
+	// These fields land in fluxprod YAML through an unescaped text/template, so
+	// they're checked before the vcluster is declared to exist anywhere.
+	if err := firstValidationError(
+		validateQuantity("cpu", req.CPU),
+		validateQuantity("memory", req.Memory),
+		validateQuantity("storage", req.Storage),
+		validateFluxRepoURL("fluxcd_repo_url", req.FluxCDRepoURL),
+		validateBranchOrPath("fluxcd_branch", req.FluxCDBranch),
+		validateBranchOrPath("fluxcd_path", req.FluxCDPath),
+		validateVeleroHour("velero_hour", req.VeleroHour),
+	); err != nil {
+		h.renderToast(w, "error", err.Error())
+		return
+	}
 	if scope == "prod" {
 		if h.parser.Exists(ctx, "prod", req.Name) {
 			h.renderToast(w, "error", fmt.Sprintf("Le vcluster '%s' existe deja en prod", req.Name))

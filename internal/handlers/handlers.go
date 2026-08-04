@@ -26,6 +26,7 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/rancher"
 	"github.com/gmalfray/vcluster-manager/internal/vault"
 	"github.com/gmalfray/vcluster-manager/internal/version"
+	"gopkg.in/yaml.v3"
 )
 
 // migrationEntry tracks an in-progress app migration (expires after 15 minutes).
@@ -444,11 +445,20 @@ func (h *Handlers) UpdateVeleroConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newTTL := parseTTLText(r.FormValue("velero_ttl"))
 	newS3URL := r.FormValue("velero_s3_url")
 	newBucketPreprod := r.FormValue("velero_bucket_preprod")
 	newBucketProd := r.FormValue("velero_bucket_prod")
 
+	if err := firstValidationError(
+		validateS3URL("velero_s3_url", newS3URL),
+		validateBucket("velero_bucket_preprod", newBucketPreprod),
+		validateBucket("velero_bucket_prod", newBucketProd),
+	); err != nil {
+		h.renderToast(w, "error", err.Error())
+		return
+	}
+
+	newTTL := parseTTLText(r.FormValue("velero_ttl"))
 	h.cfg.SetVeleroConfig(newTTL, newS3URL, newBucketPreprod, newBucketProd)
 
 	// Refresh the generator with the new TTL
@@ -560,21 +570,45 @@ func ttlToText(ttl string) string {
 	return fmt.Sprintf("%dm", total)
 }
 
+// veleroValuesConfig / veleroValuesLocation / veleroValues mirror the
+// values.yaml shape generateVeleroValuesYAML used to build by hand with
+// fmt.Sprintf. Marshaling a typed struct instead of interpolating strings means
+// bucket and s3URL can never break out of their YAML string — no quote or
+// newline in either field can reach the committed file unescaped.
+type veleroValuesConfig struct {
+	S3URL             string `yaml:"s3Url,omitempty"`
+	S3ForcePathStyle  string `yaml:"s3ForcePathStyle"`
+	ChecksumAlgorithm string `yaml:"checksumAlgorithm"`
+}
+
+type veleroValuesLocation struct {
+	Name     string             `yaml:"name"`
+	Provider string             `yaml:"provider"`
+	Bucket   string             `yaml:"bucket"`
+	Config   veleroValuesConfig `yaml:"config"`
+}
+
+type veleroValues struct {
+	Configuration struct {
+		BackupStorageLocation []veleroValuesLocation `yaml:"backupStorageLocation"`
+	} `yaml:"configuration"`
+}
+
 // generateVeleroValuesYAML generates the velero values.yaml content for a given env.
 func generateVeleroValuesYAML(bucket, s3URL string) string {
-	s3Line := ""
-	if s3URL != "" {
-		s3Line = fmt.Sprintf("\n        s3Url: \"%s\"", s3URL)
-	}
-	return fmt.Sprintf(`configuration:
-  backupStorageLocation:
-    - name: default
-      provider: aws
-      bucket: %s
-      config:%s
-        s3ForcePathStyle: "true"
-        checksumAlgorithm: ""
-`, bucket, s3Line)
+	var v veleroValues
+	v.Configuration.BackupStorageLocation = []veleroValuesLocation{{
+		Name:     "default",
+		Provider: "aws",
+		Bucket:   bucket,
+		Config: veleroValuesConfig{
+			S3URL:            s3URL,
+			S3ForcePathStyle: "true",
+		},
+	}}
+	// Marshal cannot fail on a plain struct of strings — safe to drop the error.
+	out, _ := yaml.Marshal(v)
+	return string(out)
 }
 
 // getMigrationLabel returns a non-empty label if the app is currently being migrated,
