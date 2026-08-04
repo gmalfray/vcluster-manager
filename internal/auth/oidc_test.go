@@ -85,7 +85,7 @@ func TestIsAdmin_LocalIssuer(t *testing.T) {
 
 func TestIsAdmin_AdminGroup(t *testing.T) {
 	SetAdminGroups([]string{"ops"})
-	t.Cleanup(func() { adminGroups = map[string]bool{"exploit": true, "it": true} })
+	t.Cleanup(func() { adminGroups = map[string]bool{"platform-admins": true, "ops": true} })
 
 	token := makeTestJWT(map[string]interface{}{
 		"iss":    "https://idp.example.com",
@@ -99,7 +99,7 @@ func TestIsAdmin_AdminGroup(t *testing.T) {
 
 func TestIsAdmin_NotInAdminGroup(t *testing.T) {
 	SetAdminGroups([]string{"ops"})
-	t.Cleanup(func() { adminGroups = map[string]bool{"exploit": true, "it": true} })
+	t.Cleanup(func() { adminGroups = map[string]bool{"platform-admins": true, "ops": true} })
 
 	token := makeTestJWT(map[string]interface{}{
 		"iss":    "https://idp.example.com",

@@ -144,7 +144,7 @@ VERSION                              # Version courante (ex: 1.1.0), lue par int
 
 ### RBAC (roles admin / lecteur)
 - Deux roles : **admin** (lecture + ecriture) et **lecteur** (consultation uniquement)
-- Groupes OIDC admin : `exploit`, `it` (definis dans `auth.adminGroups`)
+- Groupes OIDC admin par defaut : `platform-admins`, `ops` (configurables via `ADMIN_GROUPS`, definis dans `auth.adminGroups`)
 - Le login local (`admin`) est toujours admin (issuer `vcluster-manager-local`)
 - `auth.IsAdmin(r)` extrait les groupes du JWT cookie sans verification (comme `UserFromRequest`)
 - `handlers.requireAdmin(w, r)` : renvoie 403 + toast si pas admin
