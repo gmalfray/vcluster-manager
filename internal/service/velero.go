@@ -124,8 +124,12 @@ type VeleroBackupContentView struct {
 }
 
 // GetVeleroBackupContent fetches and pretty-prints the resource list of a
-// backup. Read-only, no privilege required.
-func (s *Service) GetVeleroBackupContent(ctx context.Context, name, backup, env string) (VeleroBackupContentView, error) {
+// backup. Admin only: the content is the tenant's raw resource dump, secrets
+// included, unlike GetVeleroBackups which only lists metadata.
+func (s *Service) GetVeleroBackupContent(ctx context.Context, actor models.Actor, name, backup, env string) (VeleroBackupContentView, error) {
+	if !actor.IsAdmin {
+		return VeleroBackupContentView{}, ErrForbidden
+	}
 	if !validBackupName(backup) {
 		return VeleroBackupContentView{}, ErrInvalidBackupName
 	}
