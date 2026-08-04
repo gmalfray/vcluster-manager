@@ -1,242 +1,72 @@
 package handlers
 
 import (
-	"log/slog"
 	"net/http"
-
-	"github.com/gmalfray/vcluster-manager/internal/models"
 )
 
-type envGroup struct {
-	Env   string
-	Label string
-	Items []models.DashboardItem
-}
-
+// Dashboard renders the home page: vclusters grouped by environment, summary
+// cards and the release/version banner. The aggregation itself lives in
+// service.GetDashboard; this handler only turns the result into template data.
 func (h *Handlers) Dashboard(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var groups []envGroup
-
-	// Load preprod vclusters (from preprod branch)
-	preprodVClusters, err := h.parser.ListVClusters(ctx, "preprod")
-	if err != nil {
-		slog.Warn("error listing vclusters", "env", "preprod", "err", err)
-	}
-
-	// Load prod vclusters config (from preprod branch, clusters/prod/)
-	prodVClusters, err := h.parser.ListVClusters(ctx, "prod")
-	if err != nil {
-		slog.Warn("error listing vclusters", "env", "prod", "err", err)
-	}
-
-	// Check what's actually deployed on master branch
-	masterNames := map[string]bool{}
-	for _, name := range h.parser.ListVClusterNamesOnBranch(ctx, "master", "prod") {
-		masterNames[name] = true
-	}
-
-	// Build preprod items
-	var preprodItems []models.DashboardItem
-	for _, vc := range preprodVClusters {
-		item := models.DashboardItem{
-			VCluster: vc,
-			APIHost:  vc.Name + ".api." + h.cfg.BaseDomainPreprod,
-		}
-		if vc.ArgoCD {
-			item.ArgoURL = "https://argocd." + vc.Name + "." + h.cfg.BaseDomainPreprod
-		}
-		preprodItems = append(preprodItems, item)
-	}
-
-	// Fetch open MR URL once for all pending items
-	var openMRURL string
-	if h.gitlab != nil {
-		openMRURL, _, _ = h.gitlab.GetOpenPreprodMRInfo()
-	}
-
-	// Build prod items: mark as pending if not on master
-	var prodItems []models.DashboardItem
-	for _, vc := range prodVClusters {
-		item := models.DashboardItem{
-			VCluster: vc,
-			APIHost:  vc.Name + ".api." + h.cfg.BaseDomainProd,
-		}
-		if vc.ArgoCD {
-			item.ArgoURL = "https://argocd." + vc.Name + "." + h.cfg.BaseDomainProd
-		}
-		if !masterNames[vc.Name] {
-			item.PendingMR = true
-			item.PendingMRURL = openMRURL
-		}
-		prodItems = append(prodItems, item)
-	}
-
-	// Merge deleting entries: mark existing items or create synthetic items
-	deletingEntries := h.cfg.ListDeleting()
-	for _, de := range deletingEntries {
-		found := false
-		items := &preprodItems
-		if de.Env == "prod" {
-			items = &prodItems
-		}
-		for i := range *items {
-			if (*items)[i].VCluster.Name == de.Name {
-				(*items)[i].Deleting = true
-				(*items)[i].DeletingMR = de.MRURL
-				found = true
-				break
-			}
-		}
-		if !found {
-			// Files already deleted from repo, create synthetic item
-			synthetic := models.DashboardItem{
-				VCluster:   models.VCluster{Name: de.Name, Env: de.Env},
-				Deleting:   true,
-				DeletingMR: de.MRURL,
-			}
-			*items = append(*items, synthetic)
-		}
-	}
-
-	// Merge cleaning entries: mark existing items or create synthetic items
-	for _, ce := range h.cfg.ListCleaning() {
-		items := &preprodItems
-		if ce.Env == "prod" {
-			items = &prodItems
-		}
-		found := false
-		for i := range *items {
-			if (*items)[i].VCluster.Name == ce.Name {
-				(*items)[i].RancherCleaning = true
-				found = true
-				break
-			}
-		}
-		if !found {
-			synthetic := models.DashboardItem{
-				VCluster:        models.VCluster{Name: ce.Name, Env: ce.Env},
-				RancherCleaning: true,
-			}
-			*items = append(*items, synthetic)
-		}
-	}
-
-	if len(preprodItems) > 0 {
-		groups = append(groups, envGroup{Env: "preprod", Label: h.cfg.ClusterLabel("preprod"), Items: preprodItems})
-	}
-	if len(prodItems) > 0 {
-		groups = append(groups, envGroup{Env: "prod", Label: h.cfg.ClusterLabel("prod"), Items: prodItems})
-	}
-
-	// Compute summary stats
-	type envStat struct {
-		total  int
-		argocd int
-		backup int
-	}
-	computeStat := func(items []models.DashboardItem) envStat {
-		s := envStat{total: len(items)}
-		for _, it := range items {
-			if it.VCluster.ArgoCD {
-				s.argocd++
-			}
-			if it.VCluster.Velero.Enabled {
-				s.backup++
-			}
-		}
-		return s
-	}
-	pp := computeStat(preprodItems)
-	pr := computeStat(prodItems)
-	pendingCount := 0
-	for _, it := range prodItems {
-		if it.PendingMR {
-			pendingCount++
-		}
-	}
+	dash, _ := h.svc.GetDashboard(r.Context()) // error is always nil, see GetDashboard doc
 
 	data := map[string]interface{}{
-		"Groups": groups,
+		"Groups": dash.Groups,
 		"User":   h.getUser(r),
 		// Summary cards
-		"SummaryTotalPreprod":  pp.total,
-		"SummaryTotalProd":     pr.total,
-		"SummaryTotal":         pp.total + pr.total,
-		"SummaryArgoCDCount":   pp.argocd + pr.argocd,
-		"SummaryNoArgoCDCount": (pp.total - pp.argocd) + (pr.total - pr.argocd),
-		"SummaryBackupCount":   pp.backup + pr.backup,
-		"SummaryNoBackupCount": (pp.total - pp.backup) + (pr.total - pr.backup),
-		"SummaryPendingCount":  pendingCount,
+		"SummaryTotalPreprod":  dash.SummaryTotalPreprod,
+		"SummaryTotalProd":     dash.SummaryTotalProd,
+		"SummaryTotal":         dash.SummaryTotal,
+		"SummaryArgoCDCount":   dash.SummaryArgoCDCount,
+		"SummaryNoArgoCDCount": dash.SummaryNoArgoCDCount,
+		"SummaryBackupCount":   dash.SummaryBackupCount,
+		"SummaryNoBackupCount": dash.SummaryNoBackupCount,
+		"SummaryPendingCount":  dash.SummaryPendingCount,
 	}
 
-	if h.ghReleases != nil {
-		if release, err := h.ghReleases.GetLatestVClusterRelease(); err == nil {
-			data["LatestRelease"] = release
-		} else {
-			slog.Warn("could not fetch latest vcluster release", "err", err)
-		}
+	if dash.LatestRelease != nil {
+		data["LatestRelease"] = dash.LatestRelease
 	}
 
-	if h.helmUpdater != nil {
+	if dash.HelmUpdaterEnabled {
 		data["HelmUpdaterEnabled"] = true
-		// Preprod (branch preprod)
-		if version, err := h.helmUpdater.GetCurrentChartVersion(ctx, "preprod"); err == nil {
-			data["PreprodChartVersion"] = version
-		} else {
-			slog.Warn("could not fetch chart version", "branch", "preprod", "err", err)
+		if dash.PreprodChartVersion != "" {
+			data["PreprodChartVersion"] = dash.PreprodChartVersion
 		}
-		if k8s, err := h.helmUpdater.GetDefaultK8sVersion(ctx, "preprod"); err == nil {
-			data["PreprodK8sVersion"] = k8s
-		} else {
-			slog.Warn("could not fetch K8s version", "branch", "preprod", "err", err)
+		if dash.PreprodK8sVersion != "" {
+			data["PreprodK8sVersion"] = dash.PreprodK8sVersion
 		}
-		// Prod (branch master)
-		if version, err := h.helmUpdater.GetCurrentChartVersion(ctx, "master"); err == nil {
-			data["ProdChartVersion"] = version
-		} else {
-			slog.Warn("could not fetch chart version", "branch", "master", "err", err)
+		if dash.ProdChartVersion != "" {
+			data["ProdChartVersion"] = dash.ProdChartVersion
 		}
-		if k8s, err := h.helmUpdater.GetDefaultK8sVersion(ctx, "master"); err == nil {
-			data["ProdK8sVersion"] = k8s
-		} else {
-			slog.Warn("could not fetch K8s version", "branch", "master", "err", err)
+		if dash.ProdK8sVersion != "" {
+			data["ProdK8sVersion"] = dash.ProdK8sVersion
 		}
-		// Pending MRs
-		if mr := h.helmUpdater.GetPendingChartMR(); mr != nil {
-			data["PendingChartMR"] = mr
+		if dash.PendingChartMR != nil {
+			data["PendingChartMR"] = dash.PendingChartMR
 		}
-		if mr := h.helmUpdater.GetPendingK8sMR(); mr != nil {
-			data["PendingK8sMR"] = mr
+		if dash.PendingK8sMR != nil {
+			data["PendingK8sMR"] = dash.PendingK8sMR
 		}
 	}
 
-	if h.ghReleases != nil {
-		if versions, err := h.ghReleases.GetAvailableK8sVersions(); err == nil {
-			data["K8sVersions"] = versions
-		} else {
-			slog.Warn("could not fetch available K8s versions", "err", err)
-		}
-		if release, err := h.ghReleases.GetLatestArgoCDRelease(); err == nil {
-			data["LatestArgoCDRelease"] = release
-		} else {
-			slog.Warn("could not fetch latest ArgoCD release", "err", err)
-		}
+	if dash.K8sVersions != nil {
+		data["K8sVersions"] = dash.K8sVersions
+	}
+	if dash.LatestArgoCDRelease != nil {
+		data["LatestArgoCDRelease"] = dash.LatestArgoCDRelease
 	}
 
-	if h.argocdUpdater != nil {
+	if dash.ArgoCDUpdaterEnabled {
 		data["ArgoCDUpdaterEnabled"] = true
-		if version, err := h.argocdUpdater.GetGlobalVersion(ctx, "preprod"); err == nil {
-			data["PreprodArgoCDVersion"] = version
-		} else {
-			slog.Warn("could not fetch ArgoCD version", "branch", "preprod", "err", err)
+		if dash.PreprodArgoCDVersion != "" {
+			data["PreprodArgoCDVersion"] = dash.PreprodArgoCDVersion
 		}
-		if version, err := h.argocdUpdater.GetGlobalVersion(ctx, "master"); err == nil {
-			data["ProdArgoCDVersion"] = version
-		} else {
-			slog.Warn("could not fetch ArgoCD version", "branch", "master", "err", err)
+		if dash.ProdArgoCDVersion != "" {
+			data["ProdArgoCDVersion"] = dash.ProdArgoCDVersion
 		}
-		if mr := h.argocdUpdater.GetPendingMR(); mr != nil {
-			data["PendingArgoCDMR"] = mr
+		if dash.PendingArgoCDMR != nil {
+			data["PendingArgoCDMR"] = dash.PendingArgoCDMR
 		}
 	}
 
