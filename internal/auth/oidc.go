@@ -219,12 +219,12 @@ func UserFromRequest(r *http.Request) map[string]interface{} {
 }
 
 // adminGroups defines which OIDC groups have admin (write) access.
-// Populated at startup via SetAdminGroups; defaults to {"exploit","it"} if never set.
-var adminGroups = map[string]bool{"exploit": true, "it": true}
+// Populated at startup via SetAdminGroups; defaults to {"platform-admins","ops"} if never set.
+var adminGroups = map[string]bool{"platform-admins": true, "ops": true}
 
 // SetAdminGroups configures which OIDC group names grant admin (write) access.
 // Call once at startup with the parsed ADMIN_GROUPS env var.
-// If groups is empty the default {"exploit","it"} is kept.
+// If groups is empty the default {"platform-admins","ops"} is kept.
 func SetAdminGroups(groups []string) {
 	m := make(map[string]bool, len(groups))
 	for _, g := range groups {
