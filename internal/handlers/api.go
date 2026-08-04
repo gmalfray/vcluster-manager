@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -189,23 +190,23 @@ func (h *Handlers) DownloadKubeconfig(w http.ResponseWriter, r *http.Request) {
 
 // CreateAppManifestsRepo creates the app-manifests GitLab repo for a vcluster (admin only).
 func (h *Handlers) CreateAppManifestsRepo(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
-
 	name := r.PathValue("name")
+	env := r.URL.Query().Get("env")
 
-	if h.gitlab == nil {
-		h.renderToast(w, "error", "GitLab client non disponible")
+	if _, err := h.svc.CreateAppManifestsRepo(r.Context(), h.actor(r), name, env); err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			w.WriteHeader(http.StatusForbidden)
+			h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+		case errors.Is(err, service.ErrAppGitLabUnavailable):
+			h.renderToast(w, "error", "GitLab client non disponible")
+		default:
+			h.renderToast(w, "error", fmt.Sprintf("Erreur creation repo : %v", err))
+		}
 		return
 	}
 
-	if _, err := h.gitlab.CreateAppManifestsRepo(name); err != nil {
-		h.renderToast(w, "error", fmt.Sprintf("Erreur creation repo : %v", err))
-		return
-	}
-
-	h.redirectWithFlash(w, fmt.Sprintf("/vclusters/%s?env=%s", name, r.URL.Query().Get("env")), "success", fmt.Sprintf("Repo app-manifests-%s cree avec succes", name))
+	h.redirectWithFlash(w, fmt.Sprintf("/vclusters/%s?env=%s", name, env), "success", fmt.Sprintf("Repo app-manifests-%s cree avec succes", name))
 }
 
 // CreateProdMR creates (or returns existing) the preprod→master MR for a pending vcluster.
