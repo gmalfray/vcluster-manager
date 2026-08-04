@@ -126,9 +126,19 @@ func New(d Deps) *Handlers {
 	// Business logic extracted from the handlers. Shares the k8s client map and
 	// its mutex so runtime-added clients stay visible to both layers.
 	h.svc = service.New(service.Deps{
-		Cfg:          cfg,
-		K8sClients:   d.K8sClients,
-		K8sClientsMu: &h.k8sClientsMu,
+		Cfg:           cfg,
+		Parser:        h.parser,
+		Generator:     h.generator,
+		GitLab:        h.gitlab,
+		Keycloak:      h.keycloak,
+		Rancher:       h.rancher,
+		Vault:         h.vault,
+		GHReleases:    h.ghReleases,
+		HelmUpdater:   h.helmUpdater,
+		ArgoCDUpdater: h.argocdUpdater,
+		Notifier:      h.notifier,
+		K8sClients:    d.K8sClients,
+		K8sClientsMu:  &h.k8sClientsMu,
 	})
 
 	funcMap := template.FuncMap{
