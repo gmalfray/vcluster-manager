@@ -15,8 +15,16 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/gmalfray/vcluster-manager/internal/argocd"
 	"github.com/gmalfray/vcluster-manager/internal/config"
+	"github.com/gmalfray/vcluster-manager/internal/github"
+	"github.com/gmalfray/vcluster-manager/internal/gitops"
+	"github.com/gmalfray/vcluster-manager/internal/helmcharts"
+	"github.com/gmalfray/vcluster-manager/internal/keycloak"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
+	"github.com/gmalfray/vcluster-manager/internal/notify"
+	"github.com/gmalfray/vcluster-manager/internal/rancher"
+	"github.com/gmalfray/vcluster-manager/internal/vault"
 )
 
 // Sentinel errors returned by the service. Each adapter maps them to its own
@@ -36,16 +44,36 @@ var (
 // layer (the map is mutated at runtime under the mutex), so pass the map value
 // (reference type) and a pointer to the shared mutex.
 type Deps struct {
-	Cfg          *config.Config
-	K8sClients   map[string]*kubernetes.StatusClient
-	K8sClientsMu *sync.RWMutex
+	Cfg           *config.Config
+	Parser        *gitops.Parser
+	Generator     *gitops.Generator
+	GitLab        *gitops.GitLabClient
+	Keycloak      *keycloak.Client
+	Rancher       *rancher.Client
+	Vault         *vault.Client
+	GHReleases    *github.ReleaseClient
+	HelmUpdater   *helmcharts.Updater
+	ArgoCDUpdater *argocd.Updater
+	Notifier      *notify.Notifier
+	K8sClients    map[string]*kubernetes.StatusClient
+	K8sClientsMu  *sync.RWMutex
 }
 
 // Service is the aggregate entry point to the business logic. During the
 // incremental extraction it starts small (only the domains already migrated)
 // and grows as handlers are moved over.
 type Service struct {
-	cfg *config.Config
+	cfg           *config.Config
+	parser        *gitops.Parser
+	generator     *gitops.Generator
+	gitlab        *gitops.GitLabClient
+	keycloak      *keycloak.Client
+	rancher       *rancher.Client
+	vault         *vault.Client
+	ghReleases    *github.ReleaseClient
+	helmUpdater   *helmcharts.Updater
+	argocdUpdater *argocd.Updater
+	notifier      *notify.Notifier
 
 	k8sClients   map[string]*kubernetes.StatusClient
 	k8sClientsMu *sync.RWMutex
@@ -54,9 +82,19 @@ type Service struct {
 // New builds a Service from its dependencies.
 func New(d Deps) *Service {
 	return &Service{
-		cfg:          d.Cfg,
-		k8sClients:   d.K8sClients,
-		k8sClientsMu: d.K8sClientsMu,
+		cfg:           d.Cfg,
+		parser:        d.Parser,
+		generator:     d.Generator,
+		gitlab:        d.GitLab,
+		keycloak:      d.Keycloak,
+		rancher:       d.Rancher,
+		vault:         d.Vault,
+		ghReleases:    d.GHReleases,
+		helmUpdater:   d.HelmUpdater,
+		argocdUpdater: d.ArgoCDUpdater,
+		notifier:      d.Notifier,
+		k8sClients:    d.K8sClients,
+		k8sClientsMu:  d.K8sClientsMu,
 	}
 }
 
