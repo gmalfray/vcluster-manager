@@ -1,103 +1,70 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 
-	"github.com/gmalfray/vcluster-manager/internal/audit"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 )
 
 // ProtectionStatus returns an HTMX fragment with the current namespace-protection state.
 func (h *Handlers) ProtectionStatus(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
-
-	k8s := h.k8sForEnv(env)
-	if k8s == nil {
-		h.renderPartial(w, "protection_status.html", map[string]interface{}{
-			"Enabled": false,
-		})
-		return
-	}
-
-	protected := k8s.GetNamespaceProtection(r.Context(), name)
-	h.renderPartial(w, "protection_status.html", map[string]interface{}{
-		"Enabled":   true,
-		"Protected": protected,
-		"Name":      name,
-		"Env":       env,
-		"User":      h.getUser(r),
-	})
+	st := h.svc.GetProtection(r.Context(), r.PathValue("name"), r.URL.Query().Get("env"))
+	h.renderProtection(w, r, st)
 }
 
 // EnableProtection adds the protect-deletion annotation on the vcluster namespace (admin only).
 func (h *Handlers) EnableProtection(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
-
-	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
-
-	k8s := h.k8sForEnv(env)
-	if k8s == nil {
-		h.renderToast(w, "error", fmt.Sprintf("Client Kubernetes %s non disponible", env))
-		return
-	}
-
-	if err := k8s.SetNamespaceProtection(r.Context(), name, true); err != nil {
-		slog.Error("EnableProtection failed", "env", env, "vcluster", name, "err", err)
-		h.renderToast(w, "error", fmt.Sprintf("Erreur activation protection : %v", err))
-		return
-	}
-
-	audit.Log(r, "enable-protection", name, env)
-	h.renderPartial(w, "protection_status.html", map[string]interface{}{
-		"Enabled":   true,
-		"Protected": true,
-		"Name":      name,
-		"Env":       env,
-		"User":      h.getUser(r),
-	})
+	h.setProtection(w, r, true)
 }
 
 // DisableProtection removes the protect-deletion annotation on the vcluster namespace (admin only).
 func (h *Handlers) DisableProtection(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
-	}
+	h.setProtection(w, r, false)
+}
 
+// setProtection is the shared body of Enable/DisableProtection: it delegates
+// to the service (which enforces admin RBAC) and maps the typed errors back to
+// the HTMX toasts the UI expects.
+func (h *Handlers) setProtection(w http.ResponseWriter, r *http.Request, enabled bool) {
 	name := r.PathValue("name")
 	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
-
-	k8s := h.k8sForEnv(env)
-	if k8s == nil {
-		h.renderToast(w, "error", fmt.Sprintf("Client Kubernetes %s non disponible", env))
+	st, err := h.svc.SetProtection(r.Context(), h.actor(r), name, env, enabled)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrForbidden):
+			w.WriteHeader(http.StatusForbidden)
+			h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
+		case errors.Is(err, service.ErrK8sUnavailable):
+			if env == "" {
+				env = "preprod"
+			}
+			h.renderToast(w, "error", fmt.Sprintf("Client Kubernetes %s non disponible", env))
+		default:
+			verb := "activation"
+			logMsg := "EnableProtection failed"
+			if !enabled {
+				verb = "desactivation"
+				logMsg = "DisableProtection failed"
+			}
+			slog.Error(logMsg, "env", env, "vcluster", name, "err", err)
+			h.renderToast(w, "error", fmt.Sprintf("Erreur %s protection : %v", verb, err))
+		}
 		return
 	}
+	h.renderProtection(w, r, st)
+}
 
-	if err := k8s.SetNamespaceProtection(r.Context(), name, false); err != nil {
-		slog.Error("DisableProtection failed", "env", env, "vcluster", name, "err", err)
-		h.renderToast(w, "error", fmt.Sprintf("Erreur desactivation protection : %v", err))
-		return
-	}
-
-	audit.Log(r, "disable-protection", name, env)
+// renderProtection renders the protection_status.html HTMX fragment from a
+// service.ProtectionState.
+func (h *Handlers) renderProtection(w http.ResponseWriter, r *http.Request, st service.ProtectionState) {
 	h.renderPartial(w, "protection_status.html", map[string]interface{}{
-		"Enabled":   true,
-		"Protected": false,
-		"Name":      name,
-		"Env":       env,
+		"Enabled":   st.Available,
+		"Protected": st.Protected,
+		"Name":      st.Name,
+		"Env":       st.Env,
 		"User":      h.getUser(r),
 	})
 }

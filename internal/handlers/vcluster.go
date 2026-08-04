@@ -5,16 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/gitops"
 	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 )
-
-var nameRegex = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // ListVClusters shows the vcluster list page.
 func (h *Handlers) ListVClusters(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +127,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validation
-	if !nameRegex.MatchString(req.Name) {
+	if !service.ValidName(req.Name) {
 		h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
 		return
 	}

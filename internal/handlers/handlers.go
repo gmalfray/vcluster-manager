@@ -22,8 +22,10 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/helmcharts"
 	"github.com/gmalfray/vcluster-manager/internal/keycloak"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
+	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/notify"
 	"github.com/gmalfray/vcluster-manager/internal/rancher"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 	"github.com/gmalfray/vcluster-manager/internal/vault"
 	"github.com/gmalfray/vcluster-manager/internal/version"
 	"gopkg.in/yaml.v3"
@@ -64,6 +66,7 @@ type Handlers struct {
 	vaultStates   map[string]*vaultSetupState // key: "env/name"
 	vaultStatesMu sync.RWMutex
 	notifier      *notify.Notifier
+	svc           *service.Service // business logic extracted from the handlers, shared with the future REST adapter
 }
 
 // Deps groups the dependencies required to construct a Handlers. Using a
@@ -119,6 +122,14 @@ func New(d Deps) *Handlers {
 		vaultStates:   make(map[string]*vaultSetupState),
 		notifier:      d.Notifier,
 	}
+
+	// Business logic extracted from the handlers. Shares the k8s client map and
+	// its mutex so runtime-added clients stay visible to both layers.
+	h.svc = service.New(service.Deps{
+		Cfg:          cfg,
+		K8sClients:   d.K8sClients,
+		K8sClientsMu: &h.k8sClientsMu,
+	})
 
 	funcMap := template.FuncMap{
 		"join":       strings.Join,
@@ -385,6 +396,17 @@ func (h *Handlers) getUser(r *http.Request) map[string]interface{} {
 	user := auth.UserFromRequest(r)
 	user["isAdmin"] = auth.IsAdmin(r)
 	return user
+}
+
+// actor builds the transport-agnostic models.Actor the service layer uses for
+// RBAC and audit, from the request's session.
+func (h *Handlers) actor(r *http.Request) models.Actor {
+	user := auth.UserFromRequest(r)
+	username, _ := user["name"].(string)
+	return models.Actor{
+		Username: username,
+		IsAdmin:  auth.IsAdmin(r),
+	}
 }
 
 // redirectWithFlash does an HX-Redirect and stores a flash message in a cookie
