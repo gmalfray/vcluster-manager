@@ -69,7 +69,8 @@ Le tenant `vault-webhook` ne se déploie pas (donc le setup Vault du vcluster re
 - **Tokens de statut** formalisés en variables CSS (`--status-ready/pending/inactive/error`) — corrige aussi le toggle rouge.
 
 ### Chantiers plus lourds
-- **Thème Keycloak** custom (logo, couleurs, fond sombre) — la rupture de charte au SSO est le pire endroit (souvent le 1er écran).
+- **Charte Rebuild IT (éditeur)** : vCluster Manager est un produit Rebuild IT → appliquer la charte éditeur (indigo `#4F46E5` / orange `#FF7A45` / mint `#22C3A6`, Space Grotesk + Inter, logo 4 blocs — source `rebuild-it/branding/brand.md`, distincte du Terracotta client). L'indigo primaire actuel est déjà proche ; reste le logo, les couleurs secondaires (orange/mint pour accents/états), les fonts, et la cohérence avec le thème Keycloak. Chantier à mener avec les tokens de statut et le thème Keycloak ci-dessous.
+- **Thème Keycloak** custom (logo, couleurs, fond sombre, **charte Rebuild IT**) — la rupture de charte au SSO est le pire endroit (souvent le 1er écran).
 - **Densité du dashboard à l'échelle** : à 8-10 vclusters la table empilée devient un scroll interminable → badge de synthèse agrégé + détail au survol/clic ; barres CPU/MEM/STOR gardées en page détail, valeur texte compacte en vue liste.
 - **Accessibilité** clavier/lecteurs d'écran : focus visible en thème sombre, `aria-label` sur les icônes seules (thème, menu ⋮), `aria-live`/`role="alert"` sur les toasts d'erreur.
 

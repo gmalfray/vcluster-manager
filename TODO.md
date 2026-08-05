@@ -18,7 +18,8 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 - [ ] **UX — toggle protection** : off = gris neutre, on = couleur positive (plus de rouge sur « Inactive »).
 - [ ] **UX — colonne STATUS dashboard** : dé-empiler FLUX/VAULT/QUOTAS ; badge de synthèse agrégé + détail au survol pour tenir à l'échelle (8-10 vclusters).
 - [ ] **UX — tokens de statut** en variables CSS (`--status-ready/pending/inactive/error`) ; états vides dédiés ; contrastes AA des libellés gris.
-- [ ] **UX — thème Keycloak** custom (logo/couleurs/fond sombre) pour la page SSO.
+- [ ] **Branding — charte Rebuild IT** : appliquer la charte éditeur (indigo `#4F46E5` / orange `#FF7A45` / mint `#22C3A6`, Space Grotesk + Inter, logo 4 blocs — `rebuild-it/branding/brand.md`) à l'app ; à mener avec les tokens de statut et le thème Keycloak.
+- [ ] **UX — thème Keycloak** custom (logo/couleurs/fond sombre, charte Rebuild IT) pour la page SSO.
 - [ ] **A11y** : focus visible en thème sombre, `aria-label` sur icônes seules, `aria-live`/`role="alert"` sur les toasts.
 
 ## Améliorations Go (issu de l'audit skills)
