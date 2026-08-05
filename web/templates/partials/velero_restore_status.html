@@ -14,22 +14,30 @@
      hx-target="this"
      {{end}}>
     {{if eq .Phase "Completed"}}
+    {{if .ResumeFailed}}
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:#dc2626;flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" stroke="currentColor"/></svg>
+    <div>
+        <p class="text-sm font-medium" style="color:#dc2626;">Restauration terminée — reprise du flux échouée</p>
+        <p class="text-xs" style="color:var(--text-muted);">Restore : <code class="font-mono">{{.RestoreName}}</code> — le vcluster reste à l'arrêt (StatefulSet à 0 réplica).{{if .ResumeError}} {{.ResumeError}}{{end}} Relancez le flux manuellement (ou réessayez la reprise).</p>
+    </div>
+    {{else}}
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:#16a34a;flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor"/></svg>
     <div>
         <p class="text-sm font-medium" style="color:#16a34a;">Restauration terminée</p>
         <p class="text-xs" style="color:var(--text-muted);">Restore : <code class="font-mono">{{.RestoreName}}</code>{{if .InPlace}} — Flux repris{{end}}</p>
     </div>
+    {{end}}
     {{else if eq .Phase "Failed"}}
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:#dc2626;flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor"/></svg>
     <div>
         <p class="text-sm font-medium" style="color:#dc2626;">Restauration échouée</p>
-        <p class="text-xs" style="color:var(--text-muted);">Restore : <code class="font-mono">{{.RestoreName}}</code>{{if .InPlace}} — Flux repris{{end}}</p>
+        <p class="text-xs" style="color:var(--text-muted);">Restore : <code class="font-mono">{{.RestoreName}}</code>{{if .InPlace}}{{if .ResumeFailed}} — reprise du flux également échouée{{if .ResumeError}} ({{.ResumeError}}){{end}}{{else}} — Flux repris{{end}}{{end}}</p>
     </div>
     {{else if eq .Phase "PartiallyFailed"}}
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:#d97706;flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" stroke="currentColor"/></svg>
     <div>
         <p class="text-sm font-medium" style="color:#d97706;">Restauration partielle</p>
-        <p class="text-xs" style="color:var(--text-muted);">Restore : <code class="font-mono">{{.RestoreName}}</code>{{if .InPlace}} — Flux repris{{end}}</p>
+        <p class="text-xs" style="color:var(--text-muted);">Restore : <code class="font-mono">{{.RestoreName}}</code>{{if .InPlace}}{{if .ResumeFailed}} — reprise du flux également échouée{{if .ResumeError}} ({{.ResumeError}}){{end}}{{else}} — Flux repris{{end}}{{end}}</p>
     </div>
     {{else}}
     <svg class="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:var(--indigo);flex-shrink:0;"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
