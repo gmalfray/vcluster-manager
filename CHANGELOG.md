@@ -6,6 +6,43 @@ Toutes les modifications notables sont documentées ici. Le format suit
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-08-05
+
+### Added
+- **Couche service `internal/service`** : la logique métier est extraite des handlers, un fichier
+  par domaine (protection, rancher, dashboard, velero, vcluster, apps, settings, platform, status),
+  testable en isolation. Les adaptateurs web (`internal/handlers`) ne font plus que parser, déléguer
+  et rendre — préparation de l'API REST et de l'opérateur. Fondation `service.Deps`/`Service`,
+  `models.Actor`, `audit.LogActor`, `service.ValidName`.
+- Documentation de conception opérateur : `docs/adr-001-source-de-verite.md` (source de vérité = CR
+  `VCluster` versionné), `docs/crd-vcluster.md` (schéma + découpage kro/controller-runtime),
+  `docs/etude-cluster-api.md` (extension future CAPI), `docs/refactor-api.md`,
+  `docs/recette-securite.md`.
+
+### Fixed
+- **Toggle ArgoCD** : activer/désactiver ArgoCD sur un vcluster avec FluxCD bootstrapé effaçait
+  silencieusement la config Flux (`flux bootstrap --url=` vide). Les champs FluxCD sont désormais
+  reportés lors de la régénération. Test de non-régression ajouté.
+- **Restore Velero in-place** : garde-fous data-safety — pré-check de la phase du backup
+  (`Completed`) avant toute suppression de PVC, attente réelle de la disparition du pod, reprise de
+  FluxCD côté serveur (goroutine) indépendante du navigateur.
+
+### Security
+- **Contenu de backup Velero réservé aux admins** : il était lisible par tout utilisateur
+  authentifié (un lecteur pouvait récupérer les `Secret` du tenant). Gate admin ajouté.
+- **Validation anti-injection** des champs libres avant commit GitOps — dont une injection de
+  commande shell via `FluxCDRepoURL`/`Branch`/`Path` dans `flux bootstrap`. Champs quantité/version/
+  bucket/URL S3 validés ; YAML Velero produit par marshaling de struct.
+- **Garde `IsDeleting`** sur `StatusFragment` : un `?deleting=true` ne peut plus déclencher le
+  retrait de finalizers sur un nom arbitraire (état serveur-autoritaire requis).
+- Validation cohérente du `name` (`UpdateSettings`, `CreateVeleroRestore`, `MigrateApp`).
+- Dépendances : bumps `x/text`, `x/net`, `x/crypto`, `moby/spdystream`, `go-jose/v4` — `govulncheck`
+  à 0 vulnérabilité atteignable.
+
+### Changed
+- Groupes admin OIDC par défaut neutralisés (`platform-admins`, `ops`), toujours configurables via
+  `ADMIN_GROUPS`.
+
 ## [1.3.0] — 2026-04-29
 
 ### Added
