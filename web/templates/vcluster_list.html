@@ -15,7 +15,7 @@ a.wf-vc-card[data-name].vcm-dragging { opacity:.4; }
 
 <div class="mb-8 flex justify-between items-end">
     <div>
-        <h1 class="text-2xl font-bold" style="font-family: 'Outfit', sans-serif; color: var(--text);">
+        <h1 class="text-2xl font-bold" style="font-family: 'Space Grotesk', sans-serif; color: var(--text);">
             vClusters &mdash; {{.EnvLabel}}
             <span class="text-base font-normal ml-1" style="color:var(--text-muted);">({{.Env}})</span>
         </h1>
@@ -34,6 +34,18 @@ a.wf-vc-card[data-name].vcm-dragging { opacity:.4; }
     </div>
 </div>
 
+{{if not .VClusters}}
+<div class="wf-card flex flex-col items-center text-center gap-3" style="padding:48px 24px;">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style="color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" stroke="currentColor"/></svg>
+    <div>
+        <p class="text-sm font-medium" style="color:var(--text-secondary);">Aucun vCluster en {{.EnvLabel}}</p>
+        <p class="text-xs mt-1" style="color:var(--text-muted);">Créez-en un ou basculez vers l'autre environnement.</p>
+    </div>
+    {{if .User.isAdmin}}
+    <a href="/vclusters/new" class="btn btn-indigo btn-sm mt-1">Nouveau vCluster</a>
+    {{end}}
+</div>
+{{else}}
 <div class="wf-vc-grid" id="vcm-grid">
     {{range .VClusters}}
     {{$pending := hasKey $.PendingNames .Name}}
@@ -115,7 +127,7 @@ a.wf-vc-card[data-name].vcm-dragging { opacity:.4; }
             </div>
             {{end}}
             <div class="vcm-vis-toggle">
-                <span class="vcm-vis-icon">&#128065;</span>
+                <span class="vcm-vis-icon" aria-hidden="true">&#128065;</span>
                 <span class="vcm-vis-label">Visible dans le dashboard</span>
             </div>
         </div>
@@ -123,6 +135,7 @@ a.wf-vc-card[data-name].vcm-dragging { opacity:.4; }
     {{end}}
     {{end}}
 </div>
+{{end}}
 
 <script>
 const VCM_KEY = 'vcm_dashboard_prefs';

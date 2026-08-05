@@ -1,6 +1,8 @@
 /* ═══════════════════════════════════════════════════════════════════════════════
    Wave Flow — Design System
-   vCluster Manager
+   vCluster Manager — tokens alignés sur la charte Rebuild IT
+   (rebuild-it/branding/brand.md : indigo #4F46E5, accent orange #FF7A45,
+   mint #22C3A6 pour les statuts positifs, Space Grotesk + Inter)
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -14,14 +16,28 @@
   --text:         #e4e7f0;
   --text-secondary:#8b92a8;
   --text-muted:   #565e78;
-  --indigo:       #6366f1;
-  --indigo-dim:   rgba(99,102,241,0.12);
-  --indigo-border:rgba(99,102,241,0.25);
+
+  /* Primaire — indigo (brand primary-600/700) */
+  --indigo:       #4F46E5;
+  --indigo-hover: #4338CA;
+  --indigo-dim:   rgba(79,70,229,0.14);
+  --indigo-border:rgba(79,70,229,0.3);
+  --primary:      var(--indigo); /* alias generique */
+
+  /* Accent — orange "chantier" (brand accent-500/600), CTA secondaires */
+  --accent:       #FF7A45;
+  --accent-hover: #F4622A;
+  --accent-dim:   rgba(255,122,69,0.14);
+  --accent-border:rgba(255,122,69,0.3);
+
   --cyan:         #22d3ee;
   --cyan-dim:     rgba(34,211,238,0.1);
-  --green:        #34d399;
-  --green-dim:    rgba(52,211,153,0.1);
-  --green-border: rgba(52,211,153,0.25);
+
+  /* Mint — statuts positifs (brand mint-500), remplace l'ancien vert generique */
+  --green:        #22C3A6;
+  --green-dim:    rgba(34,195,166,0.12);
+  --green-border: rgba(34,195,166,0.28);
+
   --purple:       #a78bfa;
   --purple-dim:   rgba(167,139,250,0.1);
   --amber:        #fbbf24;
@@ -29,6 +45,18 @@
   --red:          #f87171;
   --red-dim:      rgba(248,113,113,0.1);
   --red-border:   rgba(248,113,113,0.25);
+
+  /* Tokens de statut semantiques — une seule source de verite pour
+     badges/toggles/toasts (finding recette 1.4.0 #7). */
+  --status-ready-fg:    var(--green);
+  --status-ready-bg:    var(--green-dim);
+  --status-pending-fg:  var(--amber);
+  --status-pending-bg:  var(--amber-dim);
+  --status-inactive-fg: var(--text-muted);
+  --status-inactive-bg: var(--surface3);
+  --status-error-fg:    var(--red);
+  --status-error-bg:    var(--red-dim);
+
   --radius:    12px;
   --radius-sm: 8px;
   --radius-xs: 6px;
@@ -42,7 +70,7 @@ html { background: var(--bg); }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   min-height: 100vh;
 }
 
@@ -71,7 +99,7 @@ body {
 .bg-purple-100 { background-color: var(--purple-dim) !important; }
 
 .bg-blue-600   { background-color: var(--indigo)  !important; }
-.bg-blue-700   { background-color: #5558e6        !important; }
+.bg-blue-700   { background-color: var(--indigo-hover)        !important; }
 .bg-green-600  { background-color: var(--indigo)  !important; }
 .bg-red-600    { background-color: var(--red-dim) !important; }
 .bg-purple-600 { background-color: var(--purple-dim) !important; }
@@ -152,7 +180,7 @@ input[type="file"]::file-selector-button {
   transition: background 0.2s;
 }
 input[type="file"]::file-selector-button:hover {
-  background: rgba(99,102,241,0.2);
+  background: rgba(79,70,229,0.2);
 }
 
 /* ─── Navbar ────────────────────────────────────────────────────────────────── */
@@ -172,7 +200,7 @@ input[type="file"]::file-selector-button:hover {
   margin-right: 24px; text-decoration: none; flex-shrink: 0;
 }
 .wf-nav-logo-sub {
-  font-family: 'Outfit', sans-serif; font-weight: 500;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 500;
   font-size: 0.72rem; color: var(--text-muted);
   letter-spacing: 0.06em; text-transform: uppercase;
 }
@@ -194,7 +222,7 @@ input[type="file"]::file-selector-button:hover {
   cursor: pointer; transition: all 0.2s; border: none;
   display: inline-flex; align-items: center; gap: 5px; text-decoration: none;
 }
-.wf-nav-cta:hover { background: #5558e6; transform: translateY(-1px); }
+.wf-nav-cta:hover { background: var(--indigo-hover); transform: translateY(-1px); }
 .wf-nav-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
 .wf-nav-config {
   color: var(--text-muted); cursor: pointer; transition: color 0.2s;
@@ -230,7 +258,7 @@ input[type="file"]::file-selector-button:hover {
 
 /* ─── Page header ───────────────────────────────────────────────────────────── */
 .wf-page-title {
-  font-family: 'Outfit', sans-serif; font-size: 1.5rem; font-weight: 700;
+  font-family: 'Space Grotesk', sans-serif; font-size: 1.5rem; font-weight: 700;
   letter-spacing: -0.02em; color: var(--text);
   display: flex; align-items: center; gap: 10px;
 }
@@ -249,11 +277,11 @@ input[type="file"]::file-selector-button:hover {
   padding: 8px 18px; font-size: 0.82rem; font-weight: 600;
   border-radius: var(--radius-xs); cursor: pointer; transition: all 0.2s;
   border: 1px solid transparent; display: inline-flex; align-items: center; gap: 6px;
-  font-family: 'DM Sans', sans-serif; text-decoration: none; white-space: nowrap;
+  font-family: 'Inter', sans-serif; text-decoration: none; white-space: nowrap;
 }
 .btn-sm { padding: 5px 12px; font-size: 0.75rem; }
 .btn-indigo { background: var(--indigo); color: white; border-color: var(--indigo); }
-.btn-indigo:hover { background: #5558e6; transform: translateY(-1px); color: white; }
+.btn-indigo:hover { background: var(--indigo-hover); transform: translateY(-1px); color: white; }
 .btn-outline { border-color: var(--border); background: transparent; color: var(--text-secondary); }
 .btn-outline:hover { border-color: var(--indigo-border); color: var(--text); background: var(--indigo-dim); }
 .btn-danger { border-color: var(--red-border); background: var(--red-dim); color: var(--red); }
@@ -268,7 +296,7 @@ input[type="file"]::file-selector-button:hover {
 }
 .wf-card:hover { border-color: var(--border); }
 .wf-card-title {
-  font-family: 'Outfit', sans-serif; font-size: 1rem; font-weight: 700;
+  font-family: 'Space Grotesk', sans-serif; font-size: 1rem; font-weight: 700;
   margin-bottom: 18px; display: flex; align-items: center; gap: 8px; color: var(--text);
 }
 .wf-card-title-icon {
@@ -315,7 +343,7 @@ input[type="file"]::file-selector-button:hover {
 
 /* ─── Section title ─────────────────────────────────────────────────────────── */
 .wf-section-title {
-  font-family: 'Outfit', sans-serif; font-size: 1.05rem; font-weight: 700;
+  font-family: 'Space Grotesk', sans-serif; font-size: 1.05rem; font-weight: 700;
   color: var(--text); margin-bottom: 14px; padding-bottom: 12px;
   border-bottom: 1px solid var(--border-subtle);
   display: flex; align-items: center; gap: 8px;
@@ -351,23 +379,23 @@ input[type="file"]::file-selector-button:hover {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 3px 9px; border-radius: 20px; font-size: 0.68rem; font-weight: 600;
 }
-.wf-badge-green  { background: var(--green-dim);  color: var(--green);  }
-.wf-badge-amber  { background: var(--amber-dim);  color: var(--amber);  }
-.wf-badge-red    { background: var(--red-dim);    color: var(--red);    }
+.wf-badge-green  { background: var(--status-ready-bg);    color: var(--status-ready-fg);    }
+.wf-badge-amber  { background: var(--status-pending-bg);  color: var(--status-pending-fg);  }
+.wf-badge-red    { background: var(--status-error-bg);    color: var(--status-error-fg);    }
 .wf-badge-cyan   { background: var(--cyan-dim);   color: var(--cyan);   }
 .wf-badge-indigo { background: var(--indigo-dim); color: var(--indigo); }
-.wf-badge-gray   { background: var(--surface3);   color: var(--text-muted); }
+.wf-badge-gray   { background: var(--status-inactive-bg); color: var(--status-inactive-fg); }
 .wf-badge-pulse  { animation: pulse 1.5s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
 
 .wf-status-tag {
   padding: 4px 10px; border-radius: 5px; font-size: 0.73rem; font-weight: 600; display: inline-block;
 }
-.wf-status-tag.ready    { background: var(--green-dim);  color: var(--green); }
-.wf-status-tag.notready { background: var(--red-dim);    color: var(--red); }
-.wf-status-tag.na       { background: var(--surface3);   color: var(--text-muted); }
-.wf-status-tag.pending  { background: var(--amber-dim);  color: var(--amber); }
-.wf-status-tag.updating { background: var(--amber-dim);  color: var(--amber); }
+.wf-status-tag.ready    { background: var(--status-ready-bg);    color: var(--status-ready-fg);    }
+.wf-status-tag.notready { background: var(--status-error-bg);    color: var(--status-error-fg);    }
+.wf-status-tag.na       { background: var(--status-inactive-bg); color: var(--status-inactive-fg); }
+.wf-status-tag.pending  { background: var(--status-pending-bg);  color: var(--status-pending-fg);  }
+.wf-status-tag.updating { background: var(--status-pending-bg);  color: var(--status-pending-fg);  }
 
 /* ─── vCluster cards (list view) ────────────────────────────────────────────── */
 .wf-vc-grid {
@@ -389,7 +417,7 @@ input[type="file"]::file-selector-button:hover {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-subtle);
 }
-.wf-vc-card-name { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.05rem; color: var(--text); }
+.wf-vc-card-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05rem; color: var(--text); }
 .wf-vc-card-badges { display: flex; gap: 4px; flex-wrap: wrap; }
 .wf-vc-card-specs { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .wf-spec-row { display: flex; justify-content: space-between; font-size: 0.8rem; }
@@ -453,7 +481,7 @@ input[type="file"]::file-selector-button:hover {
 .wf-form-section-header {
   padding: 14px 24px; background: var(--surface2);
   border-bottom: 1px solid var(--border-subtle);
-  font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 0.82rem;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 0.82rem;
   color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em;
   display: flex; align-items: center; gap: 10px;
 }
@@ -465,7 +493,7 @@ input[type="file"]::file-selector-button:hover {
 .wf-form-input, .wf-form-select {
   padding: 9px 14px; font-size: 0.84rem; border-radius: var(--radius-xs);
   border: 1px solid var(--border); background: var(--surface2); color: var(--text);
-  font-family: 'DM Sans', sans-serif; width: 100%; transition: border-color 0.2s;
+  font-family: 'Inter', sans-serif; width: 100%; transition: border-color 0.2s;
 }
 .wf-form-input:focus, .wf-form-select:focus {
   outline: none; border-color: var(--indigo); box-shadow: 0 0 0 2px var(--indigo-dim);
@@ -488,7 +516,7 @@ input[type="file"]::file-selector-button:hover {
 .wf-form-section-legend {
   padding: 10px 20px; background: var(--surface2);
   border-bottom: 1px solid var(--border-subtle);
-  font-family: 'Outfit', sans-serif; font-weight: 600; font-size: 0.78rem;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 0.78rem;
   color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em;
 }
 /* Form section auto-padding for content after legend */
@@ -538,7 +566,7 @@ input[type="file"]::file-selector-button:hover {
   border-bottom: 1px solid var(--border-subtle); background: var(--surface2);
 }
 .wf-config-card-title {
-  font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 0.95rem;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 0.95rem;
   color: var(--text); display: flex; align-items: center; gap: 8px;
 }
 .wf-config-card-body { padding: 18px 22px; }
@@ -574,7 +602,7 @@ input[type="file"]::file-selector-button:hover {
   color: var(--text-muted); margin-bottom: 10px;
 }
 .wf-stat-value {
-  font-family: 'Outfit', sans-serif; font-size: 2rem; font-weight: 800;
+  font-family: 'Space Grotesk', sans-serif; font-size: 2rem; font-weight: 800;
   color: var(--text); line-height: 1; margin-bottom: 6px;
   display: flex; align-items: baseline; gap: 4px;
 }
@@ -594,10 +622,25 @@ input[type="file"]::file-selector-button:hover {
 .wf-stat-pill.red    { background: var(--red-dim);    color: var(--red); }
 .wf-stat-pill.cyan   { background: var(--cyan-dim);   color: var(--cyan); }
 
+/* ─── Status badge groups (dashboard STATUS column) ─────────────────────────
+   Sub-statuses (Flux / Vault / Quotas) as aligned inline columns instead of
+   stacked full-width blocks, so a row with all three stays scannable. ───── */
+.wf-status-groups {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 24px;
+}
+.wf-status-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-status-group-label {
+  font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-muted); flex-shrink: 0;
+}
+
 /* ─── Progress bars in status badge ────────────────────────────────────────── */
 .wf-quota-inline {
   display: flex; flex-direction: column; gap: 8px; margin-top: 4px;
 }
+/* Compact row layout used inside .wf-status-group: bars shrink to fit inline. */
+.wf-quota-inline-row-layout { flex-direction: row; flex-wrap: wrap; gap: 12px; margin-top: 0; }
+.wf-quota-inline-row-layout .wf-quota-inline-bar { width: 48px; flex: none; }
 .wf-quota-inline-row {
   display: flex; align-items: center; gap: 10px;
 }
@@ -654,7 +697,7 @@ input[type="file"]::file-selector-button:hover {
   display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 32px;
 }
 .wf-login-sub {
-  font-family: 'Outfit', sans-serif; font-size: 0.72rem;
+  font-family: 'Space Grotesk', sans-serif; font-size: 0.72rem;
   color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
 }
 .wf-login-err {
@@ -741,7 +784,7 @@ input[type="file"]::file-selector-button:hover {
   gap: 18px;
 }
 .wf-page-loading-text {
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Space Grotesk', sans-serif;
   font-size: 0.9rem;
   font-weight: 600;
   color: var(--text-secondary);
@@ -769,16 +812,16 @@ input[type="file"]::file-selector-button:hover {
   display: flex; justify-content: space-between; align-items: center; gap: 12px;
   font-size: 0.84rem; font-weight: 500; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
 }
-.wf-toast.success { background: var(--green-dim);  border-color: var(--green-border); color: var(--green); }
-.wf-toast.error   { background: var(--red-dim);    border-color: var(--red-border);   color: var(--red); }
-.wf-toast.warning { background: var(--amber-dim);  border-color: rgba(251,191,36,0.3); color: var(--amber); }
+.wf-toast.success { background: var(--status-ready-bg);   border-color: var(--green-border); color: var(--status-ready-fg); }
+.wf-toast.error   { background: var(--status-error-bg);   border-color: var(--red-border);   color: var(--status-error-fg); }
+.wf-toast.warning { background: var(--status-pending-bg); border-color: rgba(251,191,36,0.3); color: var(--status-pending-fg); }
 .wf-toast.info    { background: var(--indigo-dim); border-color: var(--indigo-border); color: var(--text-secondary); }
 .wf-toast-close { cursor: pointer; opacity: 0.6; font-size: 1.1rem; line-height: 1; flex-shrink: 0; }
 .wf-toast-close:hover { opacity: 1; }
 /* Toast with dash syntax (from Go template {{.Level}}) */
-.wf-toast-success { background: var(--green-dim);  border-color: var(--green-border); color: var(--green); }
-.wf-toast-error   { background: var(--red-dim);    border-color: var(--red-border);   color: var(--red); }
-.wf-toast-warning { background: var(--amber-dim);  border-color: rgba(251,191,36,0.3); color: var(--amber); }
+.wf-toast-success { background: var(--status-ready-bg);   border-color: var(--green-border); color: var(--status-ready-fg); }
+.wf-toast-error   { background: var(--status-error-bg);   border-color: var(--red-border);   color: var(--status-error-fg); }
+.wf-toast-warning { background: var(--status-pending-bg); border-color: rgba(251,191,36,0.3); color: var(--status-pending-fg); }
 .wf-toast-info    { background: var(--indigo-dim); border-color: var(--indigo-border); color: var(--text-secondary); }
 
 /* ─── Alert variants (dash naming) ─────────────────────────────────────────── */
@@ -844,7 +887,7 @@ input[type="file"]::file-selector-button:hover {
   border-radius: var(--radius); padding: 24px;
 }
 .wf-card-title {
-  font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1rem;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1rem;
   color: var(--text); margin-bottom: 16px; padding-bottom: 12px;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -898,3 +941,58 @@ input[type="file"]::file-selector-button:hover {
 /* Shared padding for wf-config-card inner content (non-header) */
 .wf-config-card > .wf-dl + *,
 .wf-config-card > p.text-xs:last-child { padding: 0 22px 14px; }
+
+/* ─── Accent (orange "chantier") — secondary CTAs, brand accent-500 ─────────── */
+.btn-accent { background: var(--accent); color: white; border-color: var(--accent); }
+.btn-accent:hover { background: var(--accent-hover); transform: translateY(-1px); color: white; }
+.wf-badge-accent { background: var(--accent-dim); color: var(--accent); }
+
+/* ─── Anti-flash on HTMX refresh (recette 1.4.0 #4) ──────────────────────────
+   htmx:beforeRequest adds this class to the swap target, htmx:afterRequest
+   removes it (see layout.html) — dims stale content instead of showing it
+   empty while the fragment is being refetched. */
+.wf-swap-loading { opacity: 0.5; pointer-events: none; transition: opacity 0.15s ease; }
+
+/* ─── Generic confirmation modal (recette 1.4.0 #3) ──────────────────────────
+   Replaces window.confirm() and htmx's native confirm() dialog. */
+.wf-confirm-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(6,7,12,0.6); backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.wf-confirm-overlay[hidden] { display: none; }
+.wf-confirm-box {
+  width: 100%; max-width: 420px; background: var(--surface);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius);
+  padding: 24px; box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  animation: fade-in 0.15s ease-out;
+}
+.wf-confirm-title {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05rem;
+  color: var(--text); margin-bottom: 10px;
+}
+.wf-confirm-message { font-size: 0.88rem; color: var(--text-secondary); line-height: 1.5; }
+.wf-confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+
+/* ─── Accessibility — visible focus ring, incl. dark theme (recette 1.4.0 #9) ─
+   Custom toggles hide their checkbox (.sr-only) and show a sibling div, so the
+   ring is drawn on that sibling when the (invisible) input has keyboard focus. */
+a:focus-visible,
+button:focus-visible,
+.btn:focus-visible,
+[tabindex]:focus-visible,
+input[type="text"]:focus-visible,
+input[type="password"]:focus-visible,
+input[type="email"]:focus-visible,
+input[type="radio"]:focus-visible,
+input[type="file"]:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--indigo);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+input.sr-only:focus-visible ~ div {
+  outline: 2px solid var(--indigo);
+  outline-offset: 2px;
+}
