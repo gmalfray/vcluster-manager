@@ -206,6 +206,16 @@ type VeleroRestoreView struct {
 	InPlace     bool
 }
 
+// ErrRestoreStageFailed means one of the steps of an in-place restore
+// (suspending Flux, scaling the vcluster down, deleting its PVC, creating the
+// Restore object) failed. Unlike a transient hiccup we can shrug off, each of
+// these steps has to actually happen for the restore to do anything — so on
+// failure CreateVeleroRestore stops right there instead of pressing on with a
+// restore that can't work, and reports it as an error rather than a stage it
+// merely logged. See stageErr for what errors.Is(err, ErrRestoreStageFailed)
+// unwraps to.
+var ErrRestoreStageFailed = errors.New("restore stage failed")
+
 // CreateVeleroRestore starts a Velero restore of backupName into targetName
 // (empty or equal to name means an in-place restore of the same vcluster).
 // Admin only.
@@ -213,8 +223,10 @@ type VeleroRestoreView struct {
 // An in-place restore overwrites the source vcluster's volume, so before
 // touching anything it confirms the backup is actually restorable (phase
 // Completed). Only then does it suspend Flux, scale the vcluster down, wait
-// for its pod to really terminate and delete its PVC so Velero can recreate
-// it from the backup.
+// for its pods to really terminate and delete its PVC so Velero can recreate
+// it from the backup. If any of those steps fails, it aborts and best-effort
+// resumes Flux rather than pressing on toward a restore that can't work —
+// see ErrRestoreStageFailed.
 func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreView, error) {
 	if !actor.IsAdmin {
 		return VeleroRestoreView{}, ErrForbidden
@@ -251,38 +263,39 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 		}
 
 		if err := k8s.SetFluxSuspend(ctx, name, true); err != nil {
-			slog.Warn("could not suspend flux", "vcluster", name, "err", err)
+			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suspension de Flux : %w", err)}
 		}
-		if err := k8s.ScaleVClusterStatefulSet(ctx, name, 0); err != nil {
-			slog.Warn("could not scale down vcluster", "vcluster", name, "err", err)
-		} else {
-			// Wait for the pod to really terminate: deleting a still-mounted PVC
-			// leaves it stuck Terminating.
-			if err := k8s.WaitForVClusterPodGone(ctx, name, 30*time.Second); err != nil {
-				slog.Warn("pod didn't terminate in time, deleting PVC anyway", "vcluster", name, "err", err)
-			}
-			if err := k8s.DeleteVClusterPVC(ctx, name); err != nil {
-				slog.Warn("could not delete PVC", "vcluster", name, "err", err)
-			}
+		if err := k8s.ScaleVClusterWorkloads(ctx, name, 0); err != nil {
+			s.abortInPlaceRestore(k8s, name)
+			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("mise à l'échelle à 0 : %w", err)}
+		}
+		// Wait for the pods to really terminate: deleting a still-mounted PVC
+		// leaves it stuck Terminating. A timeout here isn't fatal on its own —
+		// we still attempt the delete, which is where a genuinely stuck pod
+		// would surface as an error.
+		if err := k8s.WaitForVClusterPodsGone(ctx, name, 30*time.Second); err != nil {
+			slog.Warn("pods didn't terminate in time, deleting PVC anyway", "vcluster", name, "err", err)
+		}
+		if err := k8s.DeleteVClusterPVC(ctx, name); err != nil {
+			s.abortInPlaceRestore(k8s, name)
+			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suppression du volume : %w", err)}
 		}
 	}
 
 	restoreName, err := k8s.CreateVeleroRestore(ctx, backupName, sourceNS, targetNS, s.cfg.VeleroNamespace)
 	if err != nil {
-		// Resume Flux if restore creation failed (it will rescale the StatefulSet).
 		if inPlace {
-			if resumeErr := k8s.SetFluxSuspend(ctx, name, false); resumeErr != nil {
-				slog.Warn("could not resume flux after failed restore", "vcluster", name, "err", resumeErr)
-			}
+			s.abortInPlaceRestore(k8s, name)
 		}
-		return VeleroRestoreView{}, err
+		return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("création du restore : %w", err)}
 	}
 
 	audit.LogActor(actor.Username, "velero-restore", name, env, "backup="+backupName, "target="+targetNS)
 
-	// An in-place restore leaves Flux suspended and the StatefulSet at zero until
-	// it ends. Browser polling can't be trusted with that — close the tab and the
-	// vcluster stays down — so watch it here too, independent of the request.
+	// An in-place restore leaves Flux suspended and the vcluster at zero
+	// replicas until it ends. Browser polling can't be trusted with that —
+	// close the tab and the vcluster stays down — so watch it here too,
+	// independent of the request.
 	if inPlace {
 		go s.resumeAfterInPlaceRestore(k8s, name, restoreName, s.cfg.VeleroNamespace)
 	}
@@ -295,6 +308,18 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 		BackupName:  backupName,
 		InPlace:     inPlace,
 	}, nil
+}
+
+// abortInPlaceRestore resumes Flux after a stage of the in-place restore
+// sequence failed partway through, so the vcluster isn't left stuck
+// suspended and scaled to zero on top of the reported error. Best-effort: if
+// this also fails, an operator now has two things to fix, but at least
+// they'll know about both — the caller's error already carries the primary
+// failure.
+func (s *Service) abortInPlaceRestore(k8s *kubernetes.StatusClient, name string) {
+	if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
+		slog.Error("could not resume flux after aborting in-place restore", "vcluster", name, "err", err)
+	}
 }
 
 // resumeAfterInPlaceRestore watches an in-place restore to completion and
@@ -335,19 +360,31 @@ func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, 
 }
 
 // VeleroRestoreStatusView is a polled Velero restore's current phase.
+//
+// ResumeFailed and ResumeError are the data-safety contract with the
+// adapters: once Phase is terminal for an in-place restore, the UI must not
+// say "Flux repris" (resumed) unless ResumeFailed is false. A failed resume
+// leaves the vcluster suspended and at zero replicas — a real problem the
+// operator needs to know about, not something to paper over with a success
+// message.
 type VeleroRestoreStatusView struct {
-	RestoreName string
-	Phase       string
-	Name        string
-	Env         string
-	InPlace     bool
+	RestoreName  string
+	Phase        string
+	Name         string
+	Env          string
+	InPlace      bool
+	ResumeFailed bool
+	ResumeError  string
 }
 
 // GetVeleroRestoreStatus polls the phase of a Velero restore. When inPlace and
 // the restore has reached a terminal phase, it resumes Flux (which rescales
 // the vcluster) — a second, request-driven path to the same effect as
 // resumeAfterInPlaceRestore's background poll. Whichever notices completion
-// first wins; resuming twice is harmless (SetFluxSuspend is idempotent).
+// first wins; resuming twice is harmless (SetFluxSuspend is idempotent). If
+// the resume itself fails, that's reported via ResumeFailed/ResumeError
+// rather than swallowed — the restore may well have succeeded while Flux
+// stayed stuck suspended, and the UI must not claim otherwise.
 func (s *Service) GetVeleroRestoreStatus(ctx context.Context, name, restoreName, env string, inPlace bool) (VeleroRestoreStatusView, error) {
 	env = envOrDefault(env)
 	k8s := s.k8sForEnv(env)
@@ -360,18 +397,24 @@ func (s *Service) GetVeleroRestoreStatus(ctx context.Context, name, restoreName,
 		return VeleroRestoreStatusView{}, err
 	}
 
+	var resumeFailed bool
+	var resumeErrMsg string
 	if inPlace && isTerminalRestorePhase(phase) {
 		if resumeErr := k8s.SetFluxSuspend(ctx, name, false); resumeErr != nil {
 			slog.Warn("could not resume flux after restore", "vcluster", name, "err", resumeErr)
+			resumeFailed = true
+			resumeErrMsg = resumeErr.Error()
 		}
 	}
 
 	return VeleroRestoreStatusView{
-		RestoreName: restoreName,
-		Phase:       phase,
-		Name:        name,
-		Env:         env,
-		InPlace:     inPlace,
+		RestoreName:  restoreName,
+		Phase:        phase,
+		Name:         name,
+		Env:          env,
+		InPlace:      inPlace,
+		ResumeFailed: resumeFailed,
+		ResumeError:  resumeErrMsg,
 	}, nil
 }
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -119,6 +120,44 @@ func newStatefulSetObj(name, namespace string, replicas int64) *unstructured.Uns
 		},
 		"spec": map[string]interface{}{
 			"replicas": replicas,
+		},
+	}}
+}
+
+func newHelmReleaseObj(name, namespace string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "helm.toolkit.fluxcd.io/v2",
+		"kind":       "HelmRelease",
+		"metadata": map[string]interface{}{
+			"name":      name,
+			"namespace": namespace,
+		},
+		"spec": map[string]interface{}{},
+	}}
+}
+
+func newKustomizationObj(name, namespace string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+		"kind":       "Kustomization",
+		"metadata": map[string]interface{}{
+			"name":      name,
+			"namespace": namespace,
+		},
+		"spec": map[string]interface{}{},
+	}}
+}
+
+func newRestoreObj(name, namespace, phase string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "velero.io/v1",
+		"kind":       "Restore",
+		"metadata": map[string]interface{}{
+			"name":      name,
+			"namespace": namespace,
+		},
+		"status": map[string]interface{}{
+			"phase": phase,
 		},
 	}}
 }
@@ -294,5 +333,155 @@ func TestGetVeleroBackupContent_ForbiddenCheckedBeforeBackupName(t *testing.T) {
 	_, err := s.GetVeleroBackupContent(context.Background(), plainActor(), "demo", "../etc/passwd", "preprod")
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected ErrForbidden to be checked before the backup name, got %v", err)
+	}
+}
+
+// --- CreateVeleroRestore: stage failures abort cleanly ----------------------
+//
+// Before the RBAC/topology fixes, a failed suspend/scale/delete stage was
+// only logged — CreateVeleroRestore pressed on to create the Restore object
+// regardless, and the UI ended up claiming success. These tests check the
+// opposite: a failed stage stops the sequence right there and comes back as
+// an error the adapter can show.
+
+func TestCreateVeleroRestore_AbortsWhenSuspendFluxFails(t *testing.T) {
+	// No HelmRelease/Kustomization seeded: SetFluxSuspend fails on the very
+	// first patch, before anything destructive runs.
+	k8s := kubernetes.NewTestStatusClient(
+		newBackupObj("manual-demo-1", "velero-system", "Completed"),
+	)
+	s := newVeleroTestService(k8s)
+
+	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+
+	if !errors.Is(err, ErrRestoreStageFailed) {
+		t.Fatalf("expected ErrRestoreStageFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "suspension de Flux") {
+		t.Errorf("expected the error to name the failed stage, got %q", err.Error())
+	}
+}
+
+func TestCreateVeleroRestore_AbortsWhenScaleDownFails(t *testing.T) {
+	// Flux suspend succeeds, but there's no control-plane workload to scale.
+	k8s := kubernetes.NewTestStatusClient(
+		newBackupObj("manual-demo-1", "velero-system", "Completed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+	)
+	s := newVeleroTestService(k8s)
+
+	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+
+	if !errors.Is(err, ErrRestoreStageFailed) {
+		t.Fatalf("expected ErrRestoreStageFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "échelle") {
+		t.Errorf("expected the error to name the failed stage, got %q", err.Error())
+	}
+}
+
+func TestCreateVeleroRestore_AbortsWhenPVCDeleteFails(t *testing.T) {
+	// Suspend and scale-down both succeed (StatefulSet seeded, embedded
+	// topology, no pod so the wait returns immediately), but there's no PVC
+	// under the expected name to delete.
+	k8s := kubernetes.NewTestStatusClient(
+		newBackupObj("manual-demo-1", "velero-system", "Completed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+		newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
+	)
+	s := newVeleroTestService(k8s)
+
+	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+
+	if !errors.Is(err, ErrRestoreStageFailed) {
+		t.Fatalf("expected ErrRestoreStageFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "suppression du volume") {
+		t.Errorf("expected the error to name the failed stage, got %q", err.Error())
+	}
+}
+
+func TestCreateVeleroRestore_SucceedsWhenAllStagesSucceed(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient(
+		newBackupObj("manual-demo-1", "velero-system", "Completed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+		newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
+		newPVCObj("data-vcluster-demo-0", "vcluster-demo"),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.RestoreName == "" {
+		t.Error("expected a non-empty restore name")
+	}
+	if !view.InPlace {
+		t.Error("expected InPlace to be true for a same-name restore")
+	}
+}
+
+// --- GetVeleroRestoreStatus: resume failure must not read as success --------
+
+func TestGetVeleroRestoreStatus_ResumeFailureIsReportedNotSwallowed(t *testing.T) {
+	// Restore is Completed, but there's no HelmRelease/Kustomization to
+	// resume: the resume step fails. The status call itself must still
+	// succeed (the restore's own phase is legitimate data) — the failure
+	// belongs in ResumeFailed/ResumeError, not the returned error.
+	k8s := kubernetes.NewTestStatusClient(
+		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Completed"),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.GetVeleroRestoreStatus(context.Background(), "demo", "vm-manual-demo-1-123", "preprod", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.Phase != "Completed" {
+		t.Fatalf("Phase = %q, want Completed", view.Phase)
+	}
+	if !view.ResumeFailed {
+		t.Error("expected ResumeFailed to be true when Flux couldn't be resumed")
+	}
+	if view.ResumeError == "" {
+		t.Error("expected ResumeError to carry the underlying failure")
+	}
+}
+
+func TestGetVeleroRestoreStatus_ResumeSuccessIsReported(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient(
+		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Completed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.GetVeleroRestoreStatus(context.Background(), "demo", "vm-manual-demo-1-123", "preprod", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.ResumeFailed {
+		t.Errorf("expected ResumeFailed to be false, got ResumeError=%q", view.ResumeError)
+	}
+}
+
+func TestGetVeleroRestoreStatus_NonTerminalPhaseDoesNotAttemptResume(t *testing.T) {
+	// Restore still in progress and no HelmRelease/Kustomization seeded: if
+	// resume were attempted here it would fail and wrongly set ResumeFailed.
+	k8s := kubernetes.NewTestStatusClient(
+		newRestoreObj("vm-manual-demo-1-123", "velero-system", "InProgress"),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.GetVeleroRestoreStatus(context.Background(), "demo", "vm-manual-demo-1-123", "preprod", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.ResumeFailed {
+		t.Error("expected ResumeFailed to stay false while the restore is still in progress")
 	}
 }
