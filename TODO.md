@@ -3,6 +3,24 @@
 Backlog des évolutions à venir. Les items terminés sont archivés dans
 [`CHANGELOG.md`](CHANGELOG.md).
 
+## Correctifs recette 1.4.0 → 1.4.1
+
+> Issus de la recette fonctionnelle réelle. Détail + preuves : [`docs/recette-1.4-findings.md`](docs/recette-1.4-findings.md).
+
+- [ ] 🔴 **Restore Velero — RBAC SA** : `deploy/base/rbac.yaml` — `patch` sur `helmreleases`/`statefulsets`/`deployments` dans les ns tenant (suspend/scale/resume échouent en `forbidden`).
+- [ ] 🟠 **Restore Velero — topologie** : `internal/kubernetes/velero.go` — cibler l'etcd StatefulSet `vcluster-<name>-etcd` + PVC `data-vcluster-<name>-etcd-0` (control-plane = Deployment, pas StatefulSet).
+- [ ] 🟠 **Restore Velero — remontée d'échec** : `handlers/api_velero.go` + `velero_restore_status.html` — ne pas afficher « terminé / Flux repris » quand les étapes ont échoué.
+- [ ] 🟠 **UI — bouton « Contenu » backup** : `velero_backups.html` l.68 — envelopper dans `{{if $.User.isAdmin}}` (comme « Restaurer »).
+- [ ] 🟠 **Session expirée** : renvoyer `HX-Redirect: /auth/login` sur 401/403 des endpoints HTMX (au lieu d'injecter le login dans un fragment).
+- [ ] 🟠 **Flash de contenu vide** : skeleton (`hx-indicator`) ou opacité + swap différé sur la navigation HTMX.
+- [ ] 🟡 **Vault webhook** : refonte du template `examples/gitops-repo/lib/tenant-template/vault-webhook` (OCIRepository `v1beta2`, `chartRef`, création du ns `vault-system`) — incompatible avec Flux < 2.6.
+- [ ] **UX — modale de confirmation générique** : remplacer les `window.confirm()` (backup) ; unifier Supprimer / Backup / Restaurer / désactivation protection.
+- [ ] **UX — toggle protection** : off = gris neutre, on = couleur positive (plus de rouge sur « Inactive »).
+- [ ] **UX — colonne STATUS dashboard** : dé-empiler FLUX/VAULT/QUOTAS ; badge de synthèse agrégé + détail au survol pour tenir à l'échelle (8-10 vclusters).
+- [ ] **UX — tokens de statut** en variables CSS (`--status-ready/pending/inactive/error`) ; états vides dédiés ; contrastes AA des libellés gris.
+- [ ] **UX — thème Keycloak** custom (logo/couleurs/fond sombre) pour la page SSO.
+- [ ] **A11y** : focus visible en thème sombre, `aria-label` sur icônes seules, `aria-live`/`role="alert"` sur les toasts.
+
 ## Améliorations Go (issu de l'audit skills)
 
 - [x] ~~**Migration `log` → `slog` (phase 1)** : init JSON handler dans
