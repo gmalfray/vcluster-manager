@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
@@ -159,32 +160,125 @@ func (s *StatusClient) GetVeleroBackupPhase(ctx context.Context, backupName, vel
 	return phase, nil
 }
 
-// WaitForVClusterPodGone waits until the vcluster pod (vcluster-<name>-0) is really
-// gone, which is what actually releases the PVC. Beats a fixed sleep: we return as
-// soon as the pod disappears, and we don't delete a PVC that's still mounted (which
-// would leave it stuck Terminating). Returns an error if it's still there after timeout.
-func (s *StatusClient) WaitForVClusterPodGone(ctx context.Context, name string, timeout time.Duration) error {
-	podGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
+// VClusterTopology describes how a vcluster's control-plane and data store
+// are laid out in the host cluster. A vcluster can run with etcd embedded in
+// its own StatefulSet, or with etcd split out into its own StatefulSet and
+// the control-plane running as a Deployment — an in-place restore needs to
+// know which one it's dealing with to scale down the right workloads and
+// delete the right PVC.
+type VClusterTopology struct {
+	// ControlPlaneKind is "Deployment" or "StatefulSet".
+	ControlPlaneKind string
+	// EtcdStatefulSet is the etcd StatefulSet's name, empty when etcd is
+	// embedded in the control-plane StatefulSet itself.
+	EtcdStatefulSet string
+	// PVCName is the data volume Velero needs to recreate from backup.
+	PVCName string
+}
+
+// detectVClusterTopology looks at what's actually deployed for a vcluster
+// rather than assuming a mode, since both embedded and external etcd are
+// valid vcluster configurations:
+//   - external etcd: control-plane = Deployment `vcluster-<name>` (or, on
+//     older charts, still a StatefulSet), etcd = StatefulSet
+//     `vcluster-<name>-etcd`, data in `data-vcluster-<name>-etcd-0`.
+//   - embedded etcd: control-plane = StatefulSet `vcluster-<name>`, data in
+//     `data-vcluster-<name>-0`.
+func (s *StatusClient) detectVClusterTopology(ctx context.Context, name string) (VClusterTopology, error) {
 	ns := "vcluster-" + name
-	podName := "vcluster-" + name + "-0"
+	etcdName := "vcluster-" + name + "-etcd"
+
+	_, err := s.client.Resource(statefulSetGVR).Namespace(ns).Get(ctx, etcdName, metav1.GetOptions{})
+	switch {
+	case err == nil:
+		kind := "Deployment"
+		if _, err := s.client.Resource(statefulSetGVR).Namespace(ns).Get(ctx, "vcluster-"+name, metav1.GetOptions{}); err == nil {
+			kind = "StatefulSet"
+		}
+		return VClusterTopology{
+			ControlPlaneKind: kind,
+			EtcdStatefulSet:  etcdName,
+			PVCName:          "data-" + etcdName + "-0",
+		}, nil
+	case apierrors.IsNotFound(err):
+		return VClusterTopology{
+			ControlPlaneKind: "StatefulSet",
+			PVCName:          "data-vcluster-" + name + "-0",
+		}, nil
+	default:
+		return VClusterTopology{}, fmt.Errorf("checking etcd statefulset %s: %w", etcdName, err)
+	}
+}
+
+// controlPlaneGVR returns the GVR to use for the control-plane workload
+// according to the detected topology.
+func controlPlaneGVR(topo VClusterTopology) schema.GroupVersionResource {
+	if topo.ControlPlaneKind == "Deployment" {
+		return deploymentGVR
+	}
+	return statefulSetGVR
+}
+
+// waitForWorkloadPodsGone waits until no pod matching workloadName's own
+// selector remains in ns. It reads the selector from the workload itself
+// (spec.selector.matchLabels) instead of guessing pod names, so it works the
+// same whether the workload is a Deployment (hashed pod names) or a
+// StatefulSet (fixed pod names). A workload that's already gone counts as
+// "pods gone" too — nothing left to wait for.
+func (s *StatusClient) waitForWorkloadPodsGone(ctx context.Context, gvr schema.GroupVersionResource, ns, workloadName string, timeout time.Duration) error {
+	obj, err := s.client.Resource(gvr).Namespace(ns).Get(ctx, workloadName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting %s/%s: %w", gvr.Resource, workloadName, err)
+	}
+	matchLabels, _, _ := unstructured.NestedStringMap(obj.Object, "spec", "selector", "matchLabels")
+	selector := labels.SelectorFromSet(matchLabels).String()
 
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		_, err := s.client.Resource(podGVR).Namespace(ns).Get(ctx, podName, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
+		list, err := s.client.Resource(podGVR).Namespace(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err != nil {
+			return fmt.Errorf("listing pods for %s: %w", workloadName, err)
+		}
+		if len(list.Items) == 0 {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("pod %s/%s still there after %s", ns, podName, timeout)
+			return fmt.Errorf("%d pod(s) for %s/%s still there after %s", len(list.Items), ns, workloadName, timeout)
 		case <-ticker.C:
 		}
 	}
+}
+
+// WaitForVClusterPodsGone waits until the vcluster's control-plane pod(s) —
+// and, with external etcd, its etcd pod(s) too — are really gone, which is
+// what actually releases the PVC(s). Beats a fixed sleep: we return as soon
+// as the pods disappear, and we don't delete a PVC that's still mounted
+// (which would leave it stuck Terminating).
+func (s *StatusClient) WaitForVClusterPodsGone(ctx context.Context, name string, timeout time.Duration) error {
+	topo, err := s.detectVClusterTopology(ctx, name)
+	if err != nil {
+		return fmt.Errorf("detecting vcluster topology: %w", err)
+	}
+	ns := "vcluster-" + name
+
+	if err := s.waitForWorkloadPodsGone(ctx, controlPlaneGVR(topo), ns, "vcluster-"+name, timeout); err != nil {
+		return fmt.Errorf("waiting for control-plane pod(s): %w", err)
+	}
+	if topo.EtcdStatefulSet != "" {
+		if err := s.waitForWorkloadPodsGone(ctx, statefulSetGVR, ns, topo.EtcdStatefulSet, timeout); err != nil {
+			return fmt.Errorf("waiting for etcd pod(s): %w", err)
+		}
+	}
+	return nil
 }
 
 // CreateVeleroRestore creates a Velero Restore for backupName targeting targetNS (may differ from sourceNS for cross-vcluster restores).
@@ -321,9 +415,16 @@ func (s *StatusClient) SetFluxSuspend(ctx context.Context, name string, suspend 
 	return nil
 }
 
-// ScaleVClusterStatefulSet scales the vcluster StatefulSet to the given number of replicas.
-// Used to quiesce the vcluster before an in-place Velero restore so the PVC is released.
-func (s *StatusClient) ScaleVClusterStatefulSet(ctx context.Context, name string, replicas int32) error {
+// ScaleVClusterWorkloads scales the vcluster's control-plane (Deployment or
+// StatefulSet, whichever is actually deployed) to the given number of
+// replicas, and its etcd StatefulSet too when etcd runs external. Used to
+// quiesce the vcluster before an in-place Velero restore so the PVC(s) are
+// released.
+func (s *StatusClient) ScaleVClusterWorkloads(ctx context.Context, name string, replicas int32) error {
+	topo, err := s.detectVClusterTopology(ctx, name)
+	if err != nil {
+		return fmt.Errorf("detecting vcluster topology: %w", err)
+	}
 	patch, err := json.Marshal(map[string]interface{}{
 		"spec": map[string]interface{}{"replicas": replicas},
 	})
@@ -331,20 +432,35 @@ func (s *StatusClient) ScaleVClusterStatefulSet(ctx context.Context, name string
 		return err
 	}
 	ns := "vcluster-" + name
-	_, err = s.client.Resource(statefulSetGVR).Namespace(ns).Patch(
+
+	if _, err := s.client.Resource(controlPlaneGVR(topo)).Namespace(ns).Patch(
 		ctx, "vcluster-"+name, k8stypes.MergePatchType, patch, metav1.PatchOptions{},
-	)
-	return err
+	); err != nil {
+		return fmt.Errorf("scaling %s vcluster-%s: %w", topo.ControlPlaneKind, name, err)
+	}
+
+	if topo.EtcdStatefulSet != "" {
+		if _, err := s.client.Resource(statefulSetGVR).Namespace(ns).Patch(
+			ctx, topo.EtcdStatefulSet, k8stypes.MergePatchType, patch, metav1.PatchOptions{},
+		); err != nil {
+			return fmt.Errorf("scaling statefulset %s: %w", topo.EtcdStatefulSet, err)
+		}
+	}
+	return nil
 }
 
-// DeleteVClusterPVC deletes the main PVC of a vcluster so Velero can restore it from backup.
-// The StatefulSet must be scaled to 0 first.
+// DeleteVClusterPVC deletes the vcluster's data PVC so Velero can restore it
+// from backup — `data-vcluster-<name>-etcd-0` with external etcd,
+// `data-vcluster-<name>-0` when it's embedded. The workload(s) must be
+// scaled to 0 first, or the PVC stays stuck Terminating.
 func (s *StatusClient) DeleteVClusterPVC(ctx context.Context, name string) error {
-	ns := "vcluster-" + name
-	pvcName := "data-vcluster-" + name + "-0"
-	err := s.client.Resource(persistentVolumeClaimGVR).Namespace(ns).Delete(ctx, pvcName, metav1.DeleteOptions{})
+	topo, err := s.detectVClusterTopology(ctx, name)
 	if err != nil {
-		return fmt.Errorf("deleting PVC %s: %w", pvcName, err)
+		return fmt.Errorf("detecting vcluster topology: %w", err)
+	}
+	ns := "vcluster-" + name
+	if err := s.client.Resource(persistentVolumeClaimGVR).Namespace(ns).Delete(ctx, topo.PVCName, metav1.DeleteOptions{}); err != nil {
+		return fmt.Errorf("deleting PVC %s: %w", topo.PVCName, err)
 	}
 	return nil
 }
