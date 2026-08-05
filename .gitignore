@@ -7,3 +7,6 @@ FORK.md
 /bin/
 /coverage.out
 /coverage.html
+
+# Outillage local Claude Code (équipe d'agents, ops internes, réglages locaux) — jamais versionné
+.claude/
