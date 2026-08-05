@@ -4,6 +4,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 // testListKinds maps every GVR this package Lists to its List kind. The fake
@@ -35,4 +36,17 @@ var testListKinds = map[schema.GroupVersionResource]string{
 func NewTestStatusClient(objs ...runtime.Object) *StatusClient {
 	scheme := runtime.NewScheme()
 	return &StatusClient{client: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, testListKinds, objs...)}
+}
+
+// NewTestStatusClientWithReactor is NewTestStatusClient plus a reactor
+// installed on the underlying fake dynamic client — for simulating an API
+// call failing in a way the fake client can't produce on its own (e.g. the
+// Velero Restore creation itself failing after every earlier step of an
+// in-place restore already succeeded). Not meant to be used from production
+// code.
+func NewTestStatusClientWithReactor(reactor clienttesting.ReactionFunc, objs ...runtime.Object) *StatusClient {
+	scheme := runtime.NewScheme()
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, testListKinds, objs...)
+	client.PrependReactor("*", "*", reactor)
+	return &StatusClient{client: client}
 }

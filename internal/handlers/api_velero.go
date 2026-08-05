@@ -113,6 +113,9 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 			h.renderToast(w, "error", fmt.Sprintf("Backup introuvable : %v", err))
 		case errors.As(err, &notRestorable):
 			h.renderToast(w, "error", fmt.Sprintf("Backup non restaurable (phase : %s)", notRestorable.Phase))
+		case errors.Is(err, service.ErrRestoreStageFailedVolumeGone):
+			w.WriteHeader(http.StatusInternalServerError)
+			h.renderToast(w, "error", fmt.Sprintf("Volume déjà supprimé, restore non créé : relancez un restore (le flux reste suspendu) — %v", err))
 		case errors.Is(err, service.ErrRestoreStageFailed):
 			w.WriteHeader(http.StatusInternalServerError)
 			h.renderToast(w, "error", fmt.Sprintf("Restauration interrompue : %v", err))

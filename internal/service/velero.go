@@ -216,6 +216,15 @@ type VeleroRestoreView struct {
 // unwraps to.
 var ErrRestoreStageFailed = errors.New("restore stage failed")
 
+// ErrRestoreStageFailedVolumeGone means the Restore object couldn't be
+// created after the vcluster's PVC was already deleted. The backup itself is
+// fine — nothing was lost — but Flux must NOT be resumed on this path: that
+// would let the StatefulSet recreate an empty PVC, which hides the failure
+// and gets in the way of a retry (Velero skips resources that already
+// exist). The vcluster is left suspended and at zero replicas; what actually
+// fixes it is trying the restore again.
+var ErrRestoreStageFailedVolumeGone = errors.New("restore stage failed after volume deletion")
+
 // CreateVeleroRestore starts a Velero restore of backupName into targetName
 // (empty or equal to name means an in-place restore of the same vcluster).
 // Admin only.
@@ -224,9 +233,12 @@ var ErrRestoreStageFailed = errors.New("restore stage failed")
 // touching anything it confirms the backup is actually restorable (phase
 // Completed). Only then does it suspend Flux, scale the vcluster down, wait
 // for its pods to really terminate and delete its PVC so Velero can recreate
-// it from the backup. If any of those steps fails, it aborts and best-effort
-// resumes Flux rather than pressing on toward a restore that can't work —
-// see ErrRestoreStageFailed.
+// it from the backup. If a step before the PVC deletion fails, it aborts and
+// best-effort resumes Flux rather than pressing on toward a restore that
+// can't work — see ErrRestoreStageFailed. Once the PVC is gone, though,
+// resuming Flux would just let it come back empty, so a failure past that
+// point (creating the Restore object) leaves the vcluster suspended instead
+// — see ErrRestoreStageFailedVolumeGone.
 func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreView, error) {
 	if !actor.IsAdmin {
 		return VeleroRestoreView{}, ErrForbidden
@@ -253,6 +265,10 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 		targetNS = "vcluster-" + targetName
 	}
 
+	// pvcDeleted marks the point of no return: once the PVC is gone, aborting
+	// by resuming Flux is the wrong move (see ErrRestoreStageFailedVolumeGone).
+	// Before that, it's still safe — the volume is intact.
+	var pvcDeleted bool
 	if inPlace {
 		phase, err := k8s.GetVeleroBackupPhase(ctx, backupName, s.cfg.VeleroNamespace)
 		if err != nil {
@@ -280,11 +296,19 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 			s.abortInPlaceRestore(k8s, name)
 			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suppression du volume : %w", err)}
 		}
+		pvcDeleted = true
 	}
 
 	restoreName, err := k8s.CreateVeleroRestore(ctx, backupName, sourceNS, targetNS, s.cfg.VeleroNamespace)
 	if err != nil {
 		if inPlace {
+			if pvcDeleted {
+				// The volume is already gone. The backup itself is still fine,
+				// but resuming Flux here would let the StatefulSet recreate an
+				// empty PVC and mask what actually happened — leave it
+				// suspended so a retry starts from a clean slate.
+				return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailedVolumeGone, fmt.Errorf("création du restore : %w (volume déjà supprimé, un nouveau restore est nécessaire)", err)}
+			}
 			s.abortInPlaceRestore(k8s, name)
 		}
 		return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("création du restore : %w", err)}
@@ -311,21 +335,62 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 }
 
 // abortInPlaceRestore resumes Flux after a stage of the in-place restore
-// sequence failed partway through, so the vcluster isn't left stuck
-// suspended and scaled to zero on top of the reported error. Best-effort: if
-// this also fails, an operator now has two things to fix, but at least
-// they'll know about both — the caller's error already carries the primary
-// failure.
+// sequence failed partway through, before the PVC was deleted — so the
+// vcluster isn't left stuck suspended and scaled to zero over a volume
+// that's still intact. Once the PVC is gone, CreateVeleroRestore stops
+// calling this — see ErrRestoreStageFailedVolumeGone. Best-effort: if this
+// also fails, an operator now has two things to fix, but at least they'll
+// know about both — the caller's error already carries the primary failure.
 func (s *Service) abortInPlaceRestore(k8s *kubernetes.StatusClient, name string) {
 	if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
 		slog.Error("could not resume flux after aborting in-place restore", "vcluster", name, "err", err)
 	}
 }
 
+// veleroResumeState is the settled outcome of resuming Flux after an
+// in-place restore reaches a terminal phase. Both resumeAfterInPlaceRestore
+// (the background watcher) and GetVeleroRestoreStatus (a request-driven
+// poll) can attempt the resume, and either can be the one that resolves it —
+// but a single failed attempt from either side isn't the final word: the
+// background watcher keeps retrying every 10s, so nothing is reported to the
+// UI as failed until it's actually given up.
+type veleroResumeState struct {
+	failed bool
+	errMsg string
+}
+
+// veleroResumeResult reports what's known about restoreName's Flux resume,
+// if it has been settled yet.
+func (s *Service) veleroResumeResult(restoreName string) (state veleroResumeState, resolved bool) {
+	s.veleroResumeMu.Lock()
+	defer s.veleroResumeMu.Unlock()
+	st, ok := s.veleroResumeStates[restoreName]
+	if !ok {
+		return veleroResumeState{}, false
+	}
+	return *st, true
+}
+
+// resolveVeleroResume records restoreName's Flux resume as settled, for
+// whichever of the background watcher or a request-driven poll gets there
+// first.
+func (s *Service) resolveVeleroResume(restoreName string, failed bool, errMsg string) {
+	s.veleroResumeMu.Lock()
+	defer s.veleroResumeMu.Unlock()
+	if s.veleroResumeStates == nil {
+		s.veleroResumeStates = map[string]*veleroResumeState{}
+	}
+	s.veleroResumeStates[restoreName] = &veleroResumeState{failed: failed, errMsg: errMsg}
+}
+
 // resumeAfterInPlaceRestore watches an in-place restore to completion and
 // resumes Flux (which rescales the vcluster) independently of the request
-// that started it. On timeout it resumes anyway rather than leave the
-// vcluster stuck at zero replicas.
+// that started it — a closed browser tab must not leave the vcluster stuck
+// suspended. Once the restore reaches a terminal phase it keeps retrying the
+// resume itself, every 10s, until it succeeds or the 2h deadline below gives
+// up on its behalf. Either way the outcome is recorded via
+// resolveVeleroResume so GetVeleroRestoreStatus can report it instead of
+// guessing from a single attempt of its own.
 func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, restoreName, veleroNamespace string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()

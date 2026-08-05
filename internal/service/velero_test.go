@@ -3,11 +3,14 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/gmalfray/vcluster-manager/internal/config"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
@@ -425,13 +428,117 @@ func TestCreateVeleroRestore_SucceedsWhenAllStagesSucceed(t *testing.T) {
 	}
 }
 
-// --- GetVeleroRestoreStatus: resume failure must not read as success --------
+// --- CreateVeleroRestore: whether to resume Flux on abort depends on whether
+// the PVC was already deleted ------------------------------------------------
+//
+// Resuming Flux after a stage fails is only safe while the vcluster's volume
+// is still intact: once the PVC is gone, resuming lets the StatefulSet
+// recreate an empty one and masks the failure. These count the patches made
+// to the HelmRelease to tell whether SetFluxSuspend(false) actually ran a
+// second time (the abort), on top of the initial SetFluxSuspend(true).
 
-func TestGetVeleroRestoreStatus_ResumeFailureIsReportedNotSwallowed(t *testing.T) {
+// failCreateReactor makes the fake dynamic client fail every create of the
+// given resource (e.g. "restores"), leaving everything else untouched.
+func failCreateReactor(resource string) clienttesting.ReactionFunc {
+	return func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "create" && action.GetResource().Resource == resource {
+			return true, nil, fmt.Errorf("simulated failure creating %s", resource)
+		}
+		return false, nil, nil
+	}
+}
+
+func TestCreateVeleroRestore_AbortResumesFluxOnlyBeforeThePVCIsGone(t *testing.T) {
+	tests := []struct {
+		name              string
+		objs              []runtime.Object
+		failRestoreCreate bool
+		wantErr           error
+		wantFluxResumed   bool
+	}{
+		{
+			name: "scale-down fails before the PVC is touched: flux is resumed",
+			objs: []runtime.Object{
+				newBackupObj("manual-demo-1", "velero-system", "Completed"),
+				newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+				newKustomizationObj("tenant-demo", "flux-system"),
+				// no StatefulSet: ScaleVClusterWorkloads fails
+			},
+			wantErr:         ErrRestoreStageFailed,
+			wantFluxResumed: true,
+		},
+		{
+			name: "PVC delete fails, so the PVC never actually goes away: flux is resumed",
+			objs: []runtime.Object{
+				newBackupObj("manual-demo-1", "velero-system", "Completed"),
+				newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+				newKustomizationObj("tenant-demo", "flux-system"),
+				newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
+				// no PVC under the expected name: DeleteVClusterPVC fails
+			},
+			wantErr:         ErrRestoreStageFailed,
+			wantFluxResumed: true,
+		},
+		{
+			name: "restore creation fails after the PVC is already gone: flux stays suspended",
+			objs: []runtime.Object{
+				newBackupObj("manual-demo-1", "velero-system", "Completed"),
+				newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+				newKustomizationObj("tenant-demo", "flux-system"),
+				newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
+				newPVCObj("data-vcluster-demo-0", "vcluster-demo"),
+			},
+			failRestoreCreate: true,
+			wantErr:           ErrRestoreStageFailedVolumeGone,
+			wantFluxResumed:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var helmReleasePatches int
+			reactor := func(action clienttesting.Action) (bool, runtime.Object, error) {
+				if action.GetVerb() == "patch" && action.GetResource().Resource == "helmreleases" {
+					helmReleasePatches++
+				}
+				if tt.failRestoreCreate && action.GetVerb() == "create" && action.GetResource().Resource == "restores" {
+					return true, nil, fmt.Errorf("simulated failure creating restore")
+				}
+				return false, nil, nil
+			}
+			k8s := kubernetes.NewTestStatusClientWithReactor(reactor, tt.objs...)
+			s := newVeleroTestService(k8s)
+
+			_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+			// One patch is the initial SetFluxSuspend(true); a second one only
+			// happens if abortInPlaceRestore ran SetFluxSuspend(false).
+			gotResumed := helmReleasePatches >= 2
+			if gotResumed != tt.wantFluxResumed {
+				t.Errorf("flux resumed = %v (helmrelease patches = %d), want %v", gotResumed, helmReleasePatches, tt.wantFluxResumed)
+			}
+		})
+	}
+}
+
+// --- GetVeleroRestoreStatus: a single failed resume attempt is pending, not
+// failed outright -------------------------------------------------------
+//
+// The background watcher (resumeAfterInPlaceRestore) retries the resume
+// independently of any polling, so a request-driven poll that fails its own
+// attempt must not report ResumeFailed — that would freeze the UI on a
+// stale message while the background watcher fixes it moments later. It's
+// only a settled failure (ResumeFailed) once something actually gave up,
+// which here means the state was resolved that way beforehand (simulating
+// what resolveVeleroResume would record after the 2h background timeout).
+
+func TestGetVeleroRestoreStatus_UnresolvedResumeFailureIsPendingNotFailed(t *testing.T) {
 	// Restore is Completed, but there's no HelmRelease/Kustomization to
-	// resume: the resume step fails. The status call itself must still
-	// succeed (the restore's own phase is legitimate data) — the failure
-	// belongs in ResumeFailed/ResumeError, not the returned error.
+	// resume: this poll's own attempt fails. Nothing has settled the outcome
+	// yet, so it must read as "still trying", not "given up".
 	k8s := kubernetes.NewTestStatusClient(
 		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Completed"),
 	)
