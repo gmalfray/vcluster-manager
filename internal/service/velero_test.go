@@ -551,15 +551,15 @@ func TestGetVeleroRestoreStatus_UnresolvedResumeFailureIsPendingNotFailed(t *tes
 	if view.Phase != "Completed" {
 		t.Fatalf("Phase = %q, want Completed", view.Phase)
 	}
-	if !view.ResumeFailed {
-		t.Error("expected ResumeFailed to be true when Flux couldn't be resumed")
+	if view.ResumeFailed {
+		t.Error("expected ResumeFailed to stay false for an unsettled single attempt")
 	}
-	if view.ResumeError == "" {
-		t.Error("expected ResumeError to carry the underlying failure")
+	if !view.ResumePending {
+		t.Error("expected ResumePending to be true so the UI keeps polling")
 	}
 }
 
-func TestGetVeleroRestoreStatus_ResumeSuccessIsReported(t *testing.T) {
+func TestGetVeleroRestoreStatus_ResumeSuccessIsReportedAndNotPending(t *testing.T) {
 	k8s := kubernetes.NewTestStatusClient(
 		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Completed"),
 		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
@@ -573,6 +573,9 @@ func TestGetVeleroRestoreStatus_ResumeSuccessIsReported(t *testing.T) {
 	}
 	if view.ResumeFailed {
 		t.Errorf("expected ResumeFailed to be false, got ResumeError=%q", view.ResumeError)
+	}
+	if view.ResumePending {
+		t.Error("expected ResumePending to be false once the resume actually succeeded")
 	}
 }
 
@@ -590,5 +593,92 @@ func TestGetVeleroRestoreStatus_NonTerminalPhaseDoesNotAttemptResume(t *testing.
 	}
 	if view.ResumeFailed {
 		t.Error("expected ResumeFailed to stay false while the restore is still in progress")
+	}
+	if view.ResumePending {
+		t.Error("expected ResumePending to stay false while the restore is still in progress")
+	}
+}
+
+func TestGetVeleroRestoreStatus_UsesBackgroundResolvedFailureWithoutRetrying(t *testing.T) {
+	// The background watcher has already given up on this restore (recorded
+	// via resolveVeleroResume, as it would be after its 2h timeout). No
+	// HelmRelease/Kustomization is seeded, so if GetVeleroRestoreStatus made
+	// its own attempt instead of trusting the resolved state, the patch
+	// count below would catch it.
+	k8s := kubernetes.NewTestStatusClient(
+		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Completed"),
+	)
+	s := newVeleroTestService(k8s)
+	s.resolveVeleroResume("vm-manual-demo-1-123", true, "boom")
+
+	view, err := s.GetVeleroRestoreStatus(context.Background(), "demo", "vm-manual-demo-1-123", "preprod", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !view.ResumeFailed {
+		t.Error("expected the previously resolved failure to be reported")
+	}
+	if view.ResumeError != "boom" {
+		t.Errorf("ResumeError = %q, want %q", view.ResumeError, "boom")
+	}
+	if view.ResumePending {
+		t.Error("expected ResumePending to be false: the outcome is already settled")
+	}
+}
+
+func TestGetVeleroRestoreStatus_UsesBackgroundResolvedSuccessWithoutRetrying(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient(
+		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Completed"),
+	)
+	s := newVeleroTestService(k8s)
+	s.resolveVeleroResume("vm-manual-demo-1-123", false, "")
+
+	view, err := s.GetVeleroRestoreStatus(context.Background(), "demo", "vm-manual-demo-1-123", "preprod", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.ResumeFailed || view.ResumePending {
+		t.Errorf("expected an already-resolved success to read as resolved, got ResumeFailed=%v ResumePending=%v", view.ResumeFailed, view.ResumePending)
+	}
+}
+
+// --- GetVeleroRestoreStatus: VolumeDestroyed nuances a Failed in-place
+// restore ----------------------------------------------------------------
+//
+// An in-place restore always deletes the PVC before creating the Restore
+// object, so a Failed restore always means the volume is gone — the UI must
+// say so instead of just "Flux repris".
+
+func TestGetVeleroRestoreStatus_FailedInPlaceRestoreFlagsVolumeDestroyed(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient(
+		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Failed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.GetVeleroRestoreStatus(context.Background(), "demo", "vm-manual-demo-1-123", "preprod", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !view.VolumeDestroyed {
+		t.Error("expected VolumeDestroyed to be true for a Failed in-place restore")
+	}
+}
+
+func TestGetVeleroRestoreStatus_CompletedRestoreDoesNotFlagVolumeDestroyed(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient(
+		newRestoreObj("vm-manual-demo-1-123", "velero-system", "Completed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.GetVeleroRestoreStatus(context.Background(), "demo", "vm-manual-demo-1-123", "preprod", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.VolumeDestroyed {
+		t.Error("expected VolumeDestroyed to stay false for a Completed restore")
 	}
 }

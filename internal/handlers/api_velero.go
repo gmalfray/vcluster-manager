@@ -126,13 +126,15 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderPartial(w, "velero_restore_status.html", map[string]interface{}{
-		"RestoreName":  view.RestoreName,
-		"Phase":        view.Phase,
-		"Name":         view.Name,
-		"Env":          view.Env,
-		"BackupName":   view.BackupName,
-		"InPlace":      view.InPlace,
-		"ResumeFailed": false,
+		"RestoreName":     view.RestoreName,
+		"Phase":           view.Phase,
+		"Name":            view.Name,
+		"Env":             view.Env,
+		"BackupName":      view.BackupName,
+		"InPlace":         view.InPlace,
+		"ResumePending":   false,
+		"ResumeFailed":    false,
+		"VolumeDestroyed": false,
 	})
 }
 
@@ -166,13 +168,15 @@ func (h *Handlers) VeleroRestoreStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderPartial(w, "velero_restore_status.html", map[string]interface{}{
-		"RestoreName":  view.RestoreName,
-		"Phase":        view.Phase,
-		"Name":         view.Name,
-		"Env":          view.Env,
-		"InPlace":      view.InPlace,
-		"ResumeFailed": view.ResumeFailed,
-		"ResumeError":  view.ResumeError,
+		"RestoreName":     view.RestoreName,
+		"Phase":           view.Phase,
+		"Name":            view.Name,
+		"Env":             view.Env,
+		"InPlace":         view.InPlace,
+		"ResumePending":   view.ResumePending,
+		"ResumeFailed":    view.ResumeFailed,
+		"ResumeError":     view.ResumeError,
+		"VolumeDestroyed": view.VolumeDestroyed,
 	})
 }
 

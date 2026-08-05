@@ -76,6 +76,15 @@ func isTerminalRestorePhase(phase string) bool {
 	return phase == "Completed" || phase == "Failed" || phase == "PartiallyFailed"
 }
 
+// errText returns err's message, or "" for a nil err — for recording a
+// resolved outcome that needs a string either way.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // VeleroBackupsView lists the Velero backups for a vcluster, plus any restore
 // still in progress (so its polling survives a page refresh).
 type VeleroBackupsView struct {
@@ -398,58 +407,79 @@ func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
+	terminalSeen := false
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Warn("restore timed out, resuming flux as a safety net", "restore", restoreName, "vcluster", name)
-			if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
+			slog.Warn("giving up waiting on the restore/resume, resuming flux as a last resort", "restore", restoreName, "vcluster", name)
+			err := k8s.SetFluxSuspend(context.Background(), name, false)
+			if err != nil {
 				slog.Error("could not resume flux after timeout", "vcluster", name, "err", err)
 			}
+			s.resolveVeleroResume(restoreName, err != nil, errText(err))
 			return
 		case <-ticker.C:
-			phase, err := k8s.GetRestoreStatus(ctx, restoreName, veleroNamespace)
-			if err != nil {
-				slog.Warn("polling restore failed", "restore", restoreName, "err", err)
+			if !terminalSeen {
+				phase, err := k8s.GetRestoreStatus(ctx, restoreName, veleroNamespace)
+				if err != nil {
+					slog.Warn("polling restore failed", "restore", restoreName, "err", err)
+					continue
+				}
+				if !isTerminalRestorePhase(phase) {
+					continue
+				}
+				terminalSeen = true
+				slog.Info("restore reached terminal phase", "restore", restoreName, "phase", phase, "vcluster", name)
+			}
+			// Terminal phase reached: keep retrying the resume itself until it
+			// works, or the deadline above gives up on our behalf.
+			if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
+				slog.Warn("could not resume flux yet, retrying", "vcluster", name, "err", err)
 				continue
 			}
-			if isTerminalRestorePhase(phase) {
-				if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
-					slog.Error("could not resume flux after restore", "vcluster", name, "phase", phase, "err", err)
-				} else {
-					slog.Info("restore reached terminal phase, flux resumed", "restore", restoreName, "phase", phase, "vcluster", name)
-				}
-				return
-			}
+			slog.Info("flux resumed after restore", "restore", restoreName, "vcluster", name)
+			s.resolveVeleroResume(restoreName, false, "")
+			return
 		}
 	}
 }
 
 // VeleroRestoreStatusView is a polled Velero restore's current phase.
 //
-// ResumeFailed and ResumeError are the data-safety contract with the
-// adapters: once Phase is terminal for an in-place restore, the UI must not
-// say "Flux repris" (resumed) unless ResumeFailed is false. A failed resume
-// leaves the vcluster suspended and at zero replicas — a real problem the
-// operator needs to know about, not something to paper over with a success
-// message.
+// For an in-place restore, ResumePending/ResumeFailed/ResumeError are the
+// data-safety contract with the adapters: once Phase is terminal, the UI
+// must not say "Flux repris" unless both ResumePending and ResumeFailed are
+// false. ResumePending means the resume hasn't been settled yet — the
+// background watcher is still retrying — and the adapter must keep polling
+// rather than show a final message. ResumeFailed means the watcher gave up
+// for good: the vcluster is stuck suspended and at zero replicas, a real
+// problem the operator needs to know about. VolumeDestroyed flags a Failed
+// in-place restore: the vcluster's PVC was deleted before the restore ran
+// (the same root cause as ErrRestoreStageFailedVolumeGone, just surfacing
+// later), so even once Flux is back the vcluster comes up on an empty
+// volume — what it actually needs is a new restore.
 type VeleroRestoreStatusView struct {
-	RestoreName  string
-	Phase        string
-	Name         string
-	Env          string
-	InPlace      bool
-	ResumeFailed bool
-	ResumeError  string
+	RestoreName     string
+	Phase           string
+	Name            string
+	Env             string
+	InPlace         bool
+	ResumePending   bool
+	ResumeFailed    bool
+	ResumeError     string
+	VolumeDestroyed bool
 }
 
-// GetVeleroRestoreStatus polls the phase of a Velero restore. When inPlace and
-// the restore has reached a terminal phase, it resumes Flux (which rescales
-// the vcluster) — a second, request-driven path to the same effect as
-// resumeAfterInPlaceRestore's background poll. Whichever notices completion
-// first wins; resuming twice is harmless (SetFluxSuspend is idempotent). If
-// the resume itself fails, that's reported via ResumeFailed/ResumeError
-// rather than swallowed — the restore may well have succeeded while Flux
-// stayed stuck suspended, and the UI must not claim otherwise.
+// GetVeleroRestoreStatus polls the phase of a Velero restore. For an in-place
+// restore that has reached a terminal phase, it also reports whether Flux
+// has been resumed — first checking veleroResumeResult in case the
+// background watcher (started by CreateVeleroRestore) already settled it,
+// and if not, making its own attempt (whichever side gets there first wins;
+// resuming twice is harmless, SetFluxSuspend is idempotent). A failed
+// attempt here is reported as ResumePending rather than ResumeFailed: the
+// background watcher keeps retrying independently, so a transient failure
+// must not freeze the UI on a stale "resume failed" message while the
+// vcluster is actually fine moments later.
 func (s *Service) GetVeleroRestoreStatus(ctx context.Context, name, restoreName, env string, inPlace bool) (VeleroRestoreStatusView, error) {
 	env = envOrDefault(env)
 	k8s := s.k8sForEnv(env)
@@ -462,24 +492,30 @@ func (s *Service) GetVeleroRestoreStatus(ctx context.Context, name, restoreName,
 		return VeleroRestoreStatusView{}, err
 	}
 
-	var resumeFailed bool
+	var resumePending, resumeFailed bool
 	var resumeErrMsg string
 	if inPlace && isTerminalRestorePhase(phase) {
-		if resumeErr := k8s.SetFluxSuspend(ctx, name, false); resumeErr != nil {
-			slog.Warn("could not resume flux after restore", "vcluster", name, "err", resumeErr)
-			resumeFailed = true
-			resumeErrMsg = resumeErr.Error()
+		if state, resolved := s.veleroResumeResult(restoreName); resolved {
+			resumeFailed = state.failed
+			resumeErrMsg = state.errMsg
+		} else if resumeErr := k8s.SetFluxSuspend(ctx, name, false); resumeErr != nil {
+			slog.Warn("could not resume flux yet, background watcher will retry", "vcluster", name, "err", resumeErr)
+			resumePending = true
+		} else {
+			s.resolveVeleroResume(restoreName, false, "")
 		}
 	}
 
 	return VeleroRestoreStatusView{
-		RestoreName:  restoreName,
-		Phase:        phase,
-		Name:         name,
-		Env:          env,
-		InPlace:      inPlace,
-		ResumeFailed: resumeFailed,
-		ResumeError:  resumeErrMsg,
+		RestoreName:     restoreName,
+		Phase:           phase,
+		Name:            name,
+		Env:             env,
+		InPlace:         inPlace,
+		ResumePending:   resumePending,
+		ResumeFailed:    resumeFailed,
+		ResumeError:     resumeErrMsg,
+		VolumeDestroyed: inPlace && phase == "Failed",
 	}, nil
 }
 

@@ -77,6 +77,14 @@ type Service struct {
 
 	k8sClients   map[string]*kubernetes.StatusClient
 	k8sClientsMu *sync.RWMutex
+
+	// veleroResumeMu/veleroResumeStates track, per in-place restore, whether
+	// Flux has actually been resumed after the restore reached a terminal
+	// phase. Written by resumeAfterInPlaceRestore (the background watcher)
+	// and by GetVeleroRestoreStatus (the request-driven poll) — see
+	// velero.go's veleroResumeState for why a shared record matters here.
+	veleroResumeMu     sync.Mutex
+	veleroResumeStates map[string]*veleroResumeState
 }
 
 // New builds a Service from its dependencies.
