@@ -204,6 +204,18 @@ input[type="file"]::file-selector-button:hover {
   font-size: 0.72rem; color: var(--text-muted);
   letter-spacing: 0.06em; text-transform: uppercase;
 }
+/* Signature editeur discrete : produit vCluster « by Rebuild IT » (IT en accent charte) */
+.wf-nav-editor {
+  align-self: flex-end; margin-left: 14px; padding-bottom: 3px;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 600;
+  font-size: 0.66rem; letter-spacing: 0.02em; color: var(--text-muted);
+  white-space: nowrap; flex-shrink: 0;
+}
+.wf-nav-editor-it { color: var(--accent); margin-left: 1px; }
+.wf-login-editor {
+  margin: -6px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 600;
+  font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-muted);
+}
 .wf-nav-links { display: flex; gap: 2px; }
 .wf-nav-link {
   padding: 8px 14px; font-size: 0.84rem; font-weight: 500;

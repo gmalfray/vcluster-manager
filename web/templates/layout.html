@@ -18,9 +18,10 @@
 <body class="h-full">
     <div class="min-h-full">
         <nav class="wf-nav">
-            <!-- TODO(charte Rebuild IT) : remplacer par le logo 4 blocs de la charte
-                 editeur (rebuild-it/branding/logo.svg) quand l'asset sera fourni par
-                 design-ux. En attendant on garde le logo vCluster actuel. -->
+            <!-- Logo produit vCluster (identité de l'outil) + signature editeur
+                 « by Rebuild IT » (pattern produit/editeur, decide 2026-08). Le mark
+                 4 blocs de la charte editeur (rebuild-it/branding/logo.svg) reste
+                 reserve au branding Rebuild IT lui-meme, pas au produit. -->
             <a href="/" class="wf-nav-logo">
                 <svg width="130" height="32" viewBox="0 0 200 52" xmlns="http://www.w3.org/2000/svg">
                     <defs>
@@ -39,6 +40,7 @@
                 <span class="wf-nav-logo-sub">manager</span>
                 {{if .Version}}<span style="font-size:10px;color:#6b7280;margin-left:6px;align-self:flex-end;padding-bottom:2px;">{{.Version}}</span>{{end}}
             </a>
+            <span class="wf-nav-editor" title="Édité par Rebuild IT">by&nbsp;Rebuild<span class="wf-nav-editor-it">IT</span></span>
 
             <div class="wf-nav-links">
                 <a href="/" class="wf-nav-link">Dashboard</a>
