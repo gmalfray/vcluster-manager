@@ -3,14 +3,16 @@ kind: ClusterRole
 metadata:
   name: vcluster-manager
 rules:
-  # Read HelmReleases status + update for finalizer cleanup
+  # Read HelmReleases status + update/patch for finalizer cleanup and
+  # suspend/resume around an in-place Velero restore
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
-    verbs: ["get", "list", "watch", "update"]
-  # Read Flux Kustomizations status + update for finalizer cleanup
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Read Flux Kustomizations status + update/patch for finalizer cleanup and
+  # suspend/resume around an in-place Velero restore
   - apiGroups: ["kustomize.toolkit.fluxcd.io"]
     resources: ["kustomizations"]
-    verbs: ["get", "list", "watch", "update"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   # Read vcluster kubeconfig secrets (vc-vcluster-*-ext in each vcluster namespace)
   - apiGroups: [""]
     resources: ["secrets"]
@@ -27,6 +29,20 @@ rules:
   - apiGroups: ["velero.io"]
     resources: ["backups", "restores", "downloadrequests", "schedules"]
     verbs: ["get", "list", "create", "delete"]
+  # Scale the vcluster's control-plane and etcd workloads down before an
+  # in-place restore (control-plane can be a Deployment or a StatefulSet
+  # depending on topology; etcd, when external, is always a StatefulSet)
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "list", "patch", "update"]
+  # Delete the vcluster's data PVC so Velero can recreate it from backup
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "delete"]
+  # Wait for the vcluster's pods to actually terminate before deleting their PVC
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

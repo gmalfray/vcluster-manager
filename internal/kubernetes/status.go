@@ -59,6 +59,16 @@ var (
 		Version:  "v1",
 		Resource: "statefulsets",
 	}
+	deploymentGVR = schema.GroupVersionResource{
+		Group:    "apps",
+		Version:  "v1",
+		Resource: "deployments",
+	}
+	podGVR = schema.GroupVersionResource{
+		Group:    "",
+		Version:  "v1",
+		Resource: "pods",
+	}
 	persistentVolumeClaimGVR = schema.GroupVersionResource{
 		Group:    "",
 		Version:  "v1",

@@ -1,5 +1,6 @@
 {{define "toast.html"}}
 <div class="wf-toast wf-toast-{{.Level}} mb-2"
+    {{if eq .Level "error"}}role="alert" aria-live="assertive"{{end}}
     x-data="{show: true}"
     x-show="show"
     x-init="setTimeout(() => show = false, 5000)">
@@ -7,7 +8,7 @@
         <div class="flex-1">
             <p class="text-sm font-medium" style="color:var(--text);">{{.Message}}</p>
         </div>
-        <button onclick="this.closest('.wf-toast').remove()" class="text-sm leading-none opacity-60 hover:opacity-100" style="color:var(--text);">&times;</button>
+        <button onclick="this.closest('.wf-toast').remove()" aria-label="Fermer la notification" class="text-sm leading-none opacity-60 hover:opacity-100" style="color:var(--text);">&times;</button>
     </div>
 </div>
 {{end}}

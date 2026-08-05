@@ -55,18 +55,33 @@ func (a *OIDCAuth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("session_token")
 		if err != nil {
-			http.Redirect(w, r, "/auth/login", http.StatusTemporaryRedirect)
+			redirectToLogin(w, r)
 			return
 		}
 
 		_, err = a.verifier.Verify(r.Context(), cookie.Value)
 		if err != nil {
-			http.Redirect(w, r, "/auth/login", http.StatusTemporaryRedirect)
+			redirectToLogin(w, r)
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// redirectToLogin sends an unauthenticated request to /auth/login. An HTMX
+// request (poll, form submit, click) gets an HX-Redirect header instead of a
+// classic 307: swapped into a fragment, the login page's HTML would land
+// inside whatever partial was polling (e.g. the login form floating in the
+// status card) instead of taking over the browser tab. HX-Redirect makes
+// htmx do a full-page navigation client-side, same destination either way.
+func redirectToLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", "/auth/login")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/auth/login", http.StatusTemporaryRedirect)
 }
 
 // LoginHandler initiates the OIDC flow.
@@ -159,7 +174,7 @@ func CombinedMiddleware(oidcAuth *OIDCAuth, localAuth *LocalAuth) func(http.Hand
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("session_token")
 			if err != nil {
-				http.Redirect(w, r, "/auth/login", http.StatusTemporaryRedirect)
+				redirectToLogin(w, r)
 				return
 			}
 
@@ -179,7 +194,7 @@ func CombinedMiddleware(oidcAuth *OIDCAuth, localAuth *LocalAuth) func(http.Hand
 				}
 			}
 
-			http.Redirect(w, r, "/auth/login", http.StatusTemporaryRedirect)
+			redirectToLogin(w, r)
 		})
 	}
 }

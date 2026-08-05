@@ -12,7 +12,7 @@
 </style>
 
 <div class="mb-8">
-    <h1 class="text-2xl font-bold" style="font-family: 'Outfit', sans-serif; color: var(--text);">Dashboard</h1>
+    <h1 class="text-2xl font-bold" style="font-family: 'Space Grotesk', sans-serif; color: var(--text);">Dashboard</h1>
     <p style="color: var(--text-muted);" class="mt-1 text-sm">Monitoring des vClusters</p>
 </div>
 
@@ -237,7 +237,7 @@
 
 {{range .Groups}}
 <div class="mb-8" id="vcm-group-{{.Env}}" data-env="{{.Env}}">
-    <h2 class="text-base font-semibold mb-3" style="font-family: 'Outfit', sans-serif; color: var(--text-secondary);">
+    <h2 class="text-base font-semibold mb-3" style="font-family: 'Space Grotesk', sans-serif; color: var(--text-secondary);">
         {{.Label}}
         <span class="text-sm font-normal" style="color: var(--text-muted);">({{.Env}})</span>
     </h2>
@@ -297,7 +297,7 @@
                 <tr class="row-pending cursor-pointer vcm-row" draggable="true"
                     data-name="{{.VCluster.Name}}" data-env="{{.VCluster.Env}}"
                     onclick="window.location='/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}'">
-                    <td class="vcm-dh" onclick="event.stopPropagation()">&#8942;&#8942;</td>
+                    <td class="vcm-dh" onclick="event.stopPropagation()" aria-hidden="true">&#8942;&#8942;</td>
                     <td>
                         <div class="flex items-center gap-2">
                             <a href="/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}" class="wf-table-link">{{.VCluster.Name}}</a>
@@ -326,7 +326,7 @@
                 <tr class="cursor-pointer vcm-row" draggable="true"
                     data-name="{{.VCluster.Name}}" data-env="{{.VCluster.Env}}"
                     onclick="window.location='/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}'">
-                    <td class="vcm-dh" onclick="event.stopPropagation()">&#8942;&#8942;</td>
+                    <td class="vcm-dh" onclick="event.stopPropagation()" aria-hidden="true">&#8942;&#8942;</td>
                     <td>
                         <a href="/vclusters/{{.VCluster.Name}}?env={{.VCluster.Env}}" class="wf-table-link">{{.VCluster.Name}}</a>
                         <div class="text-xs mt-0.5" style="color:var(--text-muted);">{{.APIHost}}</div>
@@ -361,7 +361,16 @@
     </div>
 </div>
 {{else}}
-<p class="text-sm" style="color:var(--text-muted);">Aucun vcluster trouve.</p>
+<div class="wf-card flex flex-col items-center text-center gap-3" style="padding:48px 24px;">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style="color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" stroke="currentColor"/></svg>
+    <div>
+        <p class="text-sm font-medium" style="color:var(--text-secondary);">Aucun vCluster pour l'instant</p>
+        <p class="text-xs mt-1" style="color:var(--text-muted);">Créez le premier vCluster pour le voir apparaître ici.</p>
+    </div>
+    {{if .User.isAdmin}}
+    <a href="/vclusters/new" class="btn btn-indigo btn-sm mt-1">Nouveau vCluster</a>
+    {{end}}
+</div>
 {{end}}
 
 <script>

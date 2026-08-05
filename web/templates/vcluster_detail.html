@@ -3,7 +3,7 @@
 <div class="mb-6">
     <div class="flex justify-between items-start mb-3">
         <div>
-            <h1 class="text-2xl font-bold" style="font-family:'Outfit',sans-serif;color:var(--text);">
+            <h1 class="text-2xl font-bold" style="font-family:'Space Grotesk',sans-serif;color:var(--text);">
                 vcluster-{{.VCluster.Name}}
             </h1>
             <p class="mt-1 text-sm" style="color:var(--text-muted);">
@@ -477,8 +477,9 @@
                     hx-post="/api/vclusters/{{.VCluster.Name}}/velero/backup?env={{.Env}}"
                     hx-target="#velero-toast-area"
                     hx-swap="innerHTML"
-                    class="btn btn-xs" style="background:var(--primary);color:#fff;border-color:var(--primary);"
-                    onclick="return confirm('Déclencher un backup manuel pour {{.VCluster.Name}} ?')">
+                    hx-confirm="Déclencher un backup manuel pour {{.VCluster.Name}} ?"
+                    data-confirm-label="Lancer le backup"
+                    class="btn btn-xs" style="background:var(--indigo);color:#fff;border-color:var(--indigo);">
                     + Backup maintenant
                 </button>
                 {{end}}

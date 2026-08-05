@@ -2,11 +2,13 @@
 {{if .Deleting}}
 <span class="wf-badge wf-badge-red animate-pulse">Suppression en cours...</span>
 {{else}}
-<div class="space-y-3 text-sm">
+<!-- Sub-statuses laid out as aligned columns (flex-wrap) instead of stacked blocks,
+     so a dashboard row with Flux+Vault+Quotas stays scannable instead of growing tall. -->
+<div class="wf-status-groups text-sm">
 
     <!-- Flux status tags -->
-    <div>
-        <div class="text-xs font-semibold uppercase mb-1.5" style="color:var(--text-muted);">Flux</div>
+    <div class="wf-status-group">
+        <span class="wf-status-group-label">Flux</span>
         <div class="flex flex-wrap gap-1.5">
             <span class="wf-status-tag {{if eq .HelmRelease "Ready"}}ready{{else if eq .HelmRelease "N/A"}}na{{else}}notready{{end}}">
                 HelmRelease: {{.HelmRelease}}
@@ -34,8 +36,8 @@
 
     <!-- Vault setup status -->
     {{if .VaultEnabled}}
-    <div>
-        <div class="text-xs font-semibold uppercase mb-1.5" style="color:var(--text-muted);">Vault</div>
+    <div class="wf-status-group">
+        <span class="wf-status-group-label">Vault</span>
         <div class="flex flex-wrap gap-1.5 items-center">
             {{if eq .VaultStatus "done"}}
             <span class="wf-status-tag ready">Auth: Ready</span>
@@ -52,7 +54,7 @@
             <button hx-post="/api/vclusters/{{.VClusterName}}/vault-setup-retry?env={{.VClusterEnv}}"
                     hx-target="#toast-container" hx-swap="beforeend"
                     class="text-xs px-2 py-0.5 rounded" style="background:var(--surface2);color:var(--text-muted);border:1px solid var(--border-subtle);"
-                    title="Relancer le setup Vault auth">
+                    title="Relancer le setup Vault auth" aria-label="Relancer le setup Vault auth">
                 ↺
             </button>
             {{end}}
@@ -60,11 +62,11 @@
     </div>
     {{end}}
 
-    <!-- Resource quota progress bars -->
+    <!-- Resource quota mini-bars -->
     {{if or .CPUUsage .MemoryUsage .StorageUsage}}
-    <div>
-        <div class="text-xs font-semibold uppercase mb-2" style="color:var(--text-muted);">Quotas</div>
-        <div class="wf-quota-inline">
+    <div class="wf-status-group">
+        <span class="wf-status-group-label">Quotas</span>
+        <div class="wf-quota-inline wf-quota-inline-row-layout">
             {{if .CPUUsage}}
             <div class="wf-quota-inline-row">
                 <span class="wf-quota-inline-label">CPU</span>

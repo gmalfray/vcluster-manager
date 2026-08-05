@@ -113,6 +113,12 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 			h.renderToast(w, "error", fmt.Sprintf("Backup introuvable : %v", err))
 		case errors.As(err, &notRestorable):
 			h.renderToast(w, "error", fmt.Sprintf("Backup non restaurable (phase : %s)", notRestorable.Phase))
+		case errors.Is(err, service.ErrRestoreStageFailedVolumeGone):
+			w.WriteHeader(http.StatusInternalServerError)
+			h.renderToast(w, "error", fmt.Sprintf("Volume déjà supprimé, restore non créé : relancez un restore (le flux reste suspendu) — %v", err))
+		case errors.Is(err, service.ErrRestoreStageFailed):
+			w.WriteHeader(http.StatusInternalServerError)
+			h.renderToast(w, "error", fmt.Sprintf("Restauration interrompue : %v", err))
 		default:
 			h.renderToast(w, "error", fmt.Sprintf("Erreur création restore : %v", err))
 		}
@@ -120,12 +126,15 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderPartial(w, "velero_restore_status.html", map[string]interface{}{
-		"RestoreName": view.RestoreName,
-		"Phase":       view.Phase,
-		"Name":        view.Name,
-		"Env":         view.Env,
-		"BackupName":  view.BackupName,
-		"InPlace":     view.InPlace,
+		"RestoreName":     view.RestoreName,
+		"Phase":           view.Phase,
+		"Name":            view.Name,
+		"Env":             view.Env,
+		"BackupName":      view.BackupName,
+		"InPlace":         view.InPlace,
+		"ResumePending":   false,
+		"ResumeFailed":    false,
+		"VolumeDestroyed": false,
 	})
 }
 
@@ -159,11 +168,15 @@ func (h *Handlers) VeleroRestoreStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderPartial(w, "velero_restore_status.html", map[string]interface{}{
-		"RestoreName": view.RestoreName,
-		"Phase":       view.Phase,
-		"Name":        view.Name,
-		"Env":         view.Env,
-		"InPlace":     view.InPlace,
+		"RestoreName":     view.RestoreName,
+		"Phase":           view.Phase,
+		"Name":            view.Name,
+		"Env":             view.Env,
+		"InPlace":         view.InPlace,
+		"ResumePending":   view.ResumePending,
+		"ResumeFailed":    view.ResumeFailed,
+		"ResumeError":     view.ResumeError,
+		"VolumeDestroyed": view.VolumeDestroyed,
 	})
 }
 
