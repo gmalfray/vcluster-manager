@@ -356,6 +356,20 @@ func TestWaitForVClusterPodsGone_IgnoresPodsThatDontMatchTheSelector(t *testing.
 	}
 }
 
+func TestWaitForVClusterPodsGone_SkipsWaitWhenSelectorIsEmpty(t *testing.T) {
+	// StatefulSet with no selector labels at all: an empty label selector
+	// would match every pod in the namespace, so this must return
+	// immediately instead of waiting on pods that have nothing to do with
+	// this workload.
+	sc := newTestStatusClient(
+		newStatefulSetObj("vcluster-demo", "vcluster-demo", nil),
+		newPodObj("some-other-pod", "vcluster-demo", map[string]string{"app": "unrelated"}),
+	)
+	if err := sc.WaitForVClusterPodsGone(context.Background(), "demo", 1*time.Second); err != nil {
+		t.Errorf("expected no error with an empty selector, got %v", err)
+	}
+}
+
 func TestWaitForVClusterPodsGone_RespectsContextCancellation(t *testing.T) {
 	labels := map[string]string{"app": "vcluster"}
 	sc := newTestStatusClient(

@@ -4,7 +4,6 @@ import (
 	"context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // HasRancherAgents checks whether Rancher agents are running inside a vcluster.
@@ -14,7 +13,6 @@ import (
 // how the cluster was named in Rancher.
 func (s *StatusClient) HasRancherAgents(ctx context.Context, name string) bool {
 	namespace := "vcluster-" + name
-	podGVR := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
 
 	// vcluster labels synced pods with their original namespace.
 	// Try both label keys used by different vcluster versions.

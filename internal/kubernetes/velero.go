@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -234,6 +235,13 @@ func (s *StatusClient) waitForWorkloadPodsGone(ctx context.Context, gvr schema.G
 		return fmt.Errorf("getting %s/%s: %w", gvr.Resource, workloadName, err)
 	}
 	matchLabels, _, _ := unstructured.NestedStringMap(obj.Object, "spec", "selector", "matchLabels")
+	if len(matchLabels) == 0 {
+		// An empty selector would list every pod in the namespace, not just
+		// this workload's — nothing sane to wait on, so treat it like "already
+		// gone" instead of watching unrelated pods.
+		slog.Warn("workload has no selector labels, skipping the pod wait", "namespace", ns, "workload", workloadName)
+		return nil
+	}
 	selector := labels.SelectorFromSet(matchLabels).String()
 
 	deadline := time.After(timeout)
