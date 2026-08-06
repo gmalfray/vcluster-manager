@@ -13,10 +13,7 @@ import (
 // Falls back to the app-manifests GitLab repo if the vcluster is unreachable.
 func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	targetVClusters := h.svc.MigrationTargets(r.Context(), name, env)
 
@@ -46,10 +43,7 @@ func (h *Handlers) ListApps(w http.ResponseWriter, r *http.Request) {
 // MigrateApp copies an ArgoCD Application from one vcluster's app-manifests to another (admin only).
 func (h *Handlers) MigrateApp(w http.ResponseWriter, r *http.Request) {
 	sourceName := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	appName := r.FormValue("app_name")
 	filePath := r.FormValue("app_file_path")

@@ -190,9 +190,7 @@ type DetailData struct {
 // privilege required. Returns a VClusterNotFoundError when the name/env is
 // unknown.
 func (s *Service) GetVCluster(ctx context.Context, name, env string) (DetailData, error) {
-	if env == "" {
-		env = "preprod"
-	}
+	env = envOrDefault(env)
 
 	vc, err := s.parser.ParseVCluster(ctx, env, name)
 	if err != nil {
@@ -282,9 +280,7 @@ func (s *Service) GetDeleteConfirm(ctx context.Context, actor models.Actor, name
 	if !actor.IsAdmin {
 		return DeleteConfirmData{}, ErrForbidden
 	}
-	if env == "" {
-		env = "preprod"
-	}
+	env = envOrDefault(env)
 
 	data := DeleteConfirmData{Name: name, Env: env}
 	// Best effort: a half-broken vcluster must stay deletable.
@@ -298,7 +294,7 @@ func (s *Service) GetDeleteConfirm(ctx context.Context, actor models.Actor, name
 	} else {
 		counterpartPath = fmt.Sprintf("%s/prod/vclusters/%s", s.cfg.FluxprodClustersPath, name)
 	}
-	counterpartFiles, _ := s.gitlab.ListFiles(ctx, "preprod", counterpartPath)
+	counterpartFiles, _ := s.gitlab.ListFiles(ctx, gitops.SourceBranch, counterpartPath)
 	data.HasCounterpart = len(counterpartFiles) > 0
 
 	// Warn that protection will be lifted automatically by the deletion.
@@ -386,13 +382,13 @@ func (s *Service) Create(ctx context.Context, actor models.Actor, req *models.Cr
 				Content: f.Content,
 			})
 		}
-		kustAction, err := s.kustomizationAction(ctx, "preprod", "preprod", req.Name, true)
+		kustAction, err := s.kustomizationAction(ctx, gitops.SourceBranch, "preprod", req.Name, true)
 		if err != nil {
 			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
 		} else {
 			actions = append(actions, kustAction)
 		}
-		if err := s.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: add vcluster %s", req.Name), actions); err != nil {
+		if err := s.gitlab.Commit(ctx, gitops.SourceBranch, fmt.Sprintf("feat: add vcluster %s", req.Name), actions); err != nil {
 			slog.Error("GitLab commit failed", "vcluster", req.Name, "err", err)
 			return CreateResult{}, &CommitError{Err: err}
 		}
@@ -513,9 +509,7 @@ func (s *Service) Delete(ctx context.Context, actor models.Actor, name string, i
 		return DeleteResult{}, ErrForbidden
 	}
 	env := in.Env
-	if env == "" {
-		env = "preprod"
-	}
+	env = envOrDefault(env)
 
 	deletePreprod := env == "preprod" || (env == "prod" && in.DeleteCounterpart)
 	deleteProd := env == "prod" || (env == "preprod" && in.DeleteCounterpart)
@@ -607,7 +601,7 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 	// 1. Preprod files + kustomization entry, on the preprod branch.
 	if deletePreprod {
 		preprodPath := fmt.Sprintf("%s/preprod/vclusters/%s", s.cfg.FluxprodClustersPath, name)
-		preprodFiles, err := s.gitlab.ListFiles(ctx, "preprod", preprodPath)
+		preprodFiles, err := s.gitlab.ListFiles(ctx, gitops.SourceBranch, preprodPath)
 		if err != nil {
 			slog.Error("error listing preprod files", "vcluster", name, "err", err)
 		}
@@ -615,14 +609,14 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 		for _, f := range preprodFiles {
 			actions = append(actions, gitops.CommitAction{Action: "delete", Path: f})
 		}
-		kustAction, err := s.kustomizationAction(ctx, "preprod", "preprod", name, false)
+		kustAction, err := s.kustomizationAction(ctx, gitops.SourceBranch, "preprod", name, false)
 		if err != nil {
 			slog.Warn("could not update kustomization.yaml", "env", "preprod", "err", err)
 		} else {
 			actions = append(actions, kustAction)
 		}
 		if len(actions) > 0 {
-			if err := s.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: remove vcluster %s", name), actions); err != nil {
+			if err := s.gitlab.Commit(ctx, gitops.SourceBranch, fmt.Sprintf("feat: remove vcluster %s", name), actions); err != nil {
 				slog.Error("error committing preprod deletion", "vcluster", name, "err", err)
 				return
 			}
@@ -634,7 +628,7 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 	// 2. Prod files: direct commit when still pending, MR once deployed.
 	if deleteProd {
 		prodPath := fmt.Sprintf("%s/prod/vclusters/%s", s.cfg.FluxprodClustersPath, name)
-		prodFiles, err := s.gitlab.ListFiles(ctx, "preprod", prodPath)
+		prodFiles, err := s.gitlab.ListFiles(ctx, gitops.SourceBranch, prodPath)
 		if err != nil {
 			slog.Error("error listing prod files", "vcluster", name, "err", err)
 		}
@@ -654,7 +648,7 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 			if isPending {
 				// Never deployed: no MR to open, and no HelmRelease to wait for — so
 				// no AddDeleting either.
-				if err := s.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: remove vcluster %s (prod)", name), actions); err != nil {
+				if err := s.gitlab.Commit(ctx, gitops.SourceBranch, fmt.Sprintf("feat: remove vcluster %s (prod)", name), actions); err != nil {
 					slog.Error("error deleting pending prod files", "vcluster", name, "err", err)
 				}
 			} else {
@@ -705,7 +699,7 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 // of truth), then gets or creates the standing MR preprod→master that
 // promotes them.
 func (s *Service) commitProdMRActions(ctx context.Context, commitMsg string, actions []gitops.CommitAction) (string, error) {
-	if err := s.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
+	if err := s.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 

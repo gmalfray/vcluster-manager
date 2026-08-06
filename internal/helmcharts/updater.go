@@ -76,7 +76,7 @@ type PendingMR struct {
 
 // GetPendingChartMR returns any open MR from preprod targeting master for chart updates.
 func (u *Updater) GetPendingChartMR() *PendingMR {
-	mrs, err := u.gitlab.ListOpenMergeRequests("master", "preprod")
+	mrs, err := u.gitlab.ListOpenMergeRequests(gitops.DeployedBranch, gitops.SourceBranch)
 	if err != nil {
 		return nil
 	}
@@ -90,7 +90,7 @@ func (u *Updater) GetPendingChartMR() *PendingMR {
 
 // GetPendingK8sMR returns any open MR from preprod targeting master for K8s version updates.
 func (u *Updater) GetPendingK8sMR() *PendingMR {
-	mrs, err := u.gitlab.ListOpenMergeRequests("master", "preprod")
+	mrs, err := u.gitlab.ListOpenMergeRequests(gitops.DeployedBranch, gitops.SourceBranch)
 	if err != nil {
 		return nil
 	}
@@ -108,13 +108,13 @@ func (u *Updater) UpdateChart(ctx context.Context, tag string) (string, error) {
 	semver := trimV(tag)
 
 	// Commit on preprod (always)
-	actions, err := u.buildChartVersionActions(ctx, "preprod", semver)
+	actions, err := u.buildChartVersionActions(ctx, gitops.SourceBranch, semver)
 	if err != nil {
 		return "", fmt.Errorf("building actions: %w", err)
 	}
 
 	commitMsg := fmt.Sprintf("feat: update vcluster chart to %s", tag)
-	if err := u.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
+	if err := u.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 
@@ -140,13 +140,13 @@ func (u *Updater) UpdateChart(ctx context.Context, tag string) (string, error) {
 // Commits on preprod, then creates a MR preprod → master for prod (if no MR already open).
 func (u *Updater) UpdateK8sVersion(ctx context.Context, version string) (string, error) {
 	// Commit on preprod (always)
-	actions, err := u.buildK8sVersionActions(ctx, "preprod", version)
+	actions, err := u.buildK8sVersionActions(ctx, gitops.SourceBranch, version)
 	if err != nil {
 		return "", fmt.Errorf("building actions: %w", err)
 	}
 
 	commitMsg := fmt.Sprintf("feat: update default K8s version to %s", version)
-	if err := u.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
+	if err := u.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 

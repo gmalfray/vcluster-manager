@@ -16,10 +16,7 @@ import (
 // ListVClusters shows the vcluster list page.
 func (h *Handlers) ListVClusters(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	vclusters, err := h.parser.ListVClusters(ctx, env)
 	if err != nil {

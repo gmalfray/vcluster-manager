@@ -28,7 +28,7 @@ type Parser struct {
 }
 
 func NewParser() *Parser {
-	return &Parser{branch: "preprod"}
+	return &Parser{branch: SourceBranch}
 }
 
 // SetGitLabClient sets the GitLab client used to read files.

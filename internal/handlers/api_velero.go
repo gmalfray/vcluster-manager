@@ -11,10 +11,7 @@ import (
 // VeleroBackupList returns an HTMX fragment listing Velero backups for a vcluster.
 func (h *Handlers) VeleroBackupList(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	view, err := h.svc.GetVeleroBackups(r.Context(), name, env)
 	if err != nil {
@@ -43,10 +40,7 @@ func (h *Handlers) VeleroBackupList(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) VeleroBackupContent(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	backup := r.PathValue("backup")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	view, err := h.svc.GetVeleroBackupContent(r.Context(), h.actor(r), name, backup, env)
 	if err != nil {
@@ -162,10 +156,7 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 // to poll until the operator has created one.
 func (h *Handlers) VeleroOpsRestoreStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	view, err := h.svc.GetVeleroOpsRestoreStatus(r.Context(), name, env)
 	if err != nil {
@@ -202,10 +193,7 @@ func (h *Handlers) VeleroOpsRestoreStatus(w http.ResponseWriter, r *http.Request
 func (h *Handlers) VeleroRestoreStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	restoreName := r.PathValue("restore")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 	inPlace := r.URL.Query().Get("inplace") == "true"
 
 	view, err := h.svc.GetVeleroRestoreStatus(r.Context(), name, restoreName, env, inPlace)

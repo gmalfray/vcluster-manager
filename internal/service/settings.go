@@ -149,7 +149,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 		if newArgoCD != currentVC.ArgoCD {
 			// Rebuild all files with the new ArgoCD flag.
 			vcPath := fmt.Sprintf("clusters/%s/vclusters/%s", env, name)
-			existingFiles, _ := s.gitlab.ListFiles(ctx, "preprod", vcPath)
+			existingFiles, _ := s.gitlab.ListFiles(ctx, gitops.SourceBranch, vcPath)
 
 			var actions []gitops.CommitAction
 			for _, f := range existingFiles {
@@ -190,7 +190,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 			commitMsg := fmt.Sprintf("feat: reconfigure vcluster %s (%s, argocd=%v)", name, env, newArgoCD)
 
 			if env == "preprod" || isPending {
-				if err := s.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
+				if err := s.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
 					return UpdateSettingsResult{}, &CommitError{Err: err}
 				}
 			} else {
@@ -244,7 +244,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 
 		if newFluxCD != currentVC.FluxCD.Enabled {
 			vcPath := fmt.Sprintf("clusters/%s/vclusters/%s", env, name)
-			existingFiles, _ := s.gitlab.ListFiles(ctx, "preprod", vcPath)
+			existingFiles, _ := s.gitlab.ListFiles(ctx, gitops.SourceBranch, vcPath)
 
 			var actions []gitops.CommitAction
 			for _, f := range existingFiles {
@@ -279,7 +279,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 			commitMsg := fmt.Sprintf("feat: reconfigure vcluster %s (%s, fluxcd=%v)", name, env, newFluxCD)
 
 			if env == "preprod" || isPending {
-				if err := s.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
+				if err := s.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
 					return UpdateSettingsResult{}, &CommitError{Err: err}
 				}
 			} else {
@@ -309,7 +309,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 			Path:    vf.Path,
 			Content: vf.Content,
 		})
-		vc, err := s.parser.ParseVCluster(ctx, "preprod", name)
+		vc, err := s.parser.ParseVCluster(ctx, gitops.SourceBranch, name)
 		if err == nil && vc.ArgoCD {
 			if len(req.RBACGroups) > 0 {
 				rf := s.generator.GenerateUpdatedRBAC(name, "preprod", req.RBACGroups)
@@ -335,7 +335,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 			})
 		}
 
-		if err := s.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: update vcluster %s settings", name), preprodActions); err != nil {
+		if err := s.gitlab.Commit(ctx, gitops.SourceBranch, fmt.Sprintf("feat: update vcluster %s settings", name), preprodActions); err != nil {
 			slog.Error("GitLab commit failed", "vcluster", name, "env", "preprod", "err", err)
 			return UpdateSettingsResult{}, &CommitError{Err: err}
 		}
@@ -366,7 +366,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 		}
 
 		if isPending {
-			if err := s.gitlab.Commit(ctx, "preprod", fmt.Sprintf("feat: update vcluster %s settings (prod)", name), prodActions); err != nil {
+			if err := s.gitlab.Commit(ctx, gitops.SourceBranch, fmt.Sprintf("feat: update vcluster %s settings (prod)", name), prodActions); err != nil {
 				slog.Error("GitLab commit failed (prod pending)", "vcluster", name, "err", err)
 				return UpdateSettingsResult{}, &CommitError{Err: err}
 			}

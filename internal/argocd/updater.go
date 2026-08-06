@@ -44,13 +44,13 @@ func (u *Updater) GetGlobalVersion(ctx context.Context, branch string) (string, 
 
 // UpdateGlobalVersion updates the ArgoCD image tag on preprod and creates a MR to master.
 func (u *Updater) UpdateGlobalVersion(ctx context.Context, tag string) (string, error) {
-	actions, err := u.buildUpdateActions(ctx, "preprod", tag)
+	actions, err := u.buildUpdateActions(ctx, gitops.SourceBranch, tag)
 	if err != nil {
 		return "", fmt.Errorf("building actions: %w", err)
 	}
 
 	commitMsg := fmt.Sprintf("feat: update ArgoCD to %s", tag)
-	if err := u.gitlab.Commit(ctx, "preprod", commitMsg, actions); err != nil {
+	if err := u.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
 		return "", fmt.Errorf("committing to preprod: %w", err)
 	}
 
@@ -73,7 +73,7 @@ func (u *Updater) UpdateGlobalVersion(ctx context.Context, tag string) (string, 
 
 // GetPendingMR returns any open MR for ArgoCD updates.
 func (u *Updater) GetPendingMR() *PendingMR {
-	mrs, err := u.gitlab.ListOpenMergeRequests("master", "preprod")
+	mrs, err := u.gitlab.ListOpenMergeRequests(gitops.DeployedBranch, gitops.SourceBranch)
 	if err != nil {
 		return nil
 	}
