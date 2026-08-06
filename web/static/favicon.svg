@@ -3,11 +3,11 @@
     <linearGradient id="wf" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#4F46E5"/>
       <stop offset="50%" stop-color="#FF7A45"/>
-      <stop offset="100%" stop-color="#22C3A6"/>
+      <stop offset="100%" stop-color="#4338CA"/>
     </linearGradient>
   </defs>
   <path d="M3,17 C11,5 17,5 25,17 C33,29 39,29 39,17" fill="none" stroke="url(#wf)" stroke-width="5" stroke-linecap="round"/>
   <circle cx="3" cy="17" r="4" fill="#4F46E5"/>
   <circle cx="25" cy="17" r="4.5" fill="#FF7A45"/>
-  <circle cx="39" cy="17" r="4" fill="#22C3A6"/>
+  <circle cx="39" cy="17" r="4" fill="#4338CA"/>
 </svg>
