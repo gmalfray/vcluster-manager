@@ -21,12 +21,14 @@
             <!-- Lockup identite : l'editeur Rebuild IT mene (mark 4 blocs + wordmark),
                  "vCluster Manager" suit en nom de produit, plus discret. Le bloc "ink"
                  du mark (#17171F dans la charte, pense pour un fond clair) passe a
-                 --text-secondary ici : sur le fond sombre de la nav (--bg #0a0c12), un
-                 gris de surface (--surface3, ratio de contraste ~1.3:1) le rendait
-                 quasi invisible ; --text-secondary (~6.3:1) le garde net, avec le meme
-                 role d'ancrage neutre que jouait l'ink block sur fond clair. Les 3
-                 autres blocs (indigo/indigo-dark/orange pivote) restent la couleur de
-                 charte, sans dérive de teinte. -->
+                 --text-secondary ici. Meme apres avoir recale tout le fond sombre de
+                 l'app sur la famille ink (--bg #0c0c10, --surface = #17171f exactement,
+                 cf. app.css), l'ink brut reste trop proche des fonds voisins (~1.1:1
+                 contre --bg, ~1.2:1 contre --surface3, recalcule) : logique, il fait
+                 partie de cette meme famille de gris tres proches. --text-secondary
+                 (~6.3:1) reste donc le bon choix, avec le meme role d'ancrage neutre que
+                 jouait l'ink block sur fond clair. Les 3 autres blocs (indigo/indigo-dark
+                 /orange pivote) restent la couleur de charte, sans dérive de teinte. -->
             <a href="/" class="wf-nav-logo" title="Rebuild IT · vCluster Manager">
                 <svg width="30" height="30" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" class="wf-nav-mark" aria-hidden="true">
                     <g transform="translate(6,6)">

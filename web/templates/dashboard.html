@@ -123,9 +123,9 @@
 
     <!-- Card : ArgoCD -->
     {{if .LatestArgoCDRelease}}
-    <div class="wf-info-card accent-purple" data-card-id="info-argocd">
+    <div class="wf-info-card accent-orange" data-card-id="info-argocd">
         <div class="wf-info-card-header">
-            <div class="wf-banner-icon purple">
+            <div class="wf-banner-icon orange">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke="currentColor"/></svg>
             </div>
             <span class="wf-info-card-title">ArgoCD</span>
@@ -350,7 +350,7 @@
                     <td>
                         {{if .ArgoURL}}
                         <a href="{{.ArgoURL}}" target="_blank" onclick="event.stopPropagation()"
-                            class="text-sm" style="color:var(--purple);">ArgoCD</a>
+                            class="text-sm" style="color:var(--accent);">ArgoCD</a>
                         {{end}}
                     </td>
                 </tr>
