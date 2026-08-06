@@ -1,8 +1,7 @@
 # ADR-002 — Le modèle en cells remplace `prod`/`preprod`
 
-> Statut : **acceptée** (2026-08-06) pour le principe et le vocabulaire.
-> **Une question reste explicitement ouverte** (§5) : elle n'est pas arbitrée par
-> défaut, et plusieurs décisions en dépendent.
+> Statut : **acceptée** (2026-08-06), y compris le sort du cycle de vie (§5).
+> Reste une sous-question mineure : le nom de la branche fluxprod unique.
 > Complète [`adr-001-source-de-verite.md`](adr-001-source-de-verite.md), ne la remplace pas.
 
 ## 1. Pourquoi cette ADR existe
@@ -95,32 +94,57 @@ famille). Ça renforce le « à ne pas rater » du §10 de l'étude : un CRD `Cl
 seulement l'API mais le **substrat** — même cell, même hébergement, même backup,
 même opérateur.
 
-## 5. La question ouverte, volontairement non arbitrée
+## 5. L'axe du cycle de vie disparaît (tranché le 2026-08-06)
 
-**Que devient l'axe du cycle de vie ?** Les cells partitionnent la capacité ;
-elles ne disent rien de la promotion. Deux issues, et le choix détermine
-concrètement le travail :
+**Décision : il n'y a plus de promotion.** Chaque cell est autonome ; un vcluster
+de test est un vcluster comme un autre, sur la cell qu'on veut. Il n'y a donc plus
+d'étage `preprod` à promouvoir vers un étage `prod`.
 
-- **Il disparaît** : chaque cell est autonome, un vcluster de test est un vcluster
-  comme un autre. Alors `pending`, la MR permanente, `DeleteCounterpart` et le
-  couple `preprod`/`master` partent. Scénario le plus simple, de loin.
-- **Il survit sous une autre forme** : une cell dédiée au non-prod, ou un attribut
-  porté par le vcluster lui-même. La promotion reste, mais cesse d'être portée par
-  le nom de l'environnement — ce qui est déjà un gain.
+**Une seule branche fluxprod, pas une par cell.** L'organisation par cluster déjà
+en place est conservée : `clusters/<cell>/vclusters/<nom>/…`. C'est exactement le
+gabarit que `generator.go` produit aujourd'hui
+(`fmt.Sprintf("clusters/%s/vclusters/%s", …)`) — **la structure des chemins ne
+change pas**, seule la dimension change de nom et passe de deux valeurs à N.
 
-Deux sous-questions qui en découlent : **une branche fluxprod par cell, ou une
-branche unique avec un chemin par cell ?** Et **que signifie « la contrepartie »
-avec N cells ?** (décision produit avant d'être du code).
+### Ce que ça supprime
+
+Ce sont des suppressions, pas des paramétrages — c'est la bonne nouvelle de cette
+décision. Volumes mesurés (hors tests) :
+
+| Ce qui part | Sites |
+|---|---|
+La MR permanente de promotion (`PendingMR`, `GetOpenPreprodMRInfo`, `commitProdMRActions`) | **32 + 5 + 7** |
+L'état « en attente de promotion » (`isPending`, `isPendingProd`) | **11 + 5** |
+La relation « contrepartie » (`DeleteCounterpart`) — sans objet avec N cells paires | **5** |
+Le couple de branches : `"master"` comme « ce qui tourne réellement » | **66** occurrences à réexaminer |
+L'asymétrie de convention ArgoCD (suffixe `-preprod`, rien pour prod) | à réviser |
+
+Ordre de grandeur : **plus de 130 sites disparaissent ou se simplifient**, contre
+un refactor qui aurait généralisé ~123 littéraux. Retirer coûte moins cher que
+paramétrer, et le résultat est plus simple qu'aujourd'hui — pas seulement plus
+général.
+
+### Conséquence sur la reco §6
+
+Elle rétrécit : avec une branche unique, `deployedBranch` n'a plus d'objet. Il ne
+reste **qu'une** constante à nommer (la branche fluxprod), et son rôle devient
+purement documentaire. Le garde-fou initial (« ne jamais dériver la branche de
+l'environnement, sous peine de committer des changements prod sur `master` en
+contournant la promotion ») **disparaît avec la promotion elle-même**.
+
+### Sous-question restante, mineure
+
+**Quel nom pour la branche unique ?** `preprod` deviendrait un nom absurde pour la
+seule branche, et `master` porte l'ancienne sémantique « ce qui est déployé ». À
+trancher au moment de la migration ; ça touche les `GitRepository` Flux, donc ce
+n'est pas un simple `git branch -m`.
 
 ## 6. Ce qui reste bon à faire quel que soit le choix
 
-- **Nommer les deux branches** (`sourceBranch = "preprod"`,
-  `deployedBranch = "master"`, ~40 littéraux) : au départ un garde-fou — rien
-  aujourd'hui n'empêche quelqu'un de « paramétrer proprement » ces sites par
-  environnement et de committer des changements prod sur `master`, en contournant
-  la promotion, directement dans ce que Flux prod surveille. Dans le modèle en
-  cells, ces constantes deviennent en plus **la carte des sites que la migration
-  devra revisiter**.
+- **Nommer la branche fluxprod** en une constante (~40 littéraux) : le garde-fou
+  d'origine tombe avec la promotion (§5), mais la constante reste **la carte des
+  sites que la migration devra revisiter**, et elle rend le renommage de la branche
+  mécanique au lieu d'être un `grep` à l'aveugle.
 - **Supprimer les 15 replis `env = "preprod"` dupliqués** (−42 lignes) : le helper
   existe déjà deux fois dans le dépôt, il n'a simplement pas été propagé.
 
