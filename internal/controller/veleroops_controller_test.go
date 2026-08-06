@@ -350,6 +350,38 @@ func TestControllerWritesStatusOnly(t *testing.T) {
 	}
 }
 
+// Property 9 — the reconciler passes ITS environment to the service, not an
+// empty string. Empty would be resolved by the service to its historical default
+// ("preprod"), so an operator on the prod cluster would write env=preprod into
+// every audit line and Prometheus series — a label that is not merely missing but
+// actively wrong. It also stops the operator depending on k8sForEnv's
+// "return any client" fallback to find its own client.
+func TestReconcilerPassesItsEnvironment(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeOps{backupName: "manual-demo-1", backupPhases: []string{"InProgress"}}
+	r := newReconciler(ops)
+	r.Env = "prod"
+
+	obj := newMarker(t, ctx, "env-propagation", map[string]string{
+		v1alpha1.AnnBackupRequestedAt: "2026-08-06T22:00:00Z",
+	})
+	for range 2 {
+		if _, err := r.Reconcile(ctx, reqFor(obj)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+
+	envs := ops.envs()
+	if len(envs) == 0 {
+		t.Fatal("le service n'a reçu aucun env")
+	}
+	for _, env := range envs {
+		if env != "prod" {
+			t.Fatalf("env transmis = %q, attendu \"prod\" (envs vus : %v)", env, envs)
+		}
+	}
+}
+
 // The reconcile logic above is exercised by direct calls, which keeps it
 // deterministic. This one checks the other half: that the reconciler actually
 // registers with a controller-runtime manager against a real API server.

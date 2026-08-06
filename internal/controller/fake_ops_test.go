@@ -38,6 +38,19 @@ type fakeOps struct {
 	createRestoreCalls int
 	inspectCalls       int
 	abortCalls         int
+	envsSeen           []string
+}
+
+func (f *fakeOps) noteEnv(env string) {
+	f.envsSeen = append(f.envsSeen, env)
+}
+
+func (f *fakeOps) envs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.envsSeen))
+	copy(out, f.envsSeen)
+	return out
 }
 
 var _ veleroops.Ops = (*fakeOps)(nil)
@@ -50,15 +63,17 @@ func (f *fakeOps) TriggerVeleroBackup(_ context.Context, _ models.Actor, name, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.triggerBackupCalls++
+	f.noteEnv(env)
 	if f.backupErr != nil {
 		return service.VeleroBackupCreated{}, f.backupErr
 	}
 	return service.VeleroBackupCreated{BackupName: f.backupName, Name: name, Env: env}, nil
 }
 
-func (f *fakeOps) GetVeleroBackupPhase(_ context.Context, _, _ string) (string, error) {
+func (f *fakeOps) GetVeleroBackupPhase(_ context.Context, _, env string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.noteEnv(env)
 	phase := "InProgress"
 	if len(f.backupPhases) > 0 {
 		phase = f.backupPhases[0]
