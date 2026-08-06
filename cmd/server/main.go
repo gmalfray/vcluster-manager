@@ -33,6 +33,15 @@ import (
 )
 
 // splitCSV splits a comma-separated string into trimmed, non-empty tokens.
+// noCacheHeader marks responses as always-revalidate so browsers check back
+// with the server (cheap 304 via ETag) instead of serving a stale cached copy.
+func noCacheHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
+}
+
 func splitCSV(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
@@ -322,8 +331,13 @@ func run() error {
 	metricsLimiter := auth.NewRateLimiter(rate.Limit(5), 10)
 	http.Handle("GET /metrics", metricsLimiter.Middleware(metrics.Handler()))
 
-	// Static files
-	http.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+	// Static files. Cache-Control: no-cache forces the browser to revalidate via
+	// ETag/Last-Modified on every load instead of trusting its own heuristic
+	// freshness window (http.FileServer sets neither by default). Without it, a
+	// redeployed app.css/logo can stay invisible in tabs left open across a
+	// deploy until the user hard-refreshes — this is what made the wf-confirm
+	// modal look broken in recette 1.4.1 even though its CSS was already correct.
+	http.Handle("GET /static/", http.StripPrefix("/static/", noCacheHeader(http.FileServer(http.Dir("web/static")))))
 
 	// Protected routes
 	mux := http.NewServeMux()

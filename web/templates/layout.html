@@ -19,28 +19,33 @@
     <div class="min-h-full">
         <nav class="wf-nav">
             <!-- Logo produit vCluster (identité de l'outil) + signature editeur
-                 « by Rebuild IT » (pattern produit/editeur, decide 2026-08). Le mark
-                 4 blocs de la charte editeur (rebuild-it/branding/logo.svg) reste
-                 reserve au branding Rebuild IT lui-meme, pas au produit. -->
+                 « by Rebuild IT » sur sa propre ligne sous le wordmark (finding
+                 recette 1.4.1 #1 : avant, elle etait collee au numero de version,
+                 illisible). Le mark 4 blocs de la charte editeur
+                 (rebuild-it/branding/logo.svg) reste reserve au branding Rebuild IT
+                 lui-meme, pas au produit. Numero de version deplace a part, en pilule
+                 discrete apres le logo. -->
             <a href="/" class="wf-nav-logo">
-                <svg width="130" height="32" viewBox="0 0 200 52" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                        <linearGradient id="wfnav" x1="0%" y1="0%" x2="100%" y2="0%">
-                            <stop offset="0%" stop-color="#6366f1"/>
-                            <stop offset="50%" stop-color="#22d3ee"/>
-                            <stop offset="100%" stop-color="#34d399"/>
-                        </linearGradient>
-                    </defs>
-                    <path d="M8,30 C22,14 36,14 50,30 C64,46 78,46 92,30" fill="none" stroke="url(#wfnav)" stroke-width="3.5" stroke-linecap="round"/>
-                    <circle cx="8"  cy="30" r="3.5" fill="#6366f1"/>
-                    <circle cx="50" cy="30" r="4"   fill="#22d3ee"/>
-                    <circle cx="92" cy="30" r="3.5" fill="#34d399"/>
-                    <text x="102" y="35" fill="#e4e7f0" font-family="Space Grotesk, sans-serif" font-size="17" font-weight="700" letter-spacing="-0.5">vCluster</text>
-                </svg>
-                <span class="wf-nav-logo-sub">manager</span>
-                {{if .Version}}<span style="font-size:10px;color:#6b7280;margin-left:6px;align-self:flex-end;padding-bottom:2px;">{{.Version}}</span>{{end}}
+                <div class="wf-nav-logo-row">
+                    <svg width="130" height="32" viewBox="0 0 200 52" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <linearGradient id="wfnav" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stop-color="#4F46E5"/>
+                                <stop offset="50%" stop-color="#FF7A45"/>
+                                <stop offset="100%" stop-color="#22C3A6"/>
+                            </linearGradient>
+                        </defs>
+                        <path d="M8,30 C22,14 36,14 50,30 C64,46 78,46 92,30" fill="none" stroke="url(#wfnav)" stroke-width="3.5" stroke-linecap="round"/>
+                        <circle cx="8"  cy="30" r="3.5" fill="#4F46E5"/>
+                        <circle cx="50" cy="30" r="4"   fill="#FF7A45"/>
+                        <circle cx="92" cy="30" r="3.5" fill="#22C3A6"/>
+                        <text x="102" y="35" fill="#e4e7f0" font-family="Space Grotesk, sans-serif" font-size="17" font-weight="700" letter-spacing="-0.5">vCluster</text>
+                    </svg>
+                    <span class="wf-nav-logo-sub">manager</span>
+                </div>
+                <span class="wf-nav-editor" title="Édité par Rebuild IT">by&nbsp;Rebuild<span class="wf-nav-editor-it">IT</span></span>
             </a>
-            <span class="wf-nav-editor" title="Édité par Rebuild IT">by&nbsp;Rebuild<span class="wf-nav-editor-it">IT</span></span>
+            {{if .Version}}<span class="wf-nav-version" title="Version {{.Version}}">{{.Version}}</span>{{end}}
 
             <div class="wf-nav-links">
                 <a href="/" class="wf-nav-link">Dashboard</a>
@@ -88,18 +93,18 @@
     <svg width="160" height="42" viewBox="0 0 200 52" xmlns="http://www.w3.org/2000/svg">
         <defs>
             <linearGradient id="wfloader" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%"   stop-color="#6366f1"/>
-                <stop offset="50%"  stop-color="#22d3ee"/>
-                <stop offset="100%" stop-color="#34d399"/>
+                <stop offset="0%"   stop-color="#4F46E5"/>
+                <stop offset="50%"  stop-color="#FF7A45"/>
+                <stop offset="100%" stop-color="#22C3A6"/>
             </linearGradient>
         </defs>
         <path d="M8,30 C22,14 36,14 50,30 C64,46 78,46 92,30"
               fill="none" stroke="url(#wfloader)" stroke-width="3.5" stroke-linecap="round"
               stroke-dasharray="15 8"
               class="wf-loader-wave"/>
-        <circle cx="8"  cy="30" r="4"   fill="#6366f1" class="wf-loader-dot-1"/>
-        <circle cx="50" cy="30" r="4.5" fill="#22d3ee" class="wf-loader-dot-2"/>
-        <circle cx="92" cy="30" r="4"   fill="#34d399" class="wf-loader-dot-3"/>
+        <circle cx="8"  cy="30" r="4"   fill="#4F46E5" class="wf-loader-dot-1"/>
+        <circle cx="50" cy="30" r="4.5" fill="#FF7A45" class="wf-loader-dot-2"/>
+        <circle cx="92" cy="30" r="4"   fill="#22C3A6" class="wf-loader-dot-3"/>
     </svg>
     <span class="wf-page-loading-text" id="page-loading-text">Traitement en cours...</span>
 </div>
