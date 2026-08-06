@@ -334,7 +334,13 @@ func (g *GitLabClient) CreateAppManifestsRepo(name string) (int64, error) {
 		setupErrs = append(setupErrs, fmt.Errorf("commit README: %w", err))
 	}
 
-	// Create preprod branch
+	// Create preprod branch.
+	//
+	// These are the branches of the vcluster's own app-manifests repo, a different
+	// GitLab project — not fluxprod. They mirror the same convention on purpose,
+	// but they are not the same decision: SourceBranch/DeployedBranch must not be
+	// used here, or renaming fluxprod's branch would silently rename every
+	// tenant's repo layout too.
 	if _, _, err := g.client.Branches.CreateBranch(projectID, &gitlab.CreateBranchOptions{
 		Branch: gitlab.Ptr("preprod"),
 		Ref:    gitlab.Ptr("master"),
@@ -438,8 +444,8 @@ func (g *GitLabClient) GetOpenPreprodMRInfo() (mrURL string, changedVClusters ma
 
 	mrs, _, err := g.client.MergeRequests.ListProjectMergeRequests(g.projectID, &gitlab.ListProjectMergeRequestsOptions{
 		State:        gitlab.Ptr("opened"),
-		SourceBranch: gitlab.Ptr("preprod"),
-		TargetBranch: gitlab.Ptr("master"),
+		SourceBranch: gitlab.Ptr(SourceBranch),
+		TargetBranch: gitlab.Ptr(DeployedBranch),
 	})
 	if err != nil || len(mrs) == 0 {
 		return "", changedVClusters, err

@@ -38,10 +38,10 @@ func (h *Handlers) setProtection(w http.ResponseWriter, r *http.Request, enabled
 			w.WriteHeader(http.StatusForbidden)
 			h.renderToast(w, "error", "Accès refusé : droits administrateur requis")
 		case errors.Is(err, service.ErrK8sUnavailable):
-			if env == "" {
-				env = "preprod"
-			}
-			h.renderToast(w, "error", fmt.Sprintf("Client Kubernetes %s non disponible", env))
+			// env is forwarded to the service untouched (it resolves the default
+			// itself); the default is only needed to name the environment in the
+			// message.
+			h.renderToast(w, "error", fmt.Sprintf("Client Kubernetes %s non disponible", reqEnv(r)))
 		default:
 			verb := "activation"
 			logMsg := "EnableProtection failed"

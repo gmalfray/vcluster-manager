@@ -107,7 +107,7 @@ func (s *Service) UpdateVeleroConfig(ctx context.Context, actor models.Actor, in
 		path := fmt.Sprintf("%s/%s/velero/values.yaml", s.cfg.FluxprodClustersPath, env)
 		// GitLab rejects an "update" on a file that doesn't exist yet.
 		action := "update"
-		if _, err := s.gitlab.GetFile(ctx, "preprod", path); err != nil {
+		if _, err := s.gitlab.GetFile(ctx, gitops.SourceBranch, path); err != nil {
 			action = "create"
 		}
 		actions = append(actions, gitops.CommitAction{
@@ -120,7 +120,7 @@ func (s *Service) UpdateVeleroConfig(ctx context.Context, actor models.Actor, in
 		return nil
 	}
 
-	if err := s.gitlab.Commit(ctx, "preprod", "chore: update Velero BSL configuration", actions); err != nil {
+	if err := s.gitlab.Commit(ctx, gitops.SourceBranch, "chore: update Velero BSL configuration", actions); err != nil {
 		slog.Error("UpdateVeleroConfig: commit failed", "err", err)
 		return &CommitError{Err: err}
 	}

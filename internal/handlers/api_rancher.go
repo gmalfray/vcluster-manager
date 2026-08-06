@@ -15,7 +15,7 @@ import (
 func (h *Handlers) PairRancher(w http.ResponseWriter, r *http.Request) {
 	st, err := h.svc.PairRancher(r.Context(), h.actor(r), r.PathValue("name"), r.URL.Query().Get("env"))
 	if err != nil {
-		h.renderRancherError(w, err, rancherReqEnv(r))
+		h.renderRancherError(w, err, reqEnv(r))
 		return
 	}
 	h.renderRancher(w, st)
@@ -26,7 +26,7 @@ func (h *Handlers) PairRancher(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) UnpairRancher(w http.ResponseWriter, r *http.Request) {
 	st, err := h.svc.UnpairRancher(r.Context(), h.actor(r), r.PathValue("name"), r.URL.Query().Get("env"))
 	if err != nil {
-		h.renderRancherError(w, err, rancherReqEnv(r))
+		h.renderRancherError(w, err, reqEnv(r))
 		return
 	}
 	h.renderRancher(w, st)
@@ -38,9 +38,13 @@ func (h *Handlers) RancherStatus(w http.ResponseWriter, r *http.Request) {
 	h.renderRancher(w, st)
 }
 
-// rancherReqEnv resolves the request's env the same way the service does, so
-// error toasts mentioning the environment stay identical to before.
-func rancherReqEnv(r *http.Request) string {
+// reqEnv resolves the request's env the same way the service's envOrDefault does.
+//
+// Use it only where the handler needs env FOR ITSELF — a file name, an error
+// message, template data, h.k8sForEnv. Where env is merely forwarded to the
+// service, leave it empty and let the service resolve it: duplicating the default
+// there would be a second place to keep in sync for no gain.
+func reqEnv(r *http.Request) string {
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		return "preprod"

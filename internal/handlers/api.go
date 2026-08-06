@@ -19,10 +19,7 @@ func (h *Handlers) RetryVaultSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	if h.vault == nil {
 		h.renderToast(w, "error", "Vault non configure")
@@ -60,10 +57,7 @@ func (h *Handlers) FluxSummaryFragment(w http.ResponseWriter, r *http.Request) {
 // StatusFragment returns an HTMX fragment with the vcluster status badge.
 func (h *Handlers) StatusFragment(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	// Handle deleting mode: check if HelmRelease still exists. This branch stays in
 	// the web adapter — it drives HTMX-specific side effects (RemoveDeleting,
@@ -148,10 +142,7 @@ func (h *Handlers) DownloadKubeconfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid vcluster name", http.StatusBadRequest)
 		return
 	}
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	k8s := h.k8sForEnv(env)
 	if k8s == nil {
@@ -229,10 +220,7 @@ func (h *Handlers) CreateProdMR(w http.ResponseWriter, r *http.Request) {
 // QuotaForm returns the quota editing form fragment.
 func (h *Handlers) QuotaForm(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "preprod"
-	}
+	env := reqEnv(r)
 
 	vc, err := h.svc.GetQuotaForm(r.Context(), env, name)
 	if err != nil {

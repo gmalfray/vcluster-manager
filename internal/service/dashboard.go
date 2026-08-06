@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/gmalfray/vcluster-manager/internal/argocd"
+	"github.com/gmalfray/vcluster-manager/internal/gitops"
 	"github.com/gmalfray/vcluster-manager/internal/helmcharts"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 )
@@ -77,7 +78,7 @@ func (s *Service) GetDashboard(ctx context.Context) (DashboardData, error) {
 	var data DashboardData
 
 	// Load preprod vclusters (from preprod branch).
-	preprodVClusters, err := s.parser.ListVClusters(ctx, "preprod")
+	preprodVClusters, err := s.parser.ListVClusters(ctx, gitops.SourceBranch)
 	if err != nil {
 		slog.Warn("error listing vclusters", "env", "preprod", "err", err)
 	}
@@ -233,12 +234,12 @@ func (s *Service) GetDashboard(ctx context.Context) (DashboardData, error) {
 	if s.helmUpdater != nil {
 		data.HelmUpdaterEnabled = true
 		// Preprod (branch preprod).
-		if version, err := s.helmUpdater.GetCurrentChartVersion(ctx, "preprod"); err == nil {
+		if version, err := s.helmUpdater.GetCurrentChartVersion(ctx, gitops.SourceBranch); err == nil {
 			data.PreprodChartVersion = version
 		} else {
 			slog.Warn("could not fetch chart version", "branch", "preprod", "err", err)
 		}
-		if k8s, err := s.helmUpdater.GetDefaultK8sVersion(ctx, "preprod"); err == nil {
+		if k8s, err := s.helmUpdater.GetDefaultK8sVersion(ctx, gitops.SourceBranch); err == nil {
 			data.PreprodK8sVersion = k8s
 		} else {
 			slog.Warn("could not fetch K8s version", "branch", "preprod", "err", err)
@@ -278,7 +279,7 @@ func (s *Service) GetDashboard(ctx context.Context) (DashboardData, error) {
 
 	if s.argocdUpdater != nil {
 		data.ArgoCDUpdaterEnabled = true
-		if version, err := s.argocdUpdater.GetGlobalVersion(ctx, "preprod"); err == nil {
+		if version, err := s.argocdUpdater.GetGlobalVersion(ctx, gitops.SourceBranch); err == nil {
 			data.PreprodArgoCDVersion = version
 		} else {
 			slog.Warn("could not fetch ArgoCD version", "branch", "preprod", "err", err)
