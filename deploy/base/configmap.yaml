@@ -34,6 +34,13 @@ data:
   DEFAULT_MEMORY: "32Gi"
   DEFAULT_STORAGE: "500Gi"
   VELERO_TIMEZONE: "Europe/Paris"
+  # Qui exécute un backup/restore à la demande :
+  #   direct     — le serveur appelle Velero depuis la requête (comportement historique)
+  #   annotation — le serveur pose un ordre sur le marqueur VClusterVeleroOps et
+  #                l'opérateur l'exécute
+  # Interrupteur de migration : il disparaît avec le chemin direct une fois
+  # l'opérateur en charge. Basculer sur preprod avant la prod.
+  VELERO_TRIGGER_MODE: "direct"
   VCLUSTER_POD_SECURITY: "privileged"
   ARGOCD_DEFAULT_POLICY: "role:readonly"
 

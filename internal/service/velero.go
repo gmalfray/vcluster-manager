@@ -418,6 +418,47 @@ type VeleroBackupRequested struct {
 	Env         string
 }
 
+// VeleroTriggerModeAnnotation selects the declarative path in
+// cfg.VeleroTriggerMode. Anything else means the historical direct path.
+const VeleroTriggerModeAnnotation = "annotation"
+
+// VeleroBackupAck is what an adapter gets back from StartVeleroBackup. Exactly
+// one of the two fields is set, and which one says who is doing the work:
+// BackupName means Velero was called from this request, RequestedAt means the
+// order was posted for the operator.
+type VeleroBackupAck struct {
+	BackupName  string
+	RequestedAt string
+	Name        string
+	Env         string
+}
+
+// Deferred reports whether the backup was handed to the operator rather than
+// created on the spot.
+func (a VeleroBackupAck) Deferred() bool { return a.BackupName == "" }
+
+// StartVeleroBackup is the single entry point adapters call for an on-demand
+// backup. It picks the path from cfg.VeleroTriggerMode so the decision lives in
+// one place — the alternative, an if in every adapter, is how a migration switch
+// ends up half-applied.
+//
+// Migration switch: it disappears with the direct path once the operator owns
+// this (docs/poc-operator-tech-decision.md §6).
+func (s *Service) StartVeleroBackup(ctx context.Context, actor models.Actor, name, env string) (VeleroBackupAck, error) {
+	if s.cfg.VeleroTriggerMode == VeleroTriggerModeAnnotation {
+		res, err := s.RequestVeleroBackup(ctx, actor, name, env)
+		if err != nil {
+			return VeleroBackupAck{}, err
+		}
+		return VeleroBackupAck{RequestedAt: res.RequestedAt, Name: res.Name, Env: res.Env}, nil
+	}
+	res, err := s.TriggerVeleroBackup(ctx, actor, name, env)
+	if err != nil {
+		return VeleroBackupAck{}, err
+	}
+	return VeleroBackupAck{BackupName: res.BackupName, Name: res.Name, Env: res.Env}, nil
+}
+
 // RequestVeleroBackup asks for a backup by annotating the vcluster's
 // VClusterVeleroOps marker, instead of calling Velero itself. Admin only.
 //

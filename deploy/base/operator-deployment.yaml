@@ -1,0 +1,66 @@
+# L'opérateur est un déploiement distinct du serveur : il ne sert pas d'humains,
+# n'a pas d'ingress et ne monte pas le PVC de données. Il réconcilie les marqueurs
+# VClusterVeleroOps dans le cluster où il tourne.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vcluster-manager-operator
+  namespace: vcluster-manager
+  labels:
+    app: vcluster-manager-operator
+spec:
+  # Une seule réplique suffit, mais l'élection de leader est quand même active
+  # dans le binaire : pendant un rolling update, l'ancien et le nouveau pod se
+  # chevauchent quelques secondes, et deux pilotes pour une séquence destructrice
+  # est exactement ce qu'on veut éviter.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vcluster-manager-operator
+  template:
+    metadata:
+      labels:
+        app: vcluster-manager-operator
+    spec:
+      serviceAccountName: vcluster-manager-operator
+      containers:
+        - name: operator
+          image: ghcr.io/gmalfray/vcluster-manager:latest
+          command: ["vcluster-manager-operator"]
+          ports:
+            - containerPort: 8080
+              name: metrics
+            - containerPort: 8081
+              name: probes
+          # Même ConfigMap que le serveur : l'opérateur n'a besoin que de
+          # VELERO_NAMESPACE et VELERO_DEFAULT_TTL, mais partager la source évite
+          # deux endroits où régler la même chose. Pas de secretRef : il ne parle
+          # ni à Keycloak, ni à GitLab, ni à Vault.
+          envFrom:
+            - configMapRef:
+                name: vcluster-manager-config
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]

@@ -185,7 +185,10 @@ func (h *Handlers) TriggerVeleroBackup(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	env := r.URL.Query().Get("env")
 
-	res, err := h.svc.TriggerVeleroBackup(r.Context(), h.actor(r), name, env)
+	// StartVeleroBackup, not TriggerVeleroBackup: the service decides whether the
+	// backup is created here or handed to the operator (VELERO_TRIGGER_MODE), so
+	// this handler does not have to know which.
+	res, err := h.svc.StartVeleroBackup(r.Context(), h.actor(r), name, env)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrForbidden):
@@ -201,6 +204,13 @@ func (h *Handlers) TriggerVeleroBackup(w http.ResponseWriter, r *http.Request) {
 
 	// Toast + trigger refresh of the backup list.
 	w.Header().Set("HX-Trigger", `{"veleroBackupsRefresh": true}`)
+	if res.Deferred() {
+		// The backup does not exist yet — saying "backup déclenché : <nom>" would
+		// name something that hasn't been created. The list refresh will show it
+		// as soon as the operator has done the work.
+		h.renderToast(w, "success", "Backup demandé, l'opérateur s'en charge")
+		return
+	}
 	h.renderToast(w, "success", fmt.Sprintf("Backup déclenché : %s", res.BackupName))
 }
 

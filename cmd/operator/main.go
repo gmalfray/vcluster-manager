@@ -69,7 +69,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadOperator()
 	if err != nil {
 		log.Error(err, "configuration")
 		os.Exit(1)

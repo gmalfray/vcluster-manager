@@ -146,6 +146,70 @@ func TestRequestVeleroBackup_AnnotatesTheMarkerWithoutTouchingVelero(t *testing.
 	}
 }
 
+// The switch that carries the migration: one entry point, two paths, and the
+// choice made in one place rather than in every adapter.
+func TestStartVeleroBackup_ModeDecidesWhoDoesTheWork(t *testing.T) {
+	tests := []struct {
+		name         string
+		mode         string
+		wantDeferred bool
+	}{
+		{"défaut : Velero est appelé depuis la requête", "", false},
+		{"direct explicite", "direct", false},
+		{"annotation : l'ordre est posé pour l'opérateur", "annotation", true},
+		{"valeur inconnue : on reste sur le chemin historique", "n'importe quoi", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var markerWrites, backupCreates int
+			reactor := func(action clienttesting.Action) (bool, runtime.Object, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				switch action.GetResource().Resource {
+				case "vclusterveleroops":
+					markerWrites++
+				case "backups":
+					if action.GetVerb() == "create" {
+						backupCreates++
+					}
+				}
+				return false, nil, nil
+			}
+			k8s := kubernetes.NewTestStatusClientWithReactor(reactor)
+			s := newVeleroTestService(k8s)
+			s.cfg.VeleroTriggerMode = tt.mode
+
+			ack, err := s.StartVeleroBackup(context.Background(), adminActor(), "demo", "preprod")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ack.Deferred() != tt.wantDeferred {
+				t.Fatalf("Deferred() = %v, attendu %v (ack %+v)", ack.Deferred(), tt.wantDeferred, ack)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if tt.wantDeferred {
+				if markerWrites == 0 {
+					t.Error("aucune écriture sur le marqueur en mode annotation")
+				}
+				if backupCreates != 0 {
+					t.Errorf("%d backup(s) créé(s) en mode annotation : c'est le travail de l'opérateur", backupCreates)
+				}
+				return
+			}
+			if backupCreates == 0 {
+				t.Error("aucun backup créé sur le chemin direct")
+			}
+			if markerWrites != 0 {
+				t.Errorf("%d écriture(s) sur le marqueur sur le chemin direct", markerWrites)
+			}
+		})
+	}
+}
+
 // --- InspectInterruptedRestore ---
 //
 // This is what replaces persisting each step as it happens: the two facts that

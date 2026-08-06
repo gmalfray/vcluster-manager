@@ -94,12 +94,18 @@ type Config struct {
 	DefaultRBACGroup string // DEFAULT_RBAC_GROUP — default: "it"
 
 	// vCluster defaults (used when creating a vcluster without explicit values)
-	DefaultCPU          string // DEFAULT_CPU — default CPU quota, e.g. "8"
-	DefaultMemory       string // DEFAULT_MEMORY — default memory quota, e.g. "32Gi"
-	DefaultStorage      string // DEFAULT_STORAGE — default storage quota, e.g. "500Gi"
-	VeleroTimezone      string // VELERO_TIMEZONE — cron timezone for Velero, e.g. "Europe/Paris"
-	VeleroDefaultTTL    string // VELERO_DEFAULT_TTL — default backup retention, e.g. "720h0m0s" (30d)
-	VeleroNamespace     string // VELERO_NAMESPACE — namespace where Velero is installed, e.g. "velero-system"
+	DefaultCPU       string // DEFAULT_CPU — default CPU quota, e.g. "8"
+	DefaultMemory    string // DEFAULT_MEMORY — default memory quota, e.g. "32Gi"
+	DefaultStorage   string // DEFAULT_STORAGE — default storage quota, e.g. "500Gi"
+	VeleroTimezone   string // VELERO_TIMEZONE — cron timezone for Velero, e.g. "Europe/Paris"
+	VeleroDefaultTTL string // VELERO_DEFAULT_TTL — default backup retention, e.g. "720h0m0s" (30d)
+	VeleroNamespace  string // VELERO_NAMESPACE — namespace where Velero is installed, e.g. "velero-system"
+	// VeleroTriggerMode — how a backup/restore is started: "direct" calls Velero
+	// from the request, "annotation" posts an order on the vcluster's
+	// VClusterVeleroOps marker for the operator to carry out. Migration switch,
+	// meant to be removed once the operator owns this path (see
+	// docs/poc-operator-tech-decision.md §6).
+	VeleroTriggerMode   string // VELERO_TRIGGER_MODE — "direct" (défaut) | "annotation"
 	VeleroS3URL         string // VELERO_S3_URL — S3 endpoint for Velero BSL, e.g. "https://s3.example.com"
 	VeleroBucketPreprod string // VELERO_BUCKET_PREPROD — S3 bucket for preprod Velero backups
 	VeleroBucketProd    string // VELERO_BUCKET_PROD — S3 bucket for prod Velero backups
@@ -112,7 +118,18 @@ type Config struct {
 	backend stateBackend
 }
 
-func Load() (*Config, error) {
+// Load reads the configuration of the web server, which needs its integrations
+// (GitLab in particular) and its state backend.
+func Load() (*Config, error) { return load(true) }
+
+// LoadOperator reads the configuration of the operator. It talks to Kubernetes
+// and Velero and to nothing else, so it must not require a GitLab token nor open
+// a state backend — demanding either would make the operator refuse to start
+// over credentials it never uses, or need RBAC on ConfigMaps for a store it
+// never reads.
+func LoadOperator() (*Config, error) { return load(false) }
+
+func load(forServer bool) (*Config, error) {
 	c := &Config{
 		ListenAddr:             os.Getenv("LISTEN_ADDR"),
 		GitLabURL:              os.Getenv("GITLAB_URL"),
@@ -157,6 +174,7 @@ func Load() (*Config, error) {
 		VeleroTimezone:         os.Getenv("VELERO_TIMEZONE"),
 		VeleroDefaultTTL:       getEnvOrDefault("VELERO_DEFAULT_TTL", "720h0m0s"),
 		VeleroNamespace:        getEnvOrDefault("VELERO_NAMESPACE", "velero-system"),
+		VeleroTriggerMode:      getEnvOrDefault("VELERO_TRIGGER_MODE", "direct"),
 		VeleroS3URL:            os.Getenv("VELERO_S3_URL"),
 		VeleroBucketPreprod:    os.Getenv("VELERO_BUCKET_PREPROD"),
 		VeleroBucketProd:       os.Getenv("VELERO_BUCKET_PROD"),
@@ -172,8 +190,13 @@ func Load() (*Config, error) {
 		DefaultRBACGroup:       getEnvOrDefault("DEFAULT_RBAC_GROUP", "developers"),
 	}
 
-	if c.GitLabToken == "" {
+	if forServer && c.GitLabToken == "" {
 		return nil, fmt.Errorf("GITLAB_TOKEN is required")
+	}
+
+	if !forServer {
+		// No state backend for the operator: nothing it does reads or writes it.
+		return c, nil
 	}
 
 	c.dataDir = os.Getenv("DATA_DIR")
