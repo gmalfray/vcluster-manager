@@ -12,6 +12,7 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
+	"github.com/gmalfray/vcluster-manager/internal/models"
 )
 
 // What an operator-style caller needs on top of the web/REST path: a way to run
@@ -207,6 +208,141 @@ func TestStartVeleroBackup_ModeDecidesWhoDoesTheWork(t *testing.T) {
 				t.Errorf("%d écriture(s) sur le marqueur sur le chemin direct", markerWrites)
 			}
 		})
+	}
+}
+
+// --- RequestVeleroRestore ---
+
+func TestRequestVeleroRestore_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		actor   models.Actor
+		vc      string
+		backup  string
+		target  string
+		wantErr error
+	}{
+		{"non-admin", plainActor(), "demo", "manual-demo-1", "", ErrForbidden},
+		{"backup manquant", adminActor(), "demo", "", "", ErrBackupNameRequired},
+		{"backup invalide", adminActor(), "demo", "../etc/passwd", "", ErrInvalidBackupName},
+		{"vcluster invalide", adminActor(), "../etc/passwd", "manual-demo-1", "", ErrInvalidName},
+		{"cible invalide", adminActor(), "demo", "manual-demo-1", "../etc/passwd", ErrInvalidName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// No client configured: any check reaching Kubernetes would surface as
+			// ErrK8sUnavailable instead, which is what we do not want.
+			s := newVeleroTestService(nil)
+			_, err := s.RequestVeleroRestore(context.Background(), tt.actor, tt.vc, "preprod", tt.backup, tt.target)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected %v, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// A cross-vcluster restore must annotate the TARGET's marker: the target always
+// exists, whereas the source may be long gone (design §10 bonus, restoring an
+// orphaned backup).
+func TestRequestVeleroRestore_CrossVClusterAnnotatesTheTarget(t *testing.T) {
+	var mu sync.Mutex
+	var namespaces []string
+	reactor := func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetResource().Resource == "vclusterveleroops" {
+			mu.Lock()
+			namespaces = append(namespaces, action.GetNamespace())
+			mu.Unlock()
+		}
+		return false, nil, nil
+	}
+	k8s := kubernetes.NewTestStatusClientWithReactor(reactor)
+	s := newVeleroTestService(k8s)
+
+	res, err := s.RequestVeleroRestore(context.Background(), adminActor(), "source", "preprod", "manual-source-1", "cible")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Name != "cible" {
+		t.Fatalf("marqueur annoté = %q, attendu \"cible\"", res.Name)
+	}
+	if res.InPlace {
+		t.Error("une restauration vers une autre cible n'est pas in-place")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ns := range namespaces {
+		if ns != "vcluster-cible" {
+			t.Errorf("marqueur touché dans %q, attendu vcluster-cible", ns)
+		}
+	}
+}
+
+// Two requests in the same second must not collapse into one: the nonce would be
+// identical and the second one silently dropped as "already handled".
+func TestRequestNonce_DistinguishesRequestsWithinTheSameSecond(t *testing.T) {
+	first := newRequestNonce()
+	second := newRequestNonce()
+	if first == second {
+		t.Fatalf("deux nonces identiques (%q) : une demande serait avalée en silence", first)
+	}
+}
+
+func TestStartVeleroRestore_AnnotationPathDefersTheRestoreName(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient()
+	s := newVeleroTestService(k8s)
+	s.cfg.VeleroTriggerMode = "annotation"
+
+	view, err := s.StartVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.RestoreName != "" {
+		t.Errorf("restoreName = %q : le Restore n'existe pas encore, c'est l'opérateur qui le nomme", view.RestoreName)
+	}
+	if view.Phase != "New" {
+		t.Errorf("phase = %q, attendu New", view.Phase)
+	}
+	if !view.InPlace {
+		t.Error("cible vide ⇒ restauration in-place")
+	}
+}
+
+// --- GetVeleroOpsRestoreStatus ---
+
+func TestGetVeleroOpsRestoreStatus_NoMarkerYetKeepsPolling(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient()
+	s := newVeleroTestService(k8s)
+
+	view, err := s.GetVeleroOpsRestoreStatus(context.Background(), "demo", "preprod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.Phase != "New" {
+		t.Fatalf("phase = %q, attendu New : sans phase l'adaptateur doit continuer à interroger, pas conclure", view.Phase)
+	}
+}
+
+func TestGetVeleroOpsRestoreStatus_ReportsWhatTheOperatorWrote(t *testing.T) {
+	k8s := kubernetes.NewTestStatusClient()
+	if err := k8s.SeedTestVeleroOpsMarker(context.Background(), "demo", kubernetes.VeleroOpsRestoreState{
+		RestoreName:   "r-op-1",
+		Phase:         "Completed",
+		InPlace:       true,
+		ResumePending: true,
+	}); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	s := newVeleroTestService(k8s)
+
+	view, err := s.GetVeleroOpsRestoreStatus(context.Background(), "demo", "preprod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.RestoreName != "r-op-1" || view.Phase != "Completed" {
+		t.Fatalf("view = %+v", view)
+	}
+	if !view.InPlace || !view.ResumePending {
+		t.Errorf("la nuance de sécurité des données est perdue : InPlace=%v ResumePending=%v", view.InPlace, view.ResumePending)
 	}
 }
 

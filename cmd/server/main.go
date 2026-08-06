@@ -367,6 +367,7 @@ func run() error {
 	mux.HandleFunc("DELETE /api/vclusters/{name}/velero/backups/{backup}", h.DeleteVeleroBackup)
 	mux.HandleFunc("POST /api/vclusters/{name}/velero/restore", h.CreateVeleroRestore)
 	mux.HandleFunc("GET /api/vclusters/{name}/velero/restore/{restore}/status", h.VeleroRestoreStatus)
+	mux.HandleFunc("GET /api/vclusters/{name}/velero/ops/restore/status", h.VeleroOpsRestoreStatus)
 	mux.HandleFunc("GET /api/vclusters/{name}/apps", h.ListApps)
 	mux.HandleFunc("POST /api/vclusters/{name}/apps/migrate", h.MigrateApp)
 	mux.HandleFunc("POST /api/chart/update", h.UpdateChart)

@@ -523,6 +523,54 @@ func toStringMap(in map[string]string) map[string]interface{} {
 	return out
 }
 
+// VeleroOpsRestoreState is the restore half of a VClusterVeleroOps marker's
+// status, as written by the operator.
+type VeleroOpsRestoreState struct {
+	Found           bool
+	RestoreName     string
+	Phase           string
+	FromBackup      string
+	InPlace         bool
+	ResumePending   bool
+	ResumeFailed    bool
+	ResumeError     string
+	VolumeDestroyed bool
+}
+
+// GetVeleroOpsRestoreState reads the restore status the operator publishes on a
+// vcluster's marker. Found is false when no marker exists yet, which is the
+// normal state of a vcluster nobody has ever asked a backup for.
+func (s *StatusClient) GetVeleroOpsRestoreState(ctx context.Context, name string) (VeleroOpsRestoreState, error) {
+	obj, err := s.client.Resource(veleroOpsGVR).Namespace("vcluster-"+name).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return VeleroOpsRestoreState{}, nil
+	}
+	if err != nil {
+		return VeleroOpsRestoreState{}, fmt.Errorf("reading the marker %s: %w", name, err)
+	}
+
+	restoreName, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "restoreName")
+	phase, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "phase")
+	fromBackup, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "fromBackup")
+	inPlace, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "inPlace")
+	resumePending, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "resumePending")
+	resumeFailed, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "resumeFailed")
+	resumeError, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "resumeError")
+	volumeDestroyed, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "volumeDestroyed")
+
+	return VeleroOpsRestoreState{
+		Found:           true,
+		RestoreName:     restoreName,
+		Phase:           phase,
+		FromBackup:      fromBackup,
+		InPlace:         inPlace,
+		ResumePending:   resumePending,
+		ResumeFailed:    resumeFailed,
+		ResumeError:     resumeError,
+		VolumeDestroyed: volumeDestroyed,
+	}, nil
+}
+
 // GetVClusterPVCState reports whether a vcluster's data volume is still there.
 //
 // This is how a caller that was interrupted mid-restore finds out which side of

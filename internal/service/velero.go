@@ -422,6 +422,113 @@ type VeleroBackupRequested struct {
 // cfg.VeleroTriggerMode. Anything else means the historical direct path.
 const VeleroTriggerModeAnnotation = "annotation"
 
+// newRequestNonce builds the value of a requestedAt annotation: readable,
+// ordered, and compared as-is by the operator to decide whether a request is new.
+//
+// Nanosecond precision, not second: two requests within the same second would
+// otherwise produce the same nonce, and the second one would be silently
+// swallowed as "already handled". Harmless for a double-clicked backup, not
+// harmless for a restore of a different backup.
+func newRequestNonce() string {
+	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+// VeleroRestoreRequested is the acknowledgement of a declaratively requested
+// restore.
+type VeleroRestoreRequested struct {
+	RequestedAt string
+	FromBackup  string
+	Target      string
+	Name        string
+	Env         string
+	InPlace     bool
+}
+
+// RequestVeleroRestore asks for a restore by annotating the vcluster's
+// VClusterVeleroOps marker. Admin only.
+//
+// It runs the same authorization and validation as CreateVeleroRestore, and
+// writes the same audit line, at the moment a human asked. What it does NOT do is
+// check that the backup is restorable: that check has to happen immediately
+// before the destructive sequence, not minutes earlier when the order was
+// posted — CreateVeleroRestore still does it, in the operator, where it belongs.
+func (s *Service) RequestVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreRequested, error) {
+	if !actor.IsAdmin {
+		return VeleroRestoreRequested{}, ErrForbidden
+	}
+	if backupName == "" {
+		return VeleroRestoreRequested{}, ErrBackupNameRequired
+	}
+	if !validBackupName(backupName) {
+		return VeleroRestoreRequested{}, ErrInvalidBackupName
+	}
+	if !validName(name) {
+		return VeleroRestoreRequested{}, ErrInvalidName
+	}
+	if targetName != "" && !validName(targetName) {
+		return VeleroRestoreRequested{}, ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return VeleroRestoreRequested{}, ErrK8sUnavailable
+	}
+
+	// A cross-vcluster restore is driven by the *target's* marker: the target
+	// always exists, whereas the source may be long gone (design §10 bonus).
+	markerVCluster := name
+	if targetName != "" && targetName != name {
+		markerVCluster = targetName
+	}
+
+	requestedAt := newRequestNonce()
+	annotations := map[string]string{
+		v1alpha1.AnnRestoreRequestedAt: requestedAt,
+		v1alpha1.AnnRestoreFromBackup:  backupName,
+		v1alpha1.AnnRestoreRequestedBy: actor.Username,
+	}
+	if err := k8s.RequestVeleroOps(ctx, markerVCluster, annotations); err != nil {
+		return VeleroRestoreRequested{}, err
+	}
+
+	audit.LogActor(actor.Username, "velero-restore-request", name, env,
+		"backup="+backupName, "marqueur="+markerVCluster)
+
+	return VeleroRestoreRequested{
+		RequestedAt: requestedAt,
+		FromBackup:  backupName,
+		Target:      targetName,
+		Name:        markerVCluster,
+		Env:         env,
+		InPlace:     targetName == "" || targetName == name,
+	}, nil
+}
+
+// StartVeleroRestore is the single entry point adapters call for a restore,
+// picking the path from cfg.VeleroTriggerMode. Same reasoning as
+// StartVeleroBackup: the switch belongs in one place.
+//
+// On the deferred path RestoreName is empty — the Velero Restore does not exist
+// yet, the operator creates it. An adapter must therefore follow the marker's
+// status rather than a restore name.
+func (s *Service) StartVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreView, error) {
+	if s.cfg.VeleroTriggerMode != VeleroTriggerModeAnnotation {
+		return s.CreateVeleroRestore(ctx, actor, name, env, backupName, targetName)
+	}
+	req, err := s.RequestVeleroRestore(ctx, actor, name, env, backupName, targetName)
+	if err != nil {
+		return VeleroRestoreView{}, err
+	}
+	return VeleroRestoreView{
+		RestoreName: "", // deferred: the operator names it
+		Phase:       "New",
+		Name:        req.Name,
+		Env:         req.Env,
+		BackupName:  req.FromBackup,
+		InPlace:     req.InPlace,
+	}, nil
+}
+
 // VeleroBackupAck is what an adapter gets back from StartVeleroBackup. Exactly
 // one of the two fields is set, and which one says who is doing the work:
 // BackupName means Velero was called from this request, RequestedAt means the
@@ -484,9 +591,7 @@ func (s *Service) RequestVeleroBackup(ctx context.Context, actor models.Actor, n
 		return VeleroBackupRequested{}, ErrK8sUnavailable
 	}
 
-	// RFC3339 makes a nonce that is both readable and ordered, which is what the
-	// dedup on the operator side compares against.
-	requestedAt := time.Now().UTC().Format(time.RFC3339)
+	requestedAt := newRequestNonce()
 	if err := k8s.RequestVeleroOps(ctx, name, map[string]string{
 		v1alpha1.AnnBackupRequestedAt: requestedAt,
 	}); err != nil {
@@ -495,6 +600,47 @@ func (s *Service) RequestVeleroBackup(ctx context.Context, actor models.Actor, n
 
 	audit.LogActor(actor.Username, "velero-backup-request", name, env, "requestedAt="+requestedAt)
 	return VeleroBackupRequested{RequestedAt: requestedAt, Name: name, Env: env}, nil
+}
+
+// GetVeleroOpsRestoreStatus reports the restore status the operator publishes on
+// a vcluster's marker, in the same shape as GetVeleroRestoreStatus so an adapter
+// can render both with one template. Read-only, no privilege required.
+//
+// The two differ on one point: here the service does not attempt the Flux resume
+// itself. The operator owns that, and its own reconcile loop retries it — a
+// second mechanism poking at it from a browser poll is exactly what this
+// migration removes.
+func (s *Service) GetVeleroOpsRestoreStatus(ctx context.Context, name, env string) (VeleroRestoreStatusView, error) {
+	if !validName(name) {
+		return VeleroRestoreStatusView{}, ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return VeleroRestoreStatusView{}, ErrK8sUnavailable
+	}
+
+	st, err := k8s.GetVeleroOpsRestoreState(ctx, name)
+	if err != nil {
+		return VeleroRestoreStatusView{}, err
+	}
+	if !st.Found || st.Phase == "" {
+		// The order is posted but the operator has not written anything yet.
+		// "New" keeps the adapter polling instead of declaring an outcome.
+		return VeleroRestoreStatusView{Name: name, Env: env, Phase: "New"}, nil
+	}
+
+	return VeleroRestoreStatusView{
+		RestoreName:     st.RestoreName,
+		Phase:           st.Phase,
+		Name:            name,
+		Env:             env,
+		InPlace:         st.InPlace,
+		ResumePending:   st.ResumePending,
+		ResumeFailed:    st.ResumeFailed,
+		ResumeError:     st.ResumeError,
+		VolumeDestroyed: st.VolumeDestroyed,
+	}, nil
 }
 
 // InterruptedRestoreView is what the cluster says about a restore sequence that
