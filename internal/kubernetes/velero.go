@@ -461,6 +461,68 @@ func (s *StatusClient) ScaleVClusterWorkloads(ctx context.Context, name string, 
 // from backup — `data-vcluster-<name>-etcd-0` with external etcd,
 // `data-vcluster-<name>-0` when it's embedded. The workload(s) must be
 // scaled to 0 first, or the PVC stays stuck Terminating.
+// RequestVeleroOps posts a trigger annotation on a vcluster's VClusterVeleroOps
+// marker, creating the marker if it does not exist yet.
+//
+// Lazy creation, rather than creating a marker alongside every vcluster, keeps
+// Service.Create untouched and means an existing vcluster gets one the first time
+// someone asks for a backup.
+//
+// A merge patch on the annotations, not a Server-Side Apply: the app only ever
+// writes annotations and the operator only ever writes status, so there is no
+// shared field for two managers to arbitrate — and unlike SSA, this is
+// exercisable against the fake dynamic client the rest of the package tests
+// with. If the marker does not exist yet, create it; if two requests race to
+// create it, the loser patches instead.
+func (s *StatusClient) RequestVeleroOps(ctx context.Context, name string, annotations map[string]string) error {
+	ns := "vcluster-" + name
+	res := s.client.Resource(veleroOpsGVR).Namespace(ns)
+
+	patch, err := json.Marshal(map[string]interface{}{
+		"metadata": map[string]interface{}{"annotations": annotations},
+	})
+	if err != nil {
+		return fmt.Errorf("building the annotation patch: %w", err)
+	}
+
+	_, err = res.Patch(ctx, name, k8stypes.MergePatchType, patch, metav1.PatchOptions{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("annotating the marker %s: %w", name, err)
+	}
+
+	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "vcluster.rebuild-it.fr/v1alpha1",
+		"kind":       "VClusterVeleroOps",
+		"metadata": map[string]interface{}{
+			"name":        name,
+			"namespace":   ns,
+			"annotations": toStringMap(annotations),
+		},
+	}}
+	if _, err := res.Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating the marker %s: %w", name, err)
+		}
+		if _, err := res.Patch(ctx, name, k8stypes.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+			return fmt.Errorf("annotating the marker %s after a concurrent create: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// toStringMap converts a map[string]string to the map[string]interface{} an
+// unstructured object needs.
+func toStringMap(in map[string]string) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // GetVClusterPVCState reports whether a vcluster's data volume is still there.
 //
 // This is how a caller that was interrupted mid-restore finds out which side of

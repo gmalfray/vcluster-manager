@@ -93,6 +93,59 @@ func TestCreateVeleroRestore_WhoWatchesTheAftermath(t *testing.T) {
 	}
 }
 
+// --- RequestVeleroBackup : la porte d'entrée déclarative ---
+
+func TestRequestVeleroBackup_ForbiddenForNonAdmin(t *testing.T) {
+	s := newVeleroTestService(nil)
+	if _, err := s.RequestVeleroBackup(context.Background(), plainActor(), "demo", "preprod"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestRequestVeleroBackup_RejectsInvalidNameBeforeK8sLookup(t *testing.T) {
+	s := newVeleroTestService(nil)
+	if _, err := s.RequestVeleroBackup(context.Background(), adminActor(), "../etc/passwd", "preprod"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("expected ErrInvalidName, got %v", err)
+	}
+}
+
+// The request must not touch Velero: the whole point is that the operator does
+// that later. What the app does is post the order.
+func TestRequestVeleroBackup_AnnotatesTheMarkerWithoutTouchingVelero(t *testing.T) {
+	var mu sync.Mutex
+	var markerApplies, veleroWrites int
+	reactor := func(action clienttesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		res := action.GetResource().Resource
+		switch {
+		case res == "vclusterveleroops":
+			markerApplies++
+		case (res == "backups" || res == "restores") && action.GetVerb() != "get" && action.GetVerb() != "list":
+			veleroWrites++
+		}
+		return false, nil, nil
+	}
+	k8s := kubernetes.NewTestStatusClientWithReactor(reactor)
+	s := newVeleroTestService(k8s)
+
+	res, err := s.RequestVeleroBackup(context.Background(), adminActor(), "demo", "preprod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.RequestedAt == "" {
+		t.Error("requestedAt vide : le nonce est ce que l'opérateur compare pour dédupliquer")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if markerApplies == 0 {
+		t.Error("le marqueur n'a pas été appliqué")
+	}
+	if veleroWrites != 0 {
+		t.Errorf("%d écriture(s) Velero : la demande doit être déclarative, l'exécution revient à l'opérateur", veleroWrites)
+	}
+}
+
 // --- InspectInterruptedRestore ---
 //
 // This is what replaces persisting each step as it happens: the two facts that

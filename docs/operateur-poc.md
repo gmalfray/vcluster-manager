@@ -1,4 +1,9 @@
-# POC opérateur — controller-runtime sur le chemin backup/restore
+# Opérateur — controller-runtime sur le chemin backup/restore
+
+> Le code a quitté `poc/operator/` : il vit maintenant dans l'app
+> (`api/v1alpha1`, `internal/controller`, `internal/veleroops`, `cmd/operator`,
+> `config/{crd,rbac}`), et le module séparé a disparu avec son `replace`.
+> Ce document garde la trace de ce que le POC prouvait.
 
 Ce POC répond à une question et une seule : **une boucle de reconcile
 controller-runtime peut-elle porter le chemin backup/restore Velero, en
@@ -30,10 +35,9 @@ test` télécharge les modules, controller-gen et les binaires envtest
 (kube-apiserver + etcd) : compter ~2,5 Go de cache sous `~/.cache/poc-go`.
 
 ```sh
-make test      # suite envtest complète
-make generate  # après modification des types
-make build
-make clean-cache
+make test-operator  # suite envtest (kube-apiserver + etcd)
+make manifests      # après modification des types (deepcopy + CRD)
+make build          # les deux binaires : serveur et opérateur
 ```
 
 ⚠️ `make test` a besoin de quelques Go libres sur `/`. Un disque plein se

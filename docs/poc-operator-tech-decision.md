@@ -274,13 +274,21 @@ Dans l'ordre, chaque étape restant petite et vérifiable :
 
 1. ~~Les 3 changements de service~~ — **faits** (findings 1 à 5), additifs, avec
    tests, toute la suite de l'app verte en `-race`.
-2. ~~Câbler le vrai `*service.Service` derrière `veleroops.Ops`~~ — **fait**,
-   l'assertion de type le prouve à la compilation. **Reste** : le binaire
-   opérateur + RBAC (`Role` scopé sur `vcluster-*`, cf. design §6 et le finding
-   #1 de `recette-1.4-findings.md` sur le `ClusterRole` insuffisant), et la
-   création du marqueur (à `Service.Create` ou paresseusement).
-3. **Chemin backup en prod d'abord** (non destructif) puis restore, derrière
-   `VELERO_TRIGGER_MODE`, validé sur preprod au prochain `up.sh`.
+2. ~~Câbler le vrai `*service.Service`, binaire opérateur, RBAC, création du marqueur~~ — **fait**.
+   Le module `poc/operator` a été **fusionné dans l'app** (l'agent l'avait assorti d'une date de
+   péremption : « à fusionner dès que l'opérateur a un `main()` ») → `api/v1alpha1`,
+   `internal/controller`, `internal/veleroops`, `cmd/operator`, `config/{crd,rbac}`. Le `replace` et
+   le second `go.mod` disparaissent. `make test-operator` lance la suite envtest ; `go test ./...` la
+   saute proprement quand les binaires ne sont pas là, plutôt que de casser toute la suite.
+   Le marqueur est créé **paresseusement**, à la première demande (`Service.RequestVeleroBackup` →
+   `StatusClient.RequestVeleroOps`) : `Service.Create` n'est pas touché, et un vcluster déjà en place
+   en obtient un sans migration. **Reste** : le manifeste de déploiement (domaine `gitops-flux`) et
+   la bascule du handler.
+3. **Chemin backup en prod d'abord** (non destructif) puis restore, derrière `VELERO_TRIGGER_MODE`,
+   validé sur preprod au prochain `up.sh`. `Service.RequestVeleroBackup` existe et est testé, mais
+   **aucun handler ne l'appelle encore** : c'est la seule pièce volontairement en avance sur son
+   appelant, parce qu'elle est la cible de cette bascule et qu'elle rend l'opérateur testable à la
+   main (`kubectl annotate`) sans écrire de YAML de marqueur.
 4. **Porter le chemin de suppression + finalizer** — le POC prioritaire de
    §3.2bis, désormais avec un patron éprouvé pour la reprise après redémarrage.
    Le finalizer et l'irréversibilité du `deletionTimestamp` restent la vraie

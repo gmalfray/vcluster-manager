@@ -17,6 +17,8 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/models"
+
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 )
 
 // backupNameRegex is the accepted shape of a Velero backup name: what Velero
@@ -406,6 +408,52 @@ func (s *Service) AbortInPlaceRestore(ctx context.Context, actor models.Actor, n
 	}
 	audit.LogActor(actor.Username, "velero-restore-abort", name, env)
 	return nil
+}
+
+// VeleroBackupRequested is the acknowledgement of a declaratively requested
+// backup: the order is posted, the operator will carry it out.
+type VeleroBackupRequested struct {
+	RequestedAt string
+	Name        string
+	Env         string
+}
+
+// RequestVeleroBackup asks for a backup by annotating the vcluster's
+// VClusterVeleroOps marker, instead of calling Velero itself. Admin only.
+//
+// This is the declarative entry point (design §6): the authorization check and
+// the audit line stay here, at the moment a human asked and with their identity,
+// while the execution — and its own audit line — happens in the operator. The
+// two together answer "who asked, when" and "what ran, when", which one
+// synchronous call could never separate.
+//
+// It returns as soon as the order is posted. That is not a regression in
+// responsiveness: TriggerVeleroBackup already returned before Velero had
+// finished, and the UI already polled for the phase.
+func (s *Service) RequestVeleroBackup(ctx context.Context, actor models.Actor, name, env string) (VeleroBackupRequested, error) {
+	if !actor.IsAdmin {
+		return VeleroBackupRequested{}, ErrForbidden
+	}
+	if !validName(name) {
+		return VeleroBackupRequested{}, ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return VeleroBackupRequested{}, ErrK8sUnavailable
+	}
+
+	// RFC3339 makes a nonce that is both readable and ordered, which is what the
+	// dedup on the operator side compares against.
+	requestedAt := time.Now().UTC().Format(time.RFC3339)
+	if err := k8s.RequestVeleroOps(ctx, name, map[string]string{
+		v1alpha1.AnnBackupRequestedAt: requestedAt,
+	}); err != nil {
+		return VeleroBackupRequested{}, err
+	}
+
+	audit.LogActor(actor.Username, "velero-backup-request", name, env, "requestedAt="+requestedAt)
+	return VeleroBackupRequested{RequestedAt: requestedAt, Name: name, Env: env}, nil
 }
 
 // InterruptedRestoreView is what the cluster says about a restore sequence that

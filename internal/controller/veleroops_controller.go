@@ -20,8 +20,8 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
 
-	"github.com/gmalfray/vcluster-manager/poc/operator/api/v1alpha1"
-	"github.com/gmalfray/vcluster-manager/poc/operator/internal/veleroops"
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
+	"github.com/gmalfray/vcluster-manager/internal/veleroops"
 )
 
 // RequeueInterval is how often an in-flight backup or restore is polled. Matches

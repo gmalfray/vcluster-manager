@@ -13,7 +13,7 @@ import (
 
 	"github.com/gmalfray/vcluster-manager/internal/service"
 
-	"github.com/gmalfray/vcluster-manager/poc/operator/api/v1alpha1"
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 )
 
 // Property 1 — a backup request is acted on exactly once, however many times

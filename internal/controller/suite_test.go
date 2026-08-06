@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	"github.com/gmalfray/vcluster-manager/poc/operator/api/v1alpha1"
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 )
 
 // The suite runs against a real kube-apiserver (envtest), not a fake client:
@@ -30,6 +30,15 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// These tests need a real kube-apiserver + etcd (envtest binaries). Now that
+	// the operator lives in the app module, `go test ./...` would otherwise fail
+	// for anyone who has not fetched them. Say so loudly and skip rather than
+	// break the whole suite — `make test-operator` sets this up.
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		fmt.Fprintln(os.Stderr, "SKIP internal/controller: KUBEBUILDER_ASSETS non défini (voir `make test-operator`)")
+		os.Exit(0)
+	}
+
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd")},
 		ErrorIfCRDPathMissing: true,

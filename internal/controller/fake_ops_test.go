@@ -7,7 +7,7 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
 
-	"github.com/gmalfray/vcluster-manager/poc/operator/internal/veleroops"
+	"github.com/gmalfray/vcluster-manager/internal/veleroops"
 )
 
 // fakeOps stands in for *service.Service. It fakes only what talks to a live
