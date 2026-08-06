@@ -18,32 +18,27 @@
 <body class="h-full">
     <div class="min-h-full">
         <nav class="wf-nav">
-            <!-- Logo produit vCluster (identité de l'outil) + signature editeur
-                 « by Rebuild IT » sur sa propre ligne sous le wordmark (finding
-                 recette 1.4.1 #1 : avant, elle etait collee au numero de version,
-                 illisible). Le mark 4 blocs de la charte editeur
-                 (rebuild-it/branding/logo.svg) reste reserve au branding Rebuild IT
-                 lui-meme, pas au produit. Numero de version deplace a part, en pilule
-                 discrete apres le logo. -->
-            <a href="/" class="wf-nav-logo">
-                <div class="wf-nav-logo-row">
-                    <svg width="130" height="32" viewBox="0 0 200 52" xmlns="http://www.w3.org/2000/svg">
-                        <defs>
-                            <linearGradient id="wfnav" x1="0%" y1="0%" x2="100%" y2="0%">
-                                <stop offset="0%" stop-color="#4F46E5"/>
-                                <stop offset="50%" stop-color="#FF7A45"/>
-                                <stop offset="100%" stop-color="#4338CA"/>
-                            </linearGradient>
-                        </defs>
-                        <path d="M8,30 C22,14 36,14 50,30 C64,46 78,46 92,30" fill="none" stroke="url(#wfnav)" stroke-width="3.5" stroke-linecap="round"/>
-                        <circle cx="8"  cy="30" r="3.5" fill="#4F46E5"/>
-                        <circle cx="50" cy="30" r="4"   fill="#FF7A45"/>
-                        <circle cx="92" cy="30" r="3.5" fill="#4338CA"/>
-                        <text x="102" y="35" fill="#e4e7f0" font-family="Space Grotesk, sans-serif" font-size="17" font-weight="700" letter-spacing="-0.5">vCluster</text>
-                    </svg>
-                    <span class="wf-nav-logo-sub">manager</span>
-                </div>
-                <span class="wf-nav-editor" title="Édité par Rebuild IT">by&nbsp;Rebuild<span class="wf-nav-editor-it">IT</span></span>
+            <!-- Lockup identite : l'editeur Rebuild IT mene (mark 4 blocs + wordmark),
+                 "vCluster Manager" suit en nom de produit, plus discret. Le bloc "ink"
+                 du mark (#17171F dans la charte, pense pour un fond clair) passe a
+                 --text-secondary ici : sur le fond sombre de la nav (--bg #0a0c12), un
+                 gris de surface (--surface3, ratio de contraste ~1.3:1) le rendait
+                 quasi invisible ; --text-secondary (~6.3:1) le garde net, avec le meme
+                 role d'ancrage neutre que jouait l'ink block sur fond clair. Les 3
+                 autres blocs (indigo/indigo-dark/orange pivote) restent la couleur de
+                 charte, sans dérive de teinte. -->
+            <a href="/" class="wf-nav-logo" title="Rebuild IT · vCluster Manager">
+                <svg width="30" height="30" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" class="wf-nav-mark" aria-hidden="true">
+                    <g transform="translate(6,6)">
+                        <rect x="0"  y="0"  width="24" height="24" rx="6" fill="#4338CA"/>
+                        <rect x="28" y="0"  width="24" height="24" rx="6" fill="#4F46E5"/>
+                        <rect x="0"  y="28" width="24" height="24" rx="6" fill="var(--text-secondary)"/>
+                        <rect x="28" y="28" width="24" height="24" rx="6" fill="#FF7A45" transform="rotate(6 40 40)"/>
+                    </g>
+                </svg>
+                <span class="wf-nav-wordmark">Rebuild<span class="wf-nav-wordmark-it">IT</span></span>
+                <span class="wf-nav-sep" aria-hidden="true">&middot;</span>
+                <span class="wf-nav-product">vCluster Manager</span>
             </a>
             {{if .Version}}<span class="wf-nav-version" title="Version {{.Version}}">{{.Version}}</span>{{end}}
 

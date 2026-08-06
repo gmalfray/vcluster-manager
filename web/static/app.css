@@ -195,36 +195,31 @@ input[type="file"]::file-selector-button:hover {
   display: flex; align-items: center;
   padding: 0 28px; gap: 8px;
 }
+/* Lockup identite nav : mark Rebuild IT + wordmark editeur en tete, "vCluster
+   Manager" en nom de produit a la suite (moins proeminent, cf. app.css login
+   plus bas pour le meme lockup en plus grand). */
 .wf-nav-logo {
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; align-items: center; gap: 9px;
   margin-right: 20px; text-decoration: none; flex-shrink: 0;
 }
-.wf-nav-logo-row { display: flex; align-items: center; gap: 10px; }
-.wf-nav-logo-sub {
-  font-family: 'Space Grotesk', sans-serif; font-weight: 500;
-  font-size: 0.72rem; color: var(--text-muted);
-  letter-spacing: 0.06em; text-transform: uppercase;
-}
-/* Signature editeur, sur sa propre ligne sous le wordmark (finding recette 1.4.1
-   #1 : avant, elle etait collee au numero de version dans la meme ligne, illisible).
-   IT en accent charte. */
-.wf-nav-editor {
-  margin-left: 1px;
-  font-family: 'Space Grotesk', sans-serif; font-weight: 600;
-  font-size: 0.62rem; letter-spacing: 0.02em; color: var(--text-muted);
+.wf-nav-mark { flex-shrink: 0; }
+.wf-nav-wordmark {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+  font-size: 1rem; letter-spacing: -0.01em; color: var(--text);
   white-space: nowrap;
 }
-.wf-nav-editor-it { color: var(--accent); margin-left: 1px; }
-/* Numero de version : sorti du bloc logo, en pilule discrete a part (meme finding). */
+.wf-nav-wordmark-it { color: var(--accent); }
+.wf-nav-sep { color: var(--text-muted); font-size: 0.9rem; }
+.wf-nav-product {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 500;
+  font-size: 0.84rem; color: var(--text-secondary); white-space: nowrap;
+}
+/* Numero de version : pilule discrete a part, apres le lockup identite. */
 .wf-nav-version {
   font-family: 'JetBrains Mono', monospace; font-size: 0.68rem;
   color: var(--text-muted); background: var(--surface2);
   border: 1px solid var(--border-subtle); border-radius: 999px;
   padding: 3px 9px; margin-right: 12px; flex-shrink: 0;
-}
-.wf-login-editor {
-  margin: -6px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 600;
-  font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-muted);
 }
 .wf-nav-links { display: flex; gap: 2px; }
 .wf-nav-link {
@@ -715,12 +710,15 @@ input[type="file"]::file-selector-button:hover {
   background: var(--surface); border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
 }
-.wf-login-logo {
-  display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 32px;
+/* Lockup identite login : meme mark que la nav, en plus grand, assume en tete de
+   carte. "vCluster Manager" en sous-titre produit sous le wordmark editeur. */
+.wf-login-wordmark {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+  font-size: 1.35rem; letter-spacing: -0.01em; color: var(--text);
 }
-.wf-login-sub {
-  font-family: 'Space Grotesk', sans-serif; font-size: 0.72rem;
-  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
+.wf-login-product {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 500;
+  font-size: 0.82rem; color: var(--text-secondary); margin-top: 2px;
 }
 .wf-login-err {
   background: var(--red-dim); border: 1px solid var(--red-border);
