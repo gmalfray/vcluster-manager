@@ -164,6 +164,13 @@ cher à opérer.
 > cleaning** (le plus fragile aujourd'hui) sur controller-runtime, et vérifier qu'il reprend bien
 > une suppression interrompue par un redémarrage. Si ce chemin tient, le reste du lifecycle suit par
 > phases. Voir ADR-001, section « Suite ».
+>
+> **Fait, sur le chemin backup/restore in-place** plutôt que sur la suppression : même point de
+> non-retour (le PVC supprimé), même besoin de reprise après redémarrage, mais sans finalizer ni
+> `deletionTimestamp` irréversible. La reprise après un process tué est prouvée dans les deux
+> directions (volume détruit ⇒ Flux **non** repris ; volume intact ⇒ repris) et tombe dès qu'on
+> retire la persistance de l'étape. Détail, findings et suite : `docs/poc-operator-tech-decision.md`,
+> code `poc/operator/`. Le chemin de suppression + finalizer reste à porter.
 
 ### 3.3 Conditions typées proposées
 
