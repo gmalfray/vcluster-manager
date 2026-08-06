@@ -32,16 +32,16 @@ import (
 )
 
 func main() {
-	var metricsAddr, probeAddr, kubeconfig, env string
+	var metricsAddr, probeAddr, kubeconfig, cell string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address the metric endpoint binds to")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address the probe endpoint binds to")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to a kubeconfig; empty means in-cluster")
-	// Which host cluster this operator reconciles. It is not used to choose a
-	// client — there is only one — but it labels the audit trail and the
-	// Prometheus series. An operator on the prod cluster reporting env=preprod
-	// would be actively misleading, so the overlay must set this.
-	flag.StringVar(&env, "env", "preprod", "environnement de ce cluster hôte (audit, métriques)")
+	// Which host cluster this operator reconciles — a "cell" in the sense of
+	// ADR-002. Not used to choose a client (there is only one), but it labels the
+	// audit trail and the Prometheus series: an operator reporting another cell's
+	// name would be actively misleading, so the overlay must set this.
+	flag.StringVar(&cell, "cell", "preprod", "nom de la cell (cluster hôte) que cet opérateur réconcilie — étiquette l'audit et les métriques")
 	// Leader election matters even for a single replica: it stops a rolling
 	// update's old and new pods from both driving a destructive restore sequence
 	// for the few seconds they overlap.
@@ -66,9 +66,10 @@ func main() {
 
 	// The operator runs *in* the environment it reconciles, so there is a single
 	// client and no SSH tunnel — crd-vcluster.md §2.1: one operator per host
-	// cluster. Keying the map by env (rather than by "") means k8sForEnv finds it
-	// by name instead of landing on its "return any client" fallback, which the
-	// operator must not depend on.
+	// cluster. Keying the map by the cell name (rather than by "") means
+	// k8sForEnv finds it by name instead of landing on its "return any client"
+	// fallback, which the operator must not depend on. The service still calls
+	// this dimension `env` — see ADR-002 for why the two names coexist for now.
 	k8sClient, err := kubernetes.NewStatusClient(kubeconfig)
 	if err != nil {
 		log.Error(err, "client Kubernetes")
@@ -82,7 +83,7 @@ func main() {
 	}
 	svc := service.New(service.Deps{
 		Cfg:          cfg,
-		K8sClients:   map[string]*kubernetes.StatusClient{env: k8sClient},
+		K8sClients:   map[string]*kubernetes.StatusClient{cell: k8sClient},
 		K8sClientsMu: &sync.RWMutex{},
 	})
 	// Everything the Velero domain of the service needs is above. The other Deps
@@ -105,7 +106,7 @@ func main() {
 	if err := (&controller.VeleroOpsReconciler{
 		Client: mgr.GetClient(),
 		Ops:    svc,
-		Env:    env,
+		Cell:   cell,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "câblage du reconciler VClusterVeleroOps")
 		os.Exit(1)
@@ -120,7 +121,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("opérateur prêt", "env", env, "leader-election", enableLeaderElection)
+	slog.Info("opérateur prêt", "cell", cell, "leader-election", enableLeaderElection)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Error(err, "arrêt du manager")
 		os.Exit(1)

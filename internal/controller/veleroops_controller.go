@@ -42,12 +42,17 @@ type VeleroOpsReconciler struct {
 	// Ops is the service seam — *service.Service in production.
 	Ops veleroops.Ops
 
-	// Env names the host cluster this operator reconciles. It is not used to
-	// pick a client — the operator has exactly one — but it labels the audit
-	// trail and the metrics, and those must not claim "preprod" on a prod
-	// cluster. Empty falls back to the service's historical default, which is
+	// Cell names the host cluster this operator reconciles (ADR-002). It is not
+	// used to pick a client — the operator has exactly one — but it labels the
+	// audit trail and the metrics, and those must not claim one cell's name on
+	// another. Empty falls back to the service's historical default, which is
 	// exactly the mistake to avoid: set it.
-	Env string
+	//
+	// It is passed as the service's `env` parameter, which still carries the old
+	// prod/preprod vocabulary. That mapping is the migration seam: the cell name
+	// is what identifies the host cluster from now on, and `env` is what the
+	// service has not been renamed to yet.
+	Cell string
 }
 
 // Reconcile is level-triggered: everything it does comes from the object's
@@ -95,7 +100,7 @@ func (r *VeleroOpsReconciler) reconcileBackup(ctx context.Context, ops *v1alpha1
 			return 0, err
 		}
 
-		created, err := r.Ops.TriggerVeleroBackup(ctx, SystemActor, ops.VClusterName(), r.Env)
+		created, err := r.Ops.TriggerVeleroBackup(ctx, SystemActor, ops.VClusterName(), r.Cell)
 		if err != nil {
 			st.Phase = "Failed"
 			setCond(ops, v1alpha1.CondBackupCompleted, metav1.ConditionFalse, "TriggerFailed", err.Error())
@@ -113,7 +118,7 @@ func (r *VeleroOpsReconciler) reconcileBackup(ctx context.Context, ops *v1alpha1
 		return 0, nil
 	}
 
-	phase, err := r.Ops.GetVeleroBackupPhase(ctx, st.BackupName, r.Env)
+	phase, err := r.Ops.GetVeleroBackupPhase(ctx, st.BackupName, r.Cell)
 	if err != nil {
 		return RequeueInterval, err
 	}
@@ -185,7 +190,7 @@ func (r *VeleroOpsReconciler) startRestore(ctx context.Context, ops *v1alpha1.VC
 		return 0, err
 	}
 
-	view, err := r.Ops.CreateVeleroRestoreUnwatched(ctx, SystemActor, name, r.Env, fromBackup, target)
+	view, err := r.Ops.CreateVeleroRestoreUnwatched(ctx, SystemActor, name, r.Cell, fromBackup, target)
 	if err != nil {
 		return 0, r.recordRestoreFailure(ops, err)
 	}
@@ -202,7 +207,7 @@ func (r *VeleroOpsReconciler) recoverInterrupted(ctx context.Context, ops *v1alp
 	st := &ops.Status.Restore
 	name := ops.VClusterName()
 
-	view, err := r.Ops.InspectInterruptedRestore(ctx, name, r.Env)
+	view, err := r.Ops.InspectInterruptedRestore(ctx, name, r.Cell)
 	if err != nil {
 		return RequeueInterval, err
 	}
@@ -232,7 +237,7 @@ func (r *VeleroOpsReconciler) recoverInterrupted(ctx context.Context, ops *v1alp
 
 	default:
 		// Volume intact: the repair is to put the vcluster back.
-		if err := r.Ops.AbortInPlaceRestore(ctx, SystemActor, name, r.Env); err != nil {
+		if err := r.Ops.AbortInPlaceRestore(ctx, SystemActor, name, r.Cell); err != nil {
 			setCond(ops, v1alpha1.CondRestoreNeedsRetry, metav1.ConditionTrue, "AbortFailed",
 				"reprise de Flux après séquence interrompue : "+err.Error())
 			return RequeueInterval, err
@@ -283,7 +288,7 @@ func (r *VeleroOpsReconciler) followRestore(ctx context.Context, ops *v1alpha1.V
 		return 0, nil
 	}
 
-	view, err := r.Ops.GetVeleroRestoreStatus(ctx, ops.VClusterName(), st.RestoreName, r.Env, st.InPlace)
+	view, err := r.Ops.GetVeleroRestoreStatus(ctx, ops.VClusterName(), st.RestoreName, r.Cell, st.InPlace)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "poll du restore", "restore", st.RestoreName)
 		return RequeueInterval, err

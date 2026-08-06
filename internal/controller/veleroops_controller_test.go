@@ -350,17 +350,17 @@ func TestControllerWritesStatusOnly(t *testing.T) {
 	}
 }
 
-// Property 9 — the reconciler passes ITS environment to the service, not an
-// empty string. Empty would be resolved by the service to its historical default
-// ("preprod"), so an operator on the prod cluster would write env=preprod into
-// every audit line and Prometheus series — a label that is not merely missing but
+// Property 9 — the reconciler passes ITS cell name to the service, not an empty
+// string. Empty would be resolved by the service to its historical default
+// ("preprod"), so an operator on any other cell would write preprod into every
+// audit line and Prometheus series — a label that is not merely missing but
 // actively wrong. It also stops the operator depending on k8sForEnv's
 // "return any client" fallback to find its own client.
-func TestReconcilerPassesItsEnvironment(t *testing.T) {
+func TestReconcilerPassesItsCell(t *testing.T) {
 	ctx := context.Background()
 	ops := &fakeOps{backupName: "manual-demo-1", backupPhases: []string{"InProgress"}}
 	r := newReconciler(ops)
-	r.Env = "prod"
+	r.Cell = "cell2"
 
 	obj := newMarker(t, ctx, "env-propagation", map[string]string{
 		v1alpha1.AnnBackupRequestedAt: "2026-08-06T22:00:00Z",
@@ -376,8 +376,8 @@ func TestReconcilerPassesItsEnvironment(t *testing.T) {
 		t.Fatal("le service n'a reçu aucun env")
 	}
 	for _, env := range envs {
-		if env != "prod" {
-			t.Fatalf("env transmis = %q, attendu \"prod\" (envs vus : %v)", env, envs)
+		if env != "cell2" {
+			t.Fatalf("cell transmise = %q, attendu \"cell2\" (valeurs vues : %v)", env, envs)
 		}
 	}
 }

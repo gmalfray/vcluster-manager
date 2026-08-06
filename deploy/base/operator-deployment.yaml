@@ -28,8 +28,8 @@ spec:
           image: ghcr.io/gmalfray/vcluster-manager:latest
           command: ["vcluster-manager-operator"]
           # Explicite, jamais implicite : cette valeur étiquette l'audit et les
-          # métriques. L'overlay du cluster prod doit la remplacer par prod.
-          args: ["--env=preprod"]
+          # métriques. Chaque cell doit la remplacer par son propre nom (ADR-002).
+          args: ["--cell=preprod"]
           ports:
             - containerPort: 8080
               name: metrics

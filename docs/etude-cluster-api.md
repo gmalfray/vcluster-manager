@@ -98,11 +98,33 @@ reste la console** (import des clusters CAPI).
 
 - Maturité **CAPH bare-metal (Robot)** sur nos usages.
 - Réseau Hetzner : LB hcloud, floating IPs, CNI retenu.
-- **Sauvegarde etcd** du control-plane self-managed (Velero ne couvre pas le
-  control-plane comme pour un vcluster).
+- ~~**Sauvegarde etcd** du control-plane self-managed (Velero ne couvre pas le
+  control-plane comme pour un vcluster).~~ → **levée par ADR-002** : le plan de
+  contrôle est **hébergé sur la cell** (etcd + contrôleurs sur le cluster hôte
+  kubeadm, workers ailleurs), donc son etcd est un StatefulSet avec un PVC dans un
+  namespace — exactement ce que la machinerie backup/restore actuelle sait faire.
+  `detectVClusterTopology` distingue déjà etcd embarqué et etcd externe ; un plan
+  de contrôle hébergé est un troisième cas de la même famille. Cette topologie
+  n'était pas envisagée ici : §3 supposait un `KubeadmControlPlane` sur des VM.
 - Jour-2 : upgrades, remediation, coût/quotas Hetzner.
 - Un **POC CAPD (Docker)** d'abord (zéro coût) pour valider le flux
   `spec compact → (kro?) → CAPI → Flux`, avant Hetzner.
+
+## 9bis. Ce que le modèle en cells change (ADR-002)
+
+Ce document a été écrit en supposant deux environnements et un control-plane sur
+des VM Hetzner. La cible retenue depuis est différente : **N cells** (clusters
+hôtes kubeadm, pairs) qui portent leurs vClusters **et** les plans de contrôle
+managés des clusters CAPI. Conséquences sur cette étude :
+
+- Le §9 « sauvegarde etcd » tombe (ci-dessus).
+- Le choix « CRD `Cluster` multi-backend dès le départ » (§10) devient **plus**
+  important, pas moins : les deux backends partagent la cell, l'hébergement du
+  plan de contrôle, la machinerie de backup et l'opérateur. Ce n'est plus
+  seulement une API commune, c'est un substrat commun.
+- Le §5 (« insertion dans vcluster-manager ») garde sa forme, mais la dimension
+  `env` y devient `cell`, et elle est déduite du cluster où le CR est appliqué au
+  lieu d'être un champ.
 
 ## 10. Verdict
 
