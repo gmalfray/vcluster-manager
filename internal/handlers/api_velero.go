@@ -87,6 +87,22 @@ func (h *Handlers) VeleroBackupContent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// restorePollURL is where the restore status partial polls itself. Two shapes,
+// because the two paths track different objects: on the direct path a Velero
+// Restore exists and has a name; on the deferred path the operator has not
+// created it yet, so the marker's status is the only thing to follow. Computing
+// it here keeps that difference out of the template.
+func restorePollURL(name, restoreName, env string, inPlace bool) string {
+	if restoreName == "" {
+		return fmt.Sprintf("/api/vclusters/%s/velero/ops/restore/status?env=%s", name, env)
+	}
+	suffix := ""
+	if inPlace {
+		suffix = "&inplace=true"
+	}
+	return fmt.Sprintf("/api/vclusters/%s/velero/restore/%s/status?env=%s%s", name, restoreName, env, suffix)
+}
+
 // CreateVeleroRestore initiates a Velero restore from a backup (admin only, enforced by the service).
 func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
@@ -94,7 +110,9 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 	backupName := r.URL.Query().Get("backup")
 	targetName := r.URL.Query().Get("target") // target vcluster name (empty = same vcluster)
 
-	view, err := h.svc.CreateVeleroRestore(r.Context(), h.actor(r), name, env, backupName, targetName)
+	// StartVeleroRestore, not CreateVeleroRestore: the service decides whether the
+	// sequence runs here or is handed to the operator (VELERO_TRIGGER_MODE).
+	view, err := h.svc.StartVeleroRestore(r.Context(), h.actor(r), name, env, backupName, targetName)
 	if err != nil {
 		var notRestorable *service.ErrBackupNotRestorable
 		switch {
@@ -135,6 +153,48 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 		"ResumePending":   false,
 		"ResumeFailed":    false,
 		"VolumeDestroyed": false,
+		"PollURL":         restorePollURL(view.Name, view.RestoreName, view.Env, view.InPlace),
+	})
+}
+
+// VeleroOpsRestoreStatus polls the restore status the operator publishes on the
+// marker (HTMX). Used on the deferred path, where there is no Velero Restore name
+// to poll until the operator has created one.
+func (h *Handlers) VeleroOpsRestoreStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	env := r.URL.Query().Get("env")
+	if env == "" {
+		env = "preprod"
+	}
+
+	view, err := h.svc.GetVeleroOpsRestoreStatus(r.Context(), name, env)
+	if err != nil {
+		msg := err.Error()
+		if errors.Is(err, service.ErrK8sUnavailable) {
+			msg = "Client Kubernetes non configuré"
+		}
+		h.renderPartial(w, "velero_restore_status.html", map[string]interface{}{
+			"Error": msg,
+			"Name":  name,
+			"Env":   env,
+		})
+		return
+	}
+
+	h.renderPartial(w, "velero_restore_status.html", map[string]interface{}{
+		"RestoreName":     view.RestoreName,
+		"Phase":           view.Phase,
+		"Name":            view.Name,
+		"Env":             view.Env,
+		"InPlace":         view.InPlace,
+		"ResumePending":   view.ResumePending,
+		"ResumeFailed":    view.ResumeFailed,
+		"ResumeError":     view.ResumeError,
+		"VolumeDestroyed": view.VolumeDestroyed,
+		// Keep polling the marker even once a restore name appears: the operator
+		// stays the single writer of this status, and its resume outcome is
+		// published there.
+		"PollURL": restorePollURL(view.Name, "", view.Env, view.InPlace),
 	})
 }
 
@@ -177,6 +237,7 @@ func (h *Handlers) VeleroRestoreStatus(w http.ResponseWriter, r *http.Request) {
 		"ResumeFailed":    view.ResumeFailed,
 		"ResumeError":     view.ResumeError,
 		"VolumeDestroyed": view.VolumeDestroyed,
+		"PollURL":         restorePollURL(view.Name, view.RestoreName, view.Env, view.InPlace),
 	})
 }
 
@@ -185,7 +246,10 @@ func (h *Handlers) TriggerVeleroBackup(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	env := r.URL.Query().Get("env")
 
-	res, err := h.svc.TriggerVeleroBackup(r.Context(), h.actor(r), name, env)
+	// StartVeleroBackup, not TriggerVeleroBackup: the service decides whether the
+	// backup is created here or handed to the operator (VELERO_TRIGGER_MODE), so
+	// this handler does not have to know which.
+	res, err := h.svc.StartVeleroBackup(r.Context(), h.actor(r), name, env)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrForbidden):
@@ -201,6 +265,13 @@ func (h *Handlers) TriggerVeleroBackup(w http.ResponseWriter, r *http.Request) {
 
 	// Toast + trigger refresh of the backup list.
 	w.Header().Set("HX-Trigger", `{"veleroBackupsRefresh": true}`)
+	if res.Deferred() {
+		// The backup does not exist yet — saying "backup déclenché : <nom>" would
+		// name something that hasn't been created. The list refresh will show it
+		// as soon as the operator has done the work.
+		h.renderToast(w, "success", "Backup demandé, l'opérateur s'en charge")
+		return
+	}
 	h.renderToast(w, "success", fmt.Sprintf("Backup déclenché : %s", res.BackupName))
 }
 

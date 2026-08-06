@@ -14,6 +14,7 @@ package service
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/gmalfray/vcluster-manager/internal/argocd"
 	"github.com/gmalfray/vcluster-manager/internal/config"
@@ -85,6 +86,12 @@ type Service struct {
 	// velero.go's veleroResumeState for why a shared record matters here.
 	veleroResumeMu     sync.Mutex
 	veleroResumeStates map[string]*veleroResumeState
+
+	// resumeWatchInterval is how often resumeAfterInPlaceRestore polls. Zero
+	// means the production value (10s). Only tests set it, so they don't have to
+	// wait ten seconds to observe whether the watcher was started at all —
+	// which is the difference RestoreHooks.OwnsFollowUp is there to make.
+	resumeWatchInterval time.Duration
 }
 
 // New builds a Service from its dependencies.

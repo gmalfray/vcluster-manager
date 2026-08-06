@@ -461,6 +461,140 @@ func (s *StatusClient) ScaleVClusterWorkloads(ctx context.Context, name string, 
 // from backup — `data-vcluster-<name>-etcd-0` with external etcd,
 // `data-vcluster-<name>-0` when it's embedded. The workload(s) must be
 // scaled to 0 first, or the PVC stays stuck Terminating.
+// RequestVeleroOps posts a trigger annotation on a vcluster's VClusterVeleroOps
+// marker, creating the marker if it does not exist yet.
+//
+// Lazy creation, rather than creating a marker alongside every vcluster, keeps
+// Service.Create untouched and means an existing vcluster gets one the first time
+// someone asks for a backup.
+//
+// A merge patch on the annotations, not a Server-Side Apply: the app only ever
+// writes annotations and the operator only ever writes status, so there is no
+// shared field for two managers to arbitrate — and unlike SSA, this is
+// exercisable against the fake dynamic client the rest of the package tests
+// with. If the marker does not exist yet, create it; if two requests race to
+// create it, the loser patches instead.
+func (s *StatusClient) RequestVeleroOps(ctx context.Context, name string, annotations map[string]string) error {
+	ns := "vcluster-" + name
+	res := s.client.Resource(veleroOpsGVR).Namespace(ns)
+
+	patch, err := json.Marshal(map[string]interface{}{
+		"metadata": map[string]interface{}{"annotations": annotations},
+	})
+	if err != nil {
+		return fmt.Errorf("building the annotation patch: %w", err)
+	}
+
+	_, err = res.Patch(ctx, name, k8stypes.MergePatchType, patch, metav1.PatchOptions{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("annotating the marker %s: %w", name, err)
+	}
+
+	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "vcluster.rebuild-it.fr/v1alpha1",
+		"kind":       "VClusterVeleroOps",
+		"metadata": map[string]interface{}{
+			"name":        name,
+			"namespace":   ns,
+			"annotations": toStringMap(annotations),
+		},
+	}}
+	if _, err := res.Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating the marker %s: %w", name, err)
+		}
+		if _, err := res.Patch(ctx, name, k8stypes.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+			return fmt.Errorf("annotating the marker %s after a concurrent create: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// toStringMap converts a map[string]string to the map[string]interface{} an
+// unstructured object needs.
+func toStringMap(in map[string]string) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// VeleroOpsRestoreState is the restore half of a VClusterVeleroOps marker's
+// status, as written by the operator.
+type VeleroOpsRestoreState struct {
+	Found           bool
+	RestoreName     string
+	Phase           string
+	FromBackup      string
+	InPlace         bool
+	ResumePending   bool
+	ResumeFailed    bool
+	ResumeError     string
+	VolumeDestroyed bool
+}
+
+// GetVeleroOpsRestoreState reads the restore status the operator publishes on a
+// vcluster's marker. Found is false when no marker exists yet, which is the
+// normal state of a vcluster nobody has ever asked a backup for.
+func (s *StatusClient) GetVeleroOpsRestoreState(ctx context.Context, name string) (VeleroOpsRestoreState, error) {
+	obj, err := s.client.Resource(veleroOpsGVR).Namespace("vcluster-"+name).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return VeleroOpsRestoreState{}, nil
+	}
+	if err != nil {
+		return VeleroOpsRestoreState{}, fmt.Errorf("reading the marker %s: %w", name, err)
+	}
+
+	restoreName, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "restoreName")
+	phase, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "phase")
+	fromBackup, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "fromBackup")
+	inPlace, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "inPlace")
+	resumePending, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "resumePending")
+	resumeFailed, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "resumeFailed")
+	resumeError, _, _ := unstructured.NestedString(obj.Object, "status", "restore", "resumeError")
+	volumeDestroyed, _, _ := unstructured.NestedBool(obj.Object, "status", "restore", "volumeDestroyed")
+
+	return VeleroOpsRestoreState{
+		Found:           true,
+		RestoreName:     restoreName,
+		Phase:           phase,
+		FromBackup:      fromBackup,
+		InPlace:         inPlace,
+		ResumePending:   resumePending,
+		ResumeFailed:    resumeFailed,
+		ResumeError:     resumeError,
+		VolumeDestroyed: volumeDestroyed,
+	}, nil
+}
+
+// GetVClusterPVCState reports whether a vcluster's data volume is still there.
+//
+// This is how a caller that was interrupted mid-restore finds out which side of
+// the point of no return it is on, without having had to write anything down
+// beforehand: the cluster already knows. deleting is true once the PVC carries a
+// deletionTimestamp — Delete only returns after the apiserver has set it, so a
+// process killed during the deletion is still detected as "past the point of no
+// return", which is the safe direction.
+func (s *StatusClient) GetVClusterPVCState(ctx context.Context, name string) (exists, deleting bool, err error) {
+	topo, err := s.detectVClusterTopology(ctx, name)
+	if err != nil {
+		return false, false, fmt.Errorf("detecting vcluster topology: %w", err)
+	}
+	ns := "vcluster-" + name
+	pvc, err := s.client.Resource(persistentVolumeClaimGVR).Namespace(ns).Get(ctx, topo.PVCName, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, false, nil
+	case err != nil:
+		return false, false, fmt.Errorf("reading PVC %s: %w", topo.PVCName, err)
+	}
+	return true, pvc.GetDeletionTimestamp() != nil, nil
+}
+
 func (s *StatusClient) DeleteVClusterPVC(ctx context.Context, name string) error {
 	topo, err := s.detectVClusterTopology(ctx, name)
 	if err != nil {

@@ -157,5 +157,8 @@ ne changent pas de forme : `Create` construit un CR, `Delete` le supprime.
    fragile** — suppression + finalizer + reprise du cleaning après redémarrage — et non la seule
    expansion du graphe. C'est ce chemin qui valide que le contrôleur remplace bien la machinerie
    async hand-rollée. Si le POC tient, le reste du lifecycle suit par phases.
+   → **Fait, sur le chemin backup/restore** (même point de non-retour, risque inférieur : ni
+   finalizer ni `deletionTimestamp`) : `docs/poc-operator-tech-decision.md`, code `poc/operator/`.
+   Verdict controller-runtime confirmé sur pièce ; reste à porter la suppression + finalizer.
 3. Finalizer et politique de suppression, condition du retrait de la MR.
 4. Inventaire des écarts sur les vclusters existants, puis migration.

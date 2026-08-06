@@ -1,6 +1,10 @@
 package kubernetes
 
 import (
+	"context"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
@@ -27,6 +31,7 @@ var testListKinds = map[schema.GroupVersionResource]string{
 	persistentVolumeClaimGVR: "PersistentVolumeClaimList",
 	namespaceGVR:             "NamespaceList",
 	podGVR:                   "PodList",
+	veleroOpsGVR:             "VClusterVeleroOpsList",
 }
 
 // NewTestStatusClient builds a StatusClient backed by a fake dynamic client
@@ -36,6 +41,39 @@ var testListKinds = map[schema.GroupVersionResource]string{
 func NewTestStatusClient(objs ...runtime.Object) *StatusClient {
 	scheme := runtime.NewScheme()
 	return &StatusClient{client: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, testListKinds, objs...)}
+}
+
+// SeedTestVeleroOpsMarker creates a VClusterVeleroOps marker carrying a restore
+// status, as the operator would have written it. Test-only.
+//
+// It exists because seeding the marker as a plain object does not work: the fake
+// dynamic client derives a resource name from the kind by pluralising it, and
+// "VClusterVeleroOps" is already plural — its guess never matches the real
+// resource (`vclusterveleroops`), so the object lands under a GVR nobody reads.
+// Going through the same GVR the production code uses sidesteps the guess.
+func (s *StatusClient) SeedTestVeleroOpsMarker(ctx context.Context, name string, st VeleroOpsRestoreState) error {
+	obj := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "vcluster.rebuild-it.fr/v1alpha1",
+		"kind":       "VClusterVeleroOps",
+		"metadata": map[string]interface{}{
+			"name":      name,
+			"namespace": "vcluster-" + name,
+		},
+		"status": map[string]interface{}{
+			"restore": map[string]interface{}{
+				"restoreName":     st.RestoreName,
+				"phase":           st.Phase,
+				"fromBackup":      st.FromBackup,
+				"inPlace":         st.InPlace,
+				"resumePending":   st.ResumePending,
+				"resumeFailed":    st.ResumeFailed,
+				"resumeError":     st.ResumeError,
+				"volumeDestroyed": st.VolumeDestroyed,
+			},
+		},
+	}}
+	_, err := s.client.Resource(veleroOpsGVR).Namespace("vcluster-"+name).Create(ctx, obj, metav1.CreateOptions{})
+	return err
 }
 
 // NewTestStatusClientWithReactor is NewTestStatusClient plus a reactor

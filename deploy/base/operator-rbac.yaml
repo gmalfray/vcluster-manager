@@ -1,0 +1,84 @@
+# RBAC de l'opérateur, dérivé de ce que internal/service touche réellement sur le
+# chemin backup/restore — pas un cluster-admin de confort.
+#
+# Les droits sur les ressources d'un vcluster sont volontairement cluster-wide :
+# les namespaces vcluster-* apparaissent et disparaissent, on ne peut pas lister
+# des RoleBindings par namespace à l'avance. Le périmètre est donc borné par le
+# *type* de ressource, pas par le namespace. À resserrer le jour où un opérateur
+# par namespace deviendra réaliste.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vcluster-manager-operator
+rules:
+  # Le marqueur lui-même. Pas de `create` : l'opérateur ne fabrique pas de
+  # marqueur, il réconcilie ceux que l'app pose (séparation des rôles du
+  # design §6). Pas de `patch` sur l'objet entier non plus — le status a sa
+  # propre règle ci-dessous.
+  - apiGroups: ["vcluster.rebuild-it.fr"]
+    resources: ["vclusterveleroops"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["vcluster.rebuild-it.fr"]
+    resources: ["vclusterveleroops/status"]
+    verbs: ["get", "update", "patch"]
+
+  # Velero : créer un backup/restore et suivre leur phase.
+  # `delete` sur les backups sert à DeleteVeleroBackup, appelé par l'app et non
+  # par l'opérateur — retiré ici volontairement.
+  - apiGroups: ["velero.io"]
+    resources: ["backups", "restores"]
+    verbs: ["get", "list", "watch", "create"]
+
+  # Suspendre/reprendre Flux pendant une restauration in-place
+  # (SetFluxSuspend patche le HelmRelease et la Kustomization du tenant).
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "patch"]
+
+  # Descendre le vcluster à zéro réplique, puis constater que ses pods sont
+  # bien partis (detectVClusterTopology lit les deux formes de plan de contrôle,
+  # StatefulSet en etcd embarqué ou Deployment en etcd externe).
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+  # Le volume : lire son état pour savoir de quel côté du point de non-retour on
+  # se trouve à la reprise (GetVClusterPVCState), et le supprimer pendant la
+  # séquence pour que Velero puisse le recréer depuis le backup.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "delete"]
+
+  # Élection de leader : deux pods qui se chevauchent pendant un rolling update
+  # ne doivent pas piloter la même séquence destructrice.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vcluster-manager-operator
+  namespace: vcluster-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vcluster-manager-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vcluster-manager-operator
+subjects:
+  - kind: ServiceAccount
+    name: vcluster-manager-operator
+    namespace: vcluster-manager

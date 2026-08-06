@@ -17,6 +17,8 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/models"
+
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 )
 
 // backupNameRegex is the accepted shape of a Velero backup name: what Velero
@@ -71,8 +73,10 @@ func (e *stageErr) Error() string        { return e.cause.Error() }
 func (e *stageErr) Unwrap() error        { return e.cause }
 func (e *stageErr) Is(target error) bool { return target == e.sentinel }
 
-// isTerminalRestorePhase reports whether a restore is over, whatever the outcome.
-func isTerminalRestorePhase(phase string) bool {
+// IsTerminalRestorePhase reports whether a restore is over, whatever the
+// outcome. Exported because an operator-style caller needs the same notion of
+// "settled" as the service does, and two copies of it would drift.
+func IsTerminalRestorePhase(phase string) bool {
 	return phase == "Completed" || phase == "Failed" || phase == "PartiallyFailed"
 }
 
@@ -249,6 +253,24 @@ var ErrRestoreStageFailedVolumeGone = errors.New("restore stage failed after vol
 // point (creating the Restore object) leaves the vcluster suspended instead
 // — see ErrRestoreStageFailedVolumeGone.
 func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreView, error) {
+	return s.createVeleroRestore(ctx, actor, name, env, backupName, targetName, false)
+}
+
+// CreateVeleroRestoreUnwatched runs the exact same sequence as
+// CreateVeleroRestore but does not start resumeAfterInPlaceRestore: the caller
+// says it runs its own loop to watch the restore to completion and resume Flux.
+// Without this distinction a reconciler and the background goroutine would both
+// drive the same resume — two mechanisms for one job, which is what the operator
+// migration is meant to remove, not duplicate.
+//
+// Temporary: it exists only while the app and the operator coexist. Once the
+// operator owns this path, resumeAfterInPlaceRestore and veleroResumeStates go
+// away and this becomes the only behaviour.
+func (s *Service) CreateVeleroRestoreUnwatched(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreView, error) {
+	return s.createVeleroRestore(ctx, actor, name, env, backupName, targetName, true)
+}
+
+func (s *Service) createVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string, callerOwnsFollowUp bool) (VeleroRestoreView, error) {
 	if !actor.IsAdmin {
 		return VeleroRestoreView{}, ErrForbidden
 	}
@@ -328,8 +350,10 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 	// An in-place restore leaves Flux suspended and the vcluster at zero
 	// replicas until it ends. Browser polling can't be trusted with that —
 	// close the tab and the vcluster stays down — so watch it here too,
-	// independent of the request.
-	if inPlace {
+	// independent of the request. Unless the caller says it owns the follow-up,
+	// in which case starting this would make two mechanisms race for the same
+	// resume (see CreateVeleroRestoreUnwatched).
+	if inPlace && !callerOwnsFollowUp {
 		go s.resumeAfterInPlaceRestore(k8s, name, restoreName, s.cfg.VeleroNamespace)
 	}
 
@@ -354,6 +378,342 @@ func (s *Service) abortInPlaceRestore(k8s *kubernetes.StatusClient, name string)
 	if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
 		slog.Error("could not resume flux after aborting in-place restore", "vcluster", name, "err", err)
 	}
+}
+
+// AbortInPlaceRestore resumes Flux on a vcluster left suspended and scaled to
+// zero by an in-place restore sequence that stopped partway through. Admin only.
+//
+// CreateVeleroRestore already does this itself when it aborts within a single
+// call. This is for the case it cannot cover: a caller that was interrupted
+// mid-sequence and, on its way back, established from its own durable record
+// that it stopped BEFORE the PVC was deleted — the volume is intact, so putting
+// the vcluster back is the repair. Do not call it once the volume is gone:
+// resuming Flux there lets the StatefulSet recreate an empty PVC and masks the
+// failure (see ErrRestoreStageFailedVolumeGone).
+func (s *Service) AbortInPlaceRestore(ctx context.Context, actor models.Actor, name, env string) error {
+	if !actor.IsAdmin {
+		return ErrForbidden
+	}
+	if !validName(name) {
+		return ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return ErrK8sUnavailable
+	}
+
+	if err := k8s.SetFluxSuspend(ctx, name, false); err != nil {
+		return err
+	}
+	audit.LogActor(actor.Username, "velero-restore-abort", name, env)
+	return nil
+}
+
+// VeleroBackupRequested is the acknowledgement of a declaratively requested
+// backup: the order is posted, the operator will carry it out.
+type VeleroBackupRequested struct {
+	RequestedAt string
+	Name        string
+	Env         string
+}
+
+// VeleroTriggerModeAnnotation selects the declarative path in
+// cfg.VeleroTriggerMode. Anything else means the historical direct path.
+const VeleroTriggerModeAnnotation = "annotation"
+
+// newRequestNonce builds the value of a requestedAt annotation: readable,
+// ordered, and compared as-is by the operator to decide whether a request is new.
+//
+// Nanosecond precision, not second: two requests within the same second would
+// otherwise produce the same nonce, and the second one would be silently
+// swallowed as "already handled". Harmless for a double-clicked backup, not
+// harmless for a restore of a different backup.
+func newRequestNonce() string {
+	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+// VeleroRestoreRequested is the acknowledgement of a declaratively requested
+// restore.
+type VeleroRestoreRequested struct {
+	RequestedAt string
+	FromBackup  string
+	Target      string
+	Name        string
+	Env         string
+	InPlace     bool
+}
+
+// RequestVeleroRestore asks for a restore by annotating the vcluster's
+// VClusterVeleroOps marker. Admin only.
+//
+// It runs the same authorization and validation as CreateVeleroRestore, and
+// writes the same audit line, at the moment a human asked. What it does NOT do is
+// check that the backup is restorable: that check has to happen immediately
+// before the destructive sequence, not minutes earlier when the order was
+// posted — CreateVeleroRestore still does it, in the operator, where it belongs.
+func (s *Service) RequestVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreRequested, error) {
+	if !actor.IsAdmin {
+		return VeleroRestoreRequested{}, ErrForbidden
+	}
+	if backupName == "" {
+		return VeleroRestoreRequested{}, ErrBackupNameRequired
+	}
+	if !validBackupName(backupName) {
+		return VeleroRestoreRequested{}, ErrInvalidBackupName
+	}
+	if !validName(name) {
+		return VeleroRestoreRequested{}, ErrInvalidName
+	}
+	if targetName != "" && !validName(targetName) {
+		return VeleroRestoreRequested{}, ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return VeleroRestoreRequested{}, ErrK8sUnavailable
+	}
+
+	// A cross-vcluster restore is driven by the *target's* marker: the target
+	// always exists, whereas the source may be long gone (design §10 bonus).
+	markerVCluster := name
+	if targetName != "" && targetName != name {
+		markerVCluster = targetName
+	}
+
+	requestedAt := newRequestNonce()
+	annotations := map[string]string{
+		v1alpha1.AnnRestoreRequestedAt: requestedAt,
+		v1alpha1.AnnRestoreFromBackup:  backupName,
+		v1alpha1.AnnRestoreRequestedBy: actor.Username,
+	}
+	if err := k8s.RequestVeleroOps(ctx, markerVCluster, annotations); err != nil {
+		return VeleroRestoreRequested{}, err
+	}
+
+	audit.LogActor(actor.Username, "velero-restore-request", name, env,
+		"backup="+backupName, "marqueur="+markerVCluster)
+
+	return VeleroRestoreRequested{
+		RequestedAt: requestedAt,
+		FromBackup:  backupName,
+		Target:      targetName,
+		Name:        markerVCluster,
+		Env:         env,
+		InPlace:     targetName == "" || targetName == name,
+	}, nil
+}
+
+// StartVeleroRestore is the single entry point adapters call for a restore,
+// picking the path from cfg.VeleroTriggerMode. Same reasoning as
+// StartVeleroBackup: the switch belongs in one place.
+//
+// On the deferred path RestoreName is empty — the Velero Restore does not exist
+// yet, the operator creates it. An adapter must therefore follow the marker's
+// status rather than a restore name.
+func (s *Service) StartVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreView, error) {
+	if s.cfg.VeleroTriggerMode != VeleroTriggerModeAnnotation {
+		return s.CreateVeleroRestore(ctx, actor, name, env, backupName, targetName)
+	}
+	req, err := s.RequestVeleroRestore(ctx, actor, name, env, backupName, targetName)
+	if err != nil {
+		return VeleroRestoreView{}, err
+	}
+	return VeleroRestoreView{
+		RestoreName: "", // deferred: the operator names it
+		Phase:       "New",
+		Name:        req.Name,
+		Env:         req.Env,
+		BackupName:  req.FromBackup,
+		InPlace:     req.InPlace,
+	}, nil
+}
+
+// VeleroBackupAck is what an adapter gets back from StartVeleroBackup. Exactly
+// one of the two fields is set, and which one says who is doing the work:
+// BackupName means Velero was called from this request, RequestedAt means the
+// order was posted for the operator.
+type VeleroBackupAck struct {
+	BackupName  string
+	RequestedAt string
+	Name        string
+	Env         string
+}
+
+// Deferred reports whether the backup was handed to the operator rather than
+// created on the spot.
+func (a VeleroBackupAck) Deferred() bool { return a.BackupName == "" }
+
+// StartVeleroBackup is the single entry point adapters call for an on-demand
+// backup. It picks the path from cfg.VeleroTriggerMode so the decision lives in
+// one place — the alternative, an if in every adapter, is how a migration switch
+// ends up half-applied.
+//
+// Migration switch: it disappears with the direct path once the operator owns
+// this (docs/poc-operator-tech-decision.md §6).
+func (s *Service) StartVeleroBackup(ctx context.Context, actor models.Actor, name, env string) (VeleroBackupAck, error) {
+	if s.cfg.VeleroTriggerMode == VeleroTriggerModeAnnotation {
+		res, err := s.RequestVeleroBackup(ctx, actor, name, env)
+		if err != nil {
+			return VeleroBackupAck{}, err
+		}
+		return VeleroBackupAck{RequestedAt: res.RequestedAt, Name: res.Name, Env: res.Env}, nil
+	}
+	res, err := s.TriggerVeleroBackup(ctx, actor, name, env)
+	if err != nil {
+		return VeleroBackupAck{}, err
+	}
+	return VeleroBackupAck{BackupName: res.BackupName, Name: res.Name, Env: res.Env}, nil
+}
+
+// RequestVeleroBackup asks for a backup by annotating the vcluster's
+// VClusterVeleroOps marker, instead of calling Velero itself. Admin only.
+//
+// This is the declarative entry point (design §6): the authorization check and
+// the audit line stay here, at the moment a human asked and with their identity,
+// while the execution — and its own audit line — happens in the operator. The
+// two together answer "who asked, when" and "what ran, when", which one
+// synchronous call could never separate.
+//
+// It returns as soon as the order is posted. That is not a regression in
+// responsiveness: TriggerVeleroBackup already returned before Velero had
+// finished, and the UI already polled for the phase.
+func (s *Service) RequestVeleroBackup(ctx context.Context, actor models.Actor, name, env string) (VeleroBackupRequested, error) {
+	if !actor.IsAdmin {
+		return VeleroBackupRequested{}, ErrForbidden
+	}
+	if !validName(name) {
+		return VeleroBackupRequested{}, ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return VeleroBackupRequested{}, ErrK8sUnavailable
+	}
+
+	requestedAt := newRequestNonce()
+	if err := k8s.RequestVeleroOps(ctx, name, map[string]string{
+		v1alpha1.AnnBackupRequestedAt: requestedAt,
+	}); err != nil {
+		return VeleroBackupRequested{}, err
+	}
+
+	audit.LogActor(actor.Username, "velero-backup-request", name, env, "requestedAt="+requestedAt)
+	return VeleroBackupRequested{RequestedAt: requestedAt, Name: name, Env: env}, nil
+}
+
+// GetVeleroOpsRestoreStatus reports the restore status the operator publishes on
+// a vcluster's marker, in the same shape as GetVeleroRestoreStatus so an adapter
+// can render both with one template. Read-only, no privilege required.
+//
+// The two differ on one point: here the service does not attempt the Flux resume
+// itself. The operator owns that, and its own reconcile loop retries it — a
+// second mechanism poking at it from a browser poll is exactly what this
+// migration removes.
+func (s *Service) GetVeleroOpsRestoreStatus(ctx context.Context, name, env string) (VeleroRestoreStatusView, error) {
+	if !validName(name) {
+		return VeleroRestoreStatusView{}, ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return VeleroRestoreStatusView{}, ErrK8sUnavailable
+	}
+
+	st, err := k8s.GetVeleroOpsRestoreState(ctx, name)
+	if err != nil {
+		return VeleroRestoreStatusView{}, err
+	}
+	if !st.Found || st.Phase == "" {
+		// The order is posted but the operator has not written anything yet.
+		// "New" keeps the adapter polling instead of declaring an outcome.
+		return VeleroRestoreStatusView{Name: name, Env: env, Phase: "New"}, nil
+	}
+
+	return VeleroRestoreStatusView{
+		RestoreName:     st.RestoreName,
+		Phase:           st.Phase,
+		Name:            name,
+		Env:             env,
+		InPlace:         st.InPlace,
+		ResumePending:   st.ResumePending,
+		ResumeFailed:    st.ResumeFailed,
+		ResumeError:     st.ResumeError,
+		VolumeDestroyed: st.VolumeDestroyed,
+	}, nil
+}
+
+// InterruptedRestoreView is what the cluster says about a restore sequence that
+// was interrupted partway through — enough to decide what to do about it without
+// having had to write down the progress beforehand.
+type InterruptedRestoreView struct {
+	// VolumeGone is true when the data PVC is absent or already being deleted:
+	// the sequence got past the point of no return, so resuming Flux would let
+	// the StatefulSet recreate an empty volume and mask the loss.
+	VolumeGone bool
+	// ActiveRestoreName is a non-terminal Velero Restore targeting this
+	// vcluster, if there is one. Its presence means the sequence did reach the
+	// end — the restore is running and only needs following, not repairing.
+	ActiveRestoreName string
+	// ActiveRestorePhase is that restore's phase, empty if there is none.
+	ActiveRestorePhase string
+}
+
+// InspectInterruptedRestore observes the state an interrupted in-place restore
+// left behind. Read-only, no privilege required.
+//
+// It replaces the alternative of persisting each step as it happens: the two
+// facts that matter are already in the cluster, and reading them is more
+// reliable than trusting a record written by a process that then died — a record
+// can be stale or optimistic, the PVC cannot.
+func (s *Service) InspectInterruptedRestore(ctx context.Context, name, env string) (InterruptedRestoreView, error) {
+	if !validName(name) {
+		return InterruptedRestoreView{}, ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return InterruptedRestoreView{}, ErrK8sUnavailable
+	}
+
+	exists, deleting, err := k8s.GetVClusterPVCState(ctx, name)
+	if err != nil {
+		return InterruptedRestoreView{}, err
+	}
+
+	view := InterruptedRestoreView{VolumeGone: !exists || deleting}
+
+	// A restore may have been created just before the interruption, without the
+	// caller ever learning its name. Finding it here is what stops the recovery
+	// from mistaking a running restore for a lost volume.
+	active, err := k8s.ListActiveVeleroRestores(ctx, name, s.cfg.VeleroNamespace)
+	if err != nil {
+		return InterruptedRestoreView{}, err
+	}
+	if len(active) > 0 {
+		view.ActiveRestoreName = active[0].Name
+		view.ActiveRestorePhase = active[0].Phase
+	}
+	return view, nil
+}
+
+// GetVeleroBackupPhase returns the phase of a single backup. Read-only, no
+// privilege required, like GetVeleroBackups — which is what a caller had to use
+// to answer this question until now, listing every backup of the vcluster to
+// look at one of them.
+func (s *Service) GetVeleroBackupPhase(ctx context.Context, backup, env string) (string, error) {
+	if backup == "" {
+		return "", ErrBackupNameRequired
+	}
+	if !validBackupName(backup) {
+		return "", ErrInvalidBackupName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return "", ErrK8sUnavailable
+	}
+	return k8s.GetVeleroBackupPhase(ctx, backup, s.cfg.VeleroNamespace)
 }
 
 // veleroResumeState is the settled outcome of resuming Flux after an
@@ -404,7 +764,11 @@ func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
-	ticker := time.NewTicker(10 * time.Second)
+	interval := s.resumeWatchInterval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	terminalSeen := false
@@ -425,7 +789,7 @@ func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, 
 					slog.Warn("polling restore failed", "restore", restoreName, "err", err)
 					continue
 				}
-				if !isTerminalRestorePhase(phase) {
+				if !IsTerminalRestorePhase(phase) {
 					continue
 				}
 				terminalSeen = true
@@ -494,7 +858,7 @@ func (s *Service) GetVeleroRestoreStatus(ctx context.Context, name, restoreName,
 
 	var resumePending, resumeFailed bool
 	var resumeErrMsg string
-	if inPlace && isTerminalRestorePhase(phase) {
+	if inPlace && IsTerminalRestorePhase(phase) {
 		if state, resolved := s.veleroResumeResult(restoreName); resolved {
 			resumeFailed = state.failed
 			resumeErrMsg = state.errMsg

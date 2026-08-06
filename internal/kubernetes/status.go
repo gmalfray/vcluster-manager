@@ -44,6 +44,11 @@ var (
 		Version:  "v1",
 		Resource: "backups",
 	}
+	veleroOpsGVR = schema.GroupVersionResource{
+		Group:    "vcluster.rebuild-it.fr",
+		Version:  "v1alpha1",
+		Resource: "vclusterveleroops",
+	}
 	veleroDownloadRequestGVR = schema.GroupVersionResource{
 		Group:    "velero.io",
 		Version:  "v1",
