@@ -50,7 +50,7 @@ func TestValidBackupName(t *testing.T) {
 	}
 }
 
-// --- isTerminalRestorePhase ---
+// --- IsTerminalRestorePhase ---
 
 func TestIsTerminalRestorePhase(t *testing.T) {
 	tests := []struct {
@@ -65,8 +65,8 @@ func TestIsTerminalRestorePhase(t *testing.T) {
 		{"", false},
 	}
 	for _, tt := range tests {
-		if got := isTerminalRestorePhase(tt.phase); got != tt.want {
-			t.Errorf("isTerminalRestorePhase(%q) = %v, want %v", tt.phase, got, tt.want)
+		if got := IsTerminalRestorePhase(tt.phase); got != tt.want {
+			t.Errorf("IsTerminalRestorePhase(%q) = %v, want %v", tt.phase, got, tt.want)
 		}
 	}
 }

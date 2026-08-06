@@ -113,26 +113,20 @@ func (r *VeleroOpsReconciler) reconcileBackup(ctx context.Context, ops *v1alpha1
 		return 0, nil
 	}
 
-	view, err := r.Ops.GetVeleroBackups(ctx, ops.Spec.VClusterName, ops.Spec.Env)
+	phase, err := r.Ops.GetVeleroBackupPhase(ctx, st.BackupName, ops.Spec.Env)
 	if err != nil {
 		return r.requeue(), err
 	}
-	for _, b := range view.Backups {
-		if b.Name != st.BackupName {
-			continue
-		}
-		st.Phase = b.Phase
-		switch {
-		case b.Phase == "Completed":
-			setCond(ops, v1alpha1.CondBackupCompleted, metav1.ConditionTrue, "Completed",
-				fmt.Sprintf("backup %s terminé", b.Name))
-			return 0, nil
-		case veleroops.IsTerminalBackupPhase(b.Phase):
-			setCond(ops, v1alpha1.CondBackupCompleted, metav1.ConditionFalse, "Failed",
-				fmt.Sprintf("backup %s en phase %s", b.Name, b.Phase))
-			return 0, nil
-		}
-		return r.requeue(), nil
+	st.Phase = phase
+	switch {
+	case phase == "Completed":
+		setCond(ops, v1alpha1.CondBackupCompleted, metav1.ConditionTrue, "Completed",
+			fmt.Sprintf("backup %s terminé", st.BackupName))
+		return 0, nil
+	case veleroops.IsTerminalBackupPhase(phase):
+		setCond(ops, v1alpha1.CondBackupCompleted, metav1.ConditionFalse, "Failed",
+			fmt.Sprintf("backup %s en phase %s", st.BackupName, phase))
+		return 0, nil
 	}
 	return r.requeue(), nil
 }
@@ -189,7 +183,7 @@ func (r *VeleroOpsReconciler) startRestore(ctx context.Context, ops *v1alpha1.VC
 
 	// The guard the imperative path lacks: never let a second sequence start
 	// while the first is still running.
-	if st.RestoreName != "" && !veleroops.IsTerminalRestorePhase(st.Phase) {
+	if st.RestoreName != "" && !service.IsTerminalRestorePhase(st.Phase) {
 		setCond(ops, v1alpha1.CondRestoreRejectedBusy, metav1.ConditionTrue, "AlreadyRunning",
 			fmt.Sprintf("restauration %s en cours (phase %s) : demande %s différée", st.RestoreName, st.Phase, requestedAt))
 		// The annotation is NOT consumed, so the request is honoured once the
@@ -222,8 +216,9 @@ func (r *VeleroOpsReconciler) startRestore(ctx context.Context, ops *v1alpha1.VC
 		return 0, err
 	}
 
-	view, err := r.Ops.CreateVeleroRestore(ctx, SystemActor,
-		ops.Spec.VClusterName, ops.Spec.Env, fromBackup, target, r.stageWriter(ops))
+	view, err := r.Ops.CreateVeleroRestoreWithHooks(ctx, SystemActor,
+		ops.Spec.VClusterName, ops.Spec.Env, fromBackup, target,
+		service.RestoreHooks{OnStage: r.stageWriter(ops), OwnsFollowUp: true})
 	if err != nil {
 		return 0, r.recordRestoreFailure(ops, err)
 	}
@@ -238,9 +233,9 @@ func (r *VeleroOpsReconciler) startRestore(ctx context.Context, ops *v1alpha1.VC
 // stageWriter persists a stage through the /status subresource before the step
 // it announces runs. A failure here aborts the sequence rather than letting it
 // proceed unrecorded.
-func (r *VeleroOpsReconciler) stageWriter(ops *v1alpha1.VClusterVeleroOps) veleroops.StageFunc {
-	return func(ctx context.Context, stage v1alpha1.RestoreStage) error {
-		ops.Status.Restore.Stage = stage
+func (r *VeleroOpsReconciler) stageWriter(ops *v1alpha1.VClusterVeleroOps) func(context.Context, service.RestoreStage) error {
+	return func(ctx context.Context, stage service.RestoreStage) error {
+		ops.Status.Restore.Stage = v1alpha1.RestoreStage(stage)
 		if err := r.Status().Update(ctx, ops); err != nil {
 			return fmt.Errorf("persistance de l'étape %s : %w", stage, err)
 		}
@@ -265,6 +260,12 @@ func (r *VeleroOpsReconciler) recordRestoreFailure(ops *v1alpha1.VClusterVeleroO
 			"volume supprimé et Restore non créé : vcluster laissé suspendu, un nouveau restore est nécessaire — "+err.Error())
 	case errors.Is(err, service.ErrRestoreStageFailed):
 		// Failed before the point of no return; the service resumed Flux itself.
+		// Clear the stage: it may say PVCDeleted (announced before the delete that
+		// then failed), and leaving it there would make the next reconcile treat
+		// this as an interrupted sequence past the point of no return and report
+		// a volume loss that did not happen. The failure is already recorded in
+		// the conditions; the stage marker has done its job.
+		st.Stage = ""
 		setCond(ops, v1alpha1.CondRestoreNeedsRetry, metav1.ConditionTrue, "StageFailed",
 			"séquence abandonnée avant suppression du volume, Flux repris par le service — "+err.Error())
 	case errors.Is(err, service.ErrForbidden):
@@ -280,7 +281,7 @@ func (r *VeleroOpsReconciler) recordRestoreFailure(ops *v1alpha1.VClusterVeleroO
 // a goroutine with a 2h timeout and no memory of a restart.
 func (r *VeleroOpsReconciler) followRestore(ctx context.Context, ops *v1alpha1.VClusterVeleroOps) (time.Duration, error) {
 	st := &ops.Status.Restore
-	if veleroops.IsTerminalRestorePhase(st.Phase) && !st.ResumePending {
+	if service.IsTerminalRestorePhase(st.Phase) && !st.ResumePending {
 		return 0, nil
 	}
 
@@ -296,7 +297,7 @@ func (r *VeleroOpsReconciler) followRestore(ctx context.Context, ops *v1alpha1.V
 	st.ResumeError = view.ResumeError
 	st.VolumeDestroyed = view.VolumeDestroyed
 
-	if !veleroops.IsTerminalRestorePhase(view.Phase) {
+	if !service.IsTerminalRestorePhase(view.Phase) {
 		setCond(ops, v1alpha1.CondRestoreInProgress, metav1.ConditionTrue, "InProgress",
 			fmt.Sprintf("restauration %s en phase %s", st.RestoreName, view.Phase))
 		return r.requeue(), nil

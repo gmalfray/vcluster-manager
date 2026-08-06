@@ -12,31 +12,36 @@ import (
 )
 
 // fakeOps stands in for *service.Service. It fakes only what talks to a live
-// cluster (Velero, Flux, PVCs) — the shapes it returns are the service's own
-// types, so the reconciler under test is wired to the real contract.
+// cluster (Velero, Flux, PVCs); its shapes are the service's own types, and
+// veleroops/seam_assert.go proves the real service satisfies the same interface.
+// So these tests exercise the reconcile semantics without a cluster, while the
+// service's own tests cover the sequence itself.
 type fakeOps struct {
 	mu sync.Mutex
 
 	// scripted behaviour
-	backupName     string
-	backupErr      error
-	backupPhases   []string // consumed one per GetVeleroBackups call
-	restoreName    string
-	restoreErr     error
-	stagesToRun    []v1alpha1.RestoreStage
+	backupName   string
+	backupErr    error
+	backupPhases []string // consumed one per GetVeleroBackupPhase call
+	restoreName  string
+	restoreErr   error
+	stagesToRun  []service.RestoreStage
+	// restoreStatus is consumed one per GetVeleroRestoreStatus call; the last
+	// entry repeats.
 	restoreStatus  []service.VeleroRestoreStatusView
 	abortErr       error
-	failAfterStage v1alpha1.RestoreStage // stop the sequence here with an error
+	failAfterStage service.RestoreStage // stop the sequence here with an error
 	// panicAfterStage simulates the process being killed right after a stage was
 	// durably recorded: the reconcile never returns, so nothing else is written
-	// to status. Only what stageWriter already persisted survives.
-	panicAfterStage v1alpha1.RestoreStage
+	// to status. Only what the stage hook already persisted survives.
+	panicAfterStage service.RestoreStage
 
 	// observed calls
 	triggerBackupCalls int
 	createRestoreCalls int
 	statusCalls        int
 	abortCalls         int
+	ownedFollowUp      bool
 	stagesReported     []v1alpha1.RestoreStage
 }
 
@@ -44,7 +49,7 @@ var _ veleroops.Ops = (*fakeOps)(nil)
 
 // errCrash is what a killed process looks like from inside the sequence: the
 // step after the last reported stage never happens.
-type errCrash struct{ stage v1alpha1.RestoreStage }
+type errCrash struct{ stage service.RestoreStage }
 
 func (e *errCrash) Error() string { return "process killed after stage " + string(e.stage) }
 
@@ -58,7 +63,7 @@ func (f *fakeOps) TriggerVeleroBackup(_ context.Context, _ models.Actor, name, e
 	return service.VeleroBackupCreated{BackupName: f.backupName, Name: name, Env: env}, nil
 }
 
-func (f *fakeOps) GetVeleroBackups(_ context.Context, name, env string) (service.VeleroBackupsView, error) {
+func (f *fakeOps) GetVeleroBackupPhase(_ context.Context, _, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	phase := "InProgress"
@@ -68,18 +73,13 @@ func (f *fakeOps) GetVeleroBackups(_ context.Context, name, env string) (service
 			f.backupPhases = f.backupPhases[1:]
 		}
 	}
-	return service.VeleroBackupsView{
-		Name: name,
-		Env:  env,
-		Backups: []models.VeleroBackupInfo{
-			{Name: f.backupName, Phase: phase},
-		},
-	}, nil
+	return phase, nil
 }
 
-func (f *fakeOps) CreateVeleroRestore(ctx context.Context, _ models.Actor, name, env, backupName, targetName string, onStage veleroops.StageFunc) (service.VeleroRestoreView, error) {
+func (f *fakeOps) CreateVeleroRestoreWithHooks(ctx context.Context, _ models.Actor, name, env, backupName, targetName string, hooks service.RestoreHooks) (service.VeleroRestoreView, error) {
 	f.mu.Lock()
 	f.createRestoreCalls++
+	f.ownedFollowUp = hooks.OwnsFollowUp
 	stages := f.stagesToRun
 	crashAt := f.failAfterStage
 	killAt := f.panicAfterStage
@@ -88,11 +88,13 @@ func (f *fakeOps) CreateVeleroRestore(ctx context.Context, _ models.Actor, name,
 	f.mu.Unlock()
 
 	for _, stage := range stages {
-		if reportErr := onStage(ctx, stage); reportErr != nil {
-			return service.VeleroRestoreView{}, reportErr
+		if hooks.OnStage != nil {
+			if reportErr := hooks.OnStage(ctx, stage); reportErr != nil {
+				return service.VeleroRestoreView{}, reportErr
+			}
 		}
 		f.mu.Lock()
-		f.stagesReported = append(f.stagesReported, stage)
+		f.stagesReported = append(f.stagesReported, v1alpha1.RestoreStage(stage))
 		f.mu.Unlock()
 		if killAt != "" && stage == killAt {
 			panic(&errCrash{stage: stage})
@@ -152,4 +154,10 @@ func (f *fakeOps) stages() []v1alpha1.RestoreStage {
 	out := make([]v1alpha1.RestoreStage, len(f.stagesReported))
 	copy(out, f.stagesReported)
 	return out
+}
+
+func (f *fakeOps) ownedTheFollowUp() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ownedFollowUp
 }

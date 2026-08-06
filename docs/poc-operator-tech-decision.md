@@ -1,11 +1,17 @@
 # POC opérateur — controller-runtime ou kro ? Verdict
 
-> Statut : **POC exécuté, verdict rendu.** 2026-08-06.
-> Code : [`poc/operator/`](../poc/operator/) — module Go séparé, 8 tests envtest verts.
+> Statut : **POC exécuté, verdict rendu, seam branché sur le vrai service.** 2026-08-06.
+> Code : [`poc/operator/`](../poc/operator/) — module Go séparé, 9 tests envtest verts (`-race`).
 > Prérequis lus : [`adr-001-source-de-verite.md`](adr-001-source-de-verite.md),
 > [`crd-vcluster.md`](crd-vcluster.md) §3.2bis et §7,
 > [`design-backup-restore-annotation.md`](design-backup-restore-annotation.md).
-> **Rien n'a été modifié dans `internal/service`** : le POC vit entièrement à côté.
+>
+> **Mise à jour (même jour, 2ᵉ passe)** : les 3 prérequis service du §5 sont **faits**, additifs,
+> avec leurs tests (`internal/service/velero_hooks_test.go`). Conséquence directe :
+> `var _ veleroops.Ops = (*service.Service)(nil)` **compile** — le contrôleur consomme désormais le
+> vrai service, plus une interface partiellement fictive. Les tests du reconciler gardent un fake
+> pour la couche qui parle au cluster, la séquence elle-même restant couverte par les tests du
+> service.
 
 ## 0. Verdict en une phrase
 
@@ -127,10 +133,11 @@ graphe statique.
 
 ## 5. Ce que le POC a trouvé dans le design et dans le service
 
-Findings de fond, à traiter avant l'implémentation réelle. Aucun n'invalide le
-design ; tous auraient été découverts en cours de route, plus cher.
+Findings de fond. Aucun n'invalide le design ; tous auraient été découverts en
+cours de route, plus cher. **1 à 5 sont faits** (2ᵉ passe, additifs, testés) ;
+6 à 8 restent des choix ouverts.
 
-1. **Le design §4 point 4 est infaisable tel quel.** Il demande d'écrire
+1. ✅ **Le design §4 point 4 est infaisable tel quel.** Il demande d'écrire
    `status.restore.stage` à chaque étape, tout en appelant
    `Service.CreateVeleroRestore` « sans aucune modification de sa séquence
    interne » (§4 point 3). Les deux ensemble sont contradictoires : la séquence
@@ -141,21 +148,31 @@ design ; tous auraient été découverts en cours de route, plus cher.
    annoncée — de sorte qu'une étape enregistrée ne soit jamais en retard sur la
    réalité (la direction dangereuse : croire le volume intact alors qu'il ne
    l'est plus). La séquence interne et les deux sentinelles ne bougent pas.
-2. **`abortInPlaceRestore` doit être exporté.** Reprendre une séquence
+   → **Fait** : `RestoreHooks{OnStage, OwnsFollowUp}` +
+   `CreateVeleroRestoreWithHooks`. `CreateVeleroRestore` devient une façade à
+   hooks vides, donc **les appelants web/REST et leurs tests sont inchangés**.
+   Le contrat « échec d'enregistrement ⇒ l'étape annoncée ne s'exécute pas » est
+   testé, et vérifié par mutation (neutraliser l'abandon fait tomber le test).
+2. ✅ **`abortInPlaceRestore` doit être exporté.** Reprendre une séquence
    interrompue *avant* le point de non-retour demande de reprendre Flux ; le
    service ne sait le faire qu'en interne, depuis `CreateVeleroRestore`.
-3. **La goroutine `resumeAfterInPlaceRestore` devient un second pilote.** En
+   → **Fait** : `AbortInPlaceRestore(ctx, actor, name, env)`, admin only,
+   validation du nom avant tout accès cluster, ligne d'audit dédiée.
+3. ✅ **La goroutine `resumeAfterInPlaceRestore` devient un second pilote.** En
    mode annotation, `CreateVeleroRestore` la lance toujours, en parallèle de la
-   boucle de reconcile : deux mécanismes pour la même reprise. Le
-   `VELERO_TRIGGER_MODE=annotation` du design §8 doit **aussi** la désactiver,
-   sinon on empile l'ancien et le nouveau au lieu de migrer. À terme,
-   `veleroResumeStates` + la goroutine disparaissent — c'est le status du
-   marqueur qui devient le registre.
-4. **Pas d'accesseur de phase pour un backup donné.** Le contrôleur poll via
-   `GetVeleroBackups`, qui liste tout et filtre côté appelant, alors que
-   `internal/kubernetes` a déjà `GetVeleroBackupPhase`. Petit ajout à exposer.
-5. **`isTerminalRestorePhase` est non exporté** ⇒ dupliqué dans le POC. À
-   exporter plutôt que garder deux copies.
+   boucle de reconcile : deux mécanismes pour la même reprise.
+   → **Fait** : `RestoreHooks.OwnsFollowUp` la neutralise, et un test à deux
+   branches vérifie les deux comportements (avec le flag : aucun poll ; sans :
+   le watcher poll comme avant). L'intervalle du watcher est devenu injectable
+   pour que « la goroutine a-t-elle démarré ? » soit observable en millisecondes
+   au lieu de dix secondes. À terme `veleroResumeStates` + la goroutine
+   disparaissent — le status du marqueur devient le registre.
+4. ✅ **Pas d'accesseur de phase pour un backup donné.** Le contrôleur pollait
+   via `GetVeleroBackups`, qui liste tout et filtre côté appelant, alors que
+   `internal/kubernetes` a déjà `GetVeleroBackupPhase`.
+   → **Fait** : `Service.GetVeleroBackupPhase(ctx, backup, env)`, read-only.
+5. ✅ **`isTerminalRestorePhase` non exporté** ⇒ dupliqué dans le POC.
+   → **Fait** : exporté en `IsTerminalRestorePhase`, la copie du POC supprimée.
 6. **Le TTL par demande (design §3) n'est pas honorable aujourd'hui** :
    `TriggerVeleroBackup` est figé sur `cfg.VeleroDefaultTTL`. Le POC enregistre
    `status.backup.requestedTTL` **et** `ttlHonoured: false` — écrit noir sur
@@ -170,16 +187,29 @@ design ; tous auraient été découverts en cours de route, plus cher.
    deux perd la demande, ce qui est la bonne direction : l'alternative relance
    une séquence destructrice à chaque redémarrage. Une nouvelle valeur
    d'annotation est le retry, et c'est un humain qui la pose.
+9. ✅ **Un piège que seule l'implémentation a fait apparaître** : puisqu'une
+   étape est annoncée **avant** de s'exécuter, un échec de la suppression du PVC
+   laisse `status.restore.stage == PVCDeleted` alors que le volume est intact —
+   et le service, lui, a bien repris Flux. Sans correctif, le reconcile suivant
+   lisait ce marqueur, concluait « interrompu après suppression du volume » et
+   signalait une perte de données qui n'a pas eu lieu. → **Corrigé** : sur
+   `ErrRestoreStageFailed` (donc en amont du point de non-retour), le contrôleur
+   remet `stage` à vide ; l'échec reste décrit par les conditions. C'est le
+   revers assumé du choix « le registre peut être en avance sur la réalité,
+   jamais en retard » : il faut nettoyer explicitement quand l'avance s'avère
+   fausse.
 
 ## 6. Suite
 
 Dans l'ordre, chaque étape restant petite et vérifiable :
 
-1. **Les 3 changements de service** (findings 1, 2, 3) — additifs, revue courte.
-   C'est le seul moment où on touche `internal/service`.
-2. **Câbler le vrai `*service.Service`** derrière `veleroops.Ops` et poser le
-   binaire opérateur + RBAC (`Role` scopé sur `vcluster-*`, cf. design §6 et le
-   finding #1 de `recette-1.4-findings.md` sur le `ClusterRole` insuffisant).
+1. ~~Les 3 changements de service~~ — **faits** (findings 1 à 5), additifs, avec
+   tests, toute la suite de l'app verte en `-race`.
+2. ~~Câbler le vrai `*service.Service` derrière `veleroops.Ops`~~ — **fait**,
+   l'assertion de type le prouve à la compilation. **Reste** : le binaire
+   opérateur + RBAC (`Role` scopé sur `vcluster-*`, cf. design §6 et le finding
+   #1 de `recette-1.4-findings.md` sur le `ClusterRole` insuffisant), et la
+   création du marqueur (à `Service.Create` ou paresseusement).
 3. **Chemin backup en prod d'abord** (non destructif) puis restore, derrière
    `VELERO_TRIGGER_MODE`, validé sur preprod au prochain `up.sh`.
 4. **Porter le chemin de suppression + finalizer** — le POC prioritaire de
@@ -193,10 +223,10 @@ Dans l'ordre, chaque étape restant petite et vérifiable :
 ## Note d'exécution
 
 Poste sans Go local : tout passe par un conteneur `golang:1.25` (voir
-`poc/operator/Makefile`). Le disque `/` était **plein à 100 %** pendant la
-session — la compilation `-race` échoue en `no space left on device` avant tout
-message clair. La suite tourne sans `-race` ; à rejouer avec quand il y aura de
-la place.
+`poc/operator/Makefile`). Le disque `/` était **plein à 100 %** au début de la
+session — la compilation `-race` échoue alors en `no space left on device` avant
+tout message clair. Après nettoyage, **tout tourne en `-race`**, POC et app, sans
+data race.
 
 Sources kro : [kro.run/docs/overview](https://kro.run/docs/overview/) ·
 [kubernetes-sigs/kro](https://github.com/kubernetes-sigs/kro)

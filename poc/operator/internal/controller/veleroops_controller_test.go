@@ -119,10 +119,10 @@ func TestRestoreKilledAfterPVCDeletionDoesNotResumeFlux(t *testing.T) {
 	ctx := context.Background()
 	dying := &fakeOps{
 		restoreName: "r-never-created",
-		stagesToRun: []v1alpha1.RestoreStage{
-			v1alpha1.StageFluxSuspended, v1alpha1.StageScaledDown, v1alpha1.StagePVCDeleted,
+		stagesToRun: []service.RestoreStage{
+			service.RestoreStageFluxSuspended, service.RestoreStageScaledDown, service.RestoreStagePVCDeleted,
 		},
-		panicAfterStage: v1alpha1.StagePVCDeleted,
+		panicAfterStage: service.RestoreStagePVCDeleted,
 	}
 	obj := newMarker(t, ctx, "restore-killed-late", map[string]string{
 		v1alpha1.AnnRestoreRequestedAt: "2026-08-06T17:00:00Z",
@@ -174,8 +174,8 @@ func TestRestoreKilledAfterPVCDeletionDoesNotResumeFlux(t *testing.T) {
 func TestRestoreKilledBeforePointOfNoReturnResumesFlux(t *testing.T) {
 	ctx := context.Background()
 	dying := &fakeOps{
-		stagesToRun:     []v1alpha1.RestoreStage{v1alpha1.StageFluxSuspended, v1alpha1.StageScaledDown},
-		panicAfterStage: v1alpha1.StageScaledDown,
+		stagesToRun:     []service.RestoreStage{service.RestoreStageFluxSuspended, service.RestoreStageScaledDown},
+		panicAfterStage: service.RestoreStageScaledDown,
 	}
 	obj := newMarker(t, ctx, "restore-killed-early", map[string]string{
 		v1alpha1.AnnRestoreRequestedAt: "2026-08-06T18:00:00Z",
@@ -273,7 +273,7 @@ func TestControllerWritesStatusOnly(t *testing.T) {
 	ops := &fakeOps{
 		backupName:  "manual-demo-2",
 		restoreName: "r-status-only",
-		stagesToRun: []v1alpha1.RestoreStage{v1alpha1.StageFluxSuspended, v1alpha1.StageScaledDown, v1alpha1.StagePVCDeleted},
+		stagesToRun: []service.RestoreStage{service.RestoreStageFluxSuspended, service.RestoreStageScaledDown, service.RestoreStagePVCDeleted},
 	}
 	r := newReconciler(ops)
 
@@ -311,6 +311,29 @@ func TestControllerWritesStatusOnly(t *testing.T) {
 	}
 	if got.Status.Restore.Stage != v1alpha1.StageRestoreCreated {
 		t.Fatalf("stage final = %q", got.Status.Restore.Stage)
+	}
+}
+
+// Property 7 — the controller must claim the follow-up, otherwise the service
+// starts its own background watcher and two mechanisms drive the same Flux
+// resume. That is finding #3 of the POC, and it is only correct if the
+// controller actually sets the flag.
+func TestControllerClaimsTheFollowUp(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeOps{
+		restoreName: "r-follow-up",
+		stagesToRun: []service.RestoreStage{service.RestoreStageFluxSuspended},
+	}
+	obj := newMarker(t, ctx, "owns-followup", map[string]string{
+		v1alpha1.AnnRestoreRequestedAt: "2026-08-06T21:00:00Z",
+		v1alpha1.AnnRestoreFromBackup:  "manual-demo-1",
+	})
+
+	if _, err := newReconciler(ops).Reconcile(ctx, reqFor(obj)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !ops.ownedTheFollowUp() {
+		t.Fatal("OwnsFollowUp non transmis : le service lancerait sa goroutine en parallèle de la boucle de reconcile")
 	}
 }
 

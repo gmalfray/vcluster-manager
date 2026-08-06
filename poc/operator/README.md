@@ -14,8 +14,8 @@ Design de référence : [`../../docs/design-backup-restore-annotation.md`](../..
 |---|---|
 | `api/v1alpha1/` | CRD marqueur `VClusterVeleroOps` (design §2 option B) — annotations de déclenchement + sous-ressource `status` |
 | `internal/veleroops/ops.go` | Le seam vers `internal/service`, écrit **dans les types du service** |
-| `internal/veleroops/seam_assert.go` | Assertions à la compilation : ce que `*service.Service` satisfait déjà, et ce qui manque |
-| `internal/controller/` | Le reconciler + la suite envtest (8 tests) |
+| `internal/veleroops/seam_assert.go` | `var _ Ops = (*service.Service)(nil)` — le vrai service satisfait tout, prouvé à la compilation |
+| `internal/controller/` | Le reconciler + la suite envtest (9 tests) |
 | `config/crd/` | Manifeste CRD généré |
 
 Module Go **séparé** (`replace` vers `../..`) : controller-runtime n'entre pas
@@ -43,8 +43,10 @@ erreur claire.
 ## Ce que le POC ne fait pas
 
 Pas de binaire opérateur déployable, pas de RBAC, pas de finalizer, pas de
-chemin de suppression — et aucun appel réel à Velero : la couche qui parle au
-cluster est un `fakeOps` scriptable. Ce qui est testé, c'est la **sémantique de
-reconcile** (idempotence, concurrence, reprise après redémarrage,
-sous-ressource `status`), pas l'intégration Velero, déjà couverte par les tests
-de `internal/service`.
+chemin de suppression — et, dans les tests, aucun appel réel à Velero : la
+couche qui parle au cluster est un `fakeOps` scriptable. Ce qui est testé ici,
+c'est la **sémantique de reconcile** (idempotence, concurrence, reprise après
+redémarrage, sous-ressource `status`) ; la séquence de restauration elle-même
+est couverte par les tests de `internal/service`. Le seam, lui, n'est pas
+fictif : le reconciler consomme l'interface que `*service.Service` satisfait
+réellement.

@@ -71,8 +71,10 @@ func (e *stageErr) Error() string        { return e.cause.Error() }
 func (e *stageErr) Unwrap() error        { return e.cause }
 func (e *stageErr) Is(target error) bool { return target == e.sentinel }
 
-// isTerminalRestorePhase reports whether a restore is over, whatever the outcome.
-func isTerminalRestorePhase(phase string) bool {
+// IsTerminalRestorePhase reports whether a restore is over, whatever the
+// outcome. Exported because an operator-style caller needs the same notion of
+// "settled" as the service does, and two copies of it would drift.
+func IsTerminalRestorePhase(phase string) bool {
 	return phase == "Completed" || phase == "Failed" || phase == "PartiallyFailed"
 }
 
@@ -249,6 +251,60 @@ var ErrRestoreStageFailedVolumeGone = errors.New("restore stage failed after vol
 // point (creating the Restore object) leaves the vcluster suspended instead
 // — see ErrRestoreStageFailedVolumeGone.
 func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (VeleroRestoreView, error) {
+	return s.CreateVeleroRestoreWithHooks(ctx, actor, name, env, backupName, targetName, RestoreHooks{})
+}
+
+// RestoreStage is how far the in-place restore sequence has got. It exists so a
+// caller that survives across process restarts (a reconciler) can persist the
+// progress somewhere durable, and know on the way back which side of the point
+// of no return — RestoreStagePVCDeleted — it is on. That single fact decides
+// whether resuming Flux is the repair or the thing that destroys the evidence,
+// which is why the sequence announces a stage BEFORE performing it: the record
+// may run ahead of reality, never behind it.
+type RestoreStage string
+
+const (
+	// RestoreStageFluxSuspended precedes suspending Flux. Volume intact.
+	RestoreStageFluxSuspended RestoreStage = "FluxSuspended"
+	// RestoreStageScaledDown precedes scaling the workloads to zero. Volume intact.
+	RestoreStageScaledDown RestoreStage = "ScaledDown"
+	// RestoreStagePVCDeleted precedes deleting the PVC: the point of no return.
+	RestoreStagePVCDeleted RestoreStage = "PVCDeleted"
+	// RestoreStageRestoreCreated follows the creation of the Velero Restore.
+	RestoreStageRestoreCreated RestoreStage = "RestoreCreated"
+)
+
+// RestoreHooks lets an operator-style caller take part in the restore sequence
+// without any of its logic moving out of the service. Both fields are zero for
+// the web and REST adapters, which keeps their behaviour exactly as it was.
+type RestoreHooks struct {
+	// OnStage is called just before each destructive step, and is expected to
+	// persist the stage durably before returning. Returning an error aborts the
+	// sequence *before* the step it announced runs — so a recorded stage is
+	// never behind reality. Nil means nobody is recording.
+	OnStage func(ctx context.Context, stage RestoreStage) error
+
+	// OwnsFollowUp tells the service that the caller runs its own loop to watch
+	// the restore to completion and resume Flux afterwards, so the service must
+	// NOT start resumeAfterInPlaceRestore. Without this, a reconciler and the
+	// background goroutine would both drive the same resume — two mechanisms
+	// for one job, which is what the operator migration is meant to remove, not
+	// duplicate.
+	OwnsFollowUp bool
+}
+
+// stage announces a stage to the caller, if one is listening.
+func (h RestoreHooks) stage(ctx context.Context, st RestoreStage) error {
+	if h.OnStage == nil {
+		return nil
+	}
+	return h.OnStage(ctx, st)
+}
+
+// CreateVeleroRestoreWithHooks is CreateVeleroRestore with the hooks described
+// on RestoreHooks. The sequence, its ordering and its two sentinel errors are
+// identical — the hooks only observe it and decide who watches the aftermath.
+func (s *Service) CreateVeleroRestoreWithHooks(ctx context.Context, actor models.Actor, name, env, backupName, targetName string, hooks RestoreHooks) (VeleroRestoreView, error) {
 	if !actor.IsAdmin {
 		return VeleroRestoreView{}, ErrForbidden
 	}
@@ -287,8 +343,15 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 			return VeleroRestoreView{}, &ErrBackupNotRestorable{Phase: phase}
 		}
 
+		if err := hooks.stage(ctx, RestoreStageFluxSuspended); err != nil {
+			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("enregistrement de l'étape : %w", err)}
+		}
 		if err := k8s.SetFluxSuspend(ctx, name, true); err != nil {
 			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suspension de Flux : %w", err)}
+		}
+		if err := hooks.stage(ctx, RestoreStageScaledDown); err != nil {
+			s.abortInPlaceRestore(k8s, name)
+			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("enregistrement de l'étape : %w", err)}
 		}
 		if err := k8s.ScaleVClusterWorkloads(ctx, name, 0); err != nil {
 			s.abortInPlaceRestore(k8s, name)
@@ -300,6 +363,14 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 		// would surface as an error.
 		if err := k8s.WaitForVClusterPodsGone(ctx, name, 30*time.Second); err != nil {
 			slog.Warn("pods didn't terminate in time, deleting PVC anyway", "vcluster", name, "err", err)
+		}
+		// Announced before the delete, so a caller that dies during it comes back
+		// assuming the volume may be gone. Pessimistic on purpose: the opposite
+		// mistake — believing the volume is intact when it is not — is the one
+		// that silently destroys data by resuming Flux onto an empty PVC.
+		if err := hooks.stage(ctx, RestoreStagePVCDeleted); err != nil {
+			s.abortInPlaceRestore(k8s, name)
+			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("enregistrement de l'étape : %w", err)}
 		}
 		if err := k8s.DeleteVClusterPVC(ctx, name); err != nil {
 			s.abortInPlaceRestore(k8s, name)
@@ -325,11 +396,20 @@ func (s *Service) CreateVeleroRestore(ctx context.Context, actor models.Actor, n
 
 	audit.LogActor(actor.Username, "velero-restore", name, env, "backup="+backupName, "target="+targetNS)
 
+	if err := hooks.stage(ctx, RestoreStageRestoreCreated); err != nil {
+		// The Restore exists; failing to record that is not worth undoing it,
+		// and resuming Flux now would fight the restore. Log and carry on: the
+		// caller still gets the restore name in the returned view.
+		slog.Error("could not record the RestoreCreated stage", "vcluster", name, "restore", restoreName, "err", err)
+	}
+
 	// An in-place restore leaves Flux suspended and the vcluster at zero
 	// replicas until it ends. Browser polling can't be trusted with that —
 	// close the tab and the vcluster stays down — so watch it here too,
-	// independent of the request.
-	if inPlace {
+	// independent of the request. Unless the caller says it owns the follow-up,
+	// in which case starting this would make two mechanisms race for the same
+	// resume (see RestoreHooks.OwnsFollowUp).
+	if inPlace && !hooks.OwnsFollowUp {
 		go s.resumeAfterInPlaceRestore(k8s, name, restoreName, s.cfg.VeleroNamespace)
 	}
 
@@ -354,6 +434,55 @@ func (s *Service) abortInPlaceRestore(k8s *kubernetes.StatusClient, name string)
 	if err := k8s.SetFluxSuspend(context.Background(), name, false); err != nil {
 		slog.Error("could not resume flux after aborting in-place restore", "vcluster", name, "err", err)
 	}
+}
+
+// AbortInPlaceRestore resumes Flux on a vcluster left suspended and scaled to
+// zero by an in-place restore sequence that stopped partway through. Admin only.
+//
+// CreateVeleroRestore already does this itself when it aborts within a single
+// call. This is for the case it cannot cover: a caller that was interrupted
+// mid-sequence and, on its way back, established from its own durable record
+// that it stopped BEFORE the PVC was deleted — the volume is intact, so putting
+// the vcluster back is the repair. Do not call it once the volume is gone:
+// resuming Flux there lets the StatefulSet recreate an empty PVC and masks the
+// failure (see ErrRestoreStageFailedVolumeGone).
+func (s *Service) AbortInPlaceRestore(ctx context.Context, actor models.Actor, name, env string) error {
+	if !actor.IsAdmin {
+		return ErrForbidden
+	}
+	if !validName(name) {
+		return ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return ErrK8sUnavailable
+	}
+
+	if err := k8s.SetFluxSuspend(ctx, name, false); err != nil {
+		return err
+	}
+	audit.LogActor(actor.Username, "velero-restore-abort", name, env)
+	return nil
+}
+
+// GetVeleroBackupPhase returns the phase of a single backup. Read-only, no
+// privilege required, like GetVeleroBackups — which is what a caller had to use
+// to answer this question until now, listing every backup of the vcluster to
+// look at one of them.
+func (s *Service) GetVeleroBackupPhase(ctx context.Context, backup, env string) (string, error) {
+	if backup == "" {
+		return "", ErrBackupNameRequired
+	}
+	if !validBackupName(backup) {
+		return "", ErrInvalidBackupName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return "", ErrK8sUnavailable
+	}
+	return k8s.GetVeleroBackupPhase(ctx, backup, s.cfg.VeleroNamespace)
 }
 
 // veleroResumeState is the settled outcome of resuming Flux after an
@@ -404,7 +533,11 @@ func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
-	ticker := time.NewTicker(10 * time.Second)
+	interval := s.resumeWatchInterval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	terminalSeen := false
@@ -425,7 +558,7 @@ func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, 
 					slog.Warn("polling restore failed", "restore", restoreName, "err", err)
 					continue
 				}
-				if !isTerminalRestorePhase(phase) {
+				if !IsTerminalRestorePhase(phase) {
 					continue
 				}
 				terminalSeen = true
@@ -494,7 +627,7 @@ func (s *Service) GetVeleroRestoreStatus(ctx context.Context, name, restoreName,
 
 	var resumePending, resumeFailed bool
 	var resumeErrMsg string
-	if inPlace && isTerminalRestorePhase(phase) {
+	if inPlace && IsTerminalRestorePhase(phase) {
 		if state, resolved := s.veleroResumeResult(restoreName); resolved {
 			resumeFailed = state.failed
 			resumeErrMsg = state.errMsg
