@@ -196,22 +196,32 @@ input[type="file"]::file-selector-button:hover {
   padding: 0 28px; gap: 8px;
 }
 .wf-nav-logo {
-  display: flex; align-items: center; gap: 10px;
-  margin-right: 24px; text-decoration: none; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  margin-right: 20px; text-decoration: none; flex-shrink: 0;
 }
+.wf-nav-logo-row { display: flex; align-items: center; gap: 10px; }
 .wf-nav-logo-sub {
   font-family: 'Space Grotesk', sans-serif; font-weight: 500;
   font-size: 0.72rem; color: var(--text-muted);
   letter-spacing: 0.06em; text-transform: uppercase;
 }
-/* Signature editeur discrete : produit vCluster « by Rebuild IT » (IT en accent charte) */
+/* Signature editeur, sur sa propre ligne sous le wordmark (finding recette 1.4.1
+   #1 : avant, elle etait collee au numero de version dans la meme ligne, illisible).
+   IT en accent charte. */
 .wf-nav-editor {
-  align-self: flex-end; margin-left: 14px; padding-bottom: 3px;
+  margin-left: 1px;
   font-family: 'Space Grotesk', sans-serif; font-weight: 600;
-  font-size: 0.66rem; letter-spacing: 0.02em; color: var(--text-muted);
-  white-space: nowrap; flex-shrink: 0;
+  font-size: 0.62rem; letter-spacing: 0.02em; color: var(--text-muted);
+  white-space: nowrap;
 }
 .wf-nav-editor-it { color: var(--accent); margin-left: 1px; }
+/* Numero de version : sorti du bloc logo, en pilule discrete a part (meme finding). */
+.wf-nav-version {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.68rem;
+  color: var(--text-muted); background: var(--surface2);
+  border: 1px solid var(--border-subtle); border-radius: 999px;
+  padding: 3px 9px; margin-right: 12px; flex-shrink: 0;
+}
 .wf-login-editor {
   margin: -6px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 600;
   font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-muted);
@@ -249,7 +259,7 @@ input[type="file"]::file-selector-button:hover {
 .wf-nav-user:hover { background: var(--surface); }
 .wf-nav-avatar {
   width: 30px; height: 30px; border-radius: 8px;
-  background: linear-gradient(135deg, var(--indigo), var(--cyan));
+  background: linear-gradient(135deg, var(--indigo), var(--green));
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
