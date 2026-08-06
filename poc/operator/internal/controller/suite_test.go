@@ -73,7 +73,6 @@ func newMarker(t *testing.T, ctx context.Context, name string, annotations map[s
 	}
 	obj := &v1alpha1.VClusterVeleroOps{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Annotations: annotations},
-		Spec:       v1alpha1.VClusterVeleroOpsSpec{VClusterName: name, Env: "preprod"},
 	}
 	if err := k8sClient.Create(ctx, obj); err != nil {
 		t.Fatalf("create marker: %v", err)
@@ -84,7 +83,17 @@ func newMarker(t *testing.T, ctx context.Context, name string, annotations map[s
 // newReconciler builds a reconciler with no shared state whatsoever, so calling
 // it twice with two different instances is a faithful stand-in for a restart.
 func newReconciler(ops *fakeOps) *VeleroOpsReconciler {
-	return &VeleroOpsReconciler{Client: k8sClient, Ops: ops, RequeueInterval: DefaultRequeueInterval}
+	return &VeleroOpsReconciler{Client: k8sClient, Ops: ops}
+}
+
+// seedRestoreStatus puts the marker in a given restore state, the way a restart
+// would find it.
+func seedRestoreStatus(t *testing.T, ctx context.Context, obj *v1alpha1.VClusterVeleroOps, st v1alpha1.RestoreOpsStatus) {
+	t.Helper()
+	obj.Status.Restore = st
+	if err := k8sClient.Status().Update(ctx, obj); err != nil {
+		t.Fatalf("seed status: %v", err)
+	}
 }
 
 func reqFor(obj *v1alpha1.VClusterVeleroOps) ctrl.Request {

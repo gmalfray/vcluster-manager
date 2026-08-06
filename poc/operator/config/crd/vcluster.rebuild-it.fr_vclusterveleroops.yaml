@@ -17,14 +17,8 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.vclusterName
-      name: VCluster
-      type: string
     - jsonPath: .status.restore.phase
       name: Restore
-      type: string
-    - jsonPath: .status.restore.stage
-      name: Stage
       type: string
     - jsonPath: .status.backup.phase
       name: Backup
@@ -33,8 +27,14 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          VClusterVeleroOps is the marker resource carrying backup/restore orders for
-          one vcluster.
+          VClusterVeleroOps carries backup/restore orders for one vcluster.
+
+          It has no spec at all, on purpose. The vcluster it drives is its own
+          metadata.name, in namespace vcluster-<name> — adding a spec.vclusterName would
+          be a third copy of the same string, and crd-vcluster.md §2.1 argues against
+          carrying an environment in spec (the operator runs in the environment it
+          reconciles). No spec also means metadata.generation never moves, which is why
+          there is no observedGeneration to report either.
         properties:
           apiVersion:
             description: |-
@@ -53,28 +53,6 @@ spec:
             type: string
           metadata:
             type: object
-          spec:
-            description: |-
-              VClusterVeleroOpsSpec is deliberately tiny: the marker holds no desired
-              state. A backup or a restore is an order, not a desired state (design §1) —
-              spec only says which vcluster the orders apply to.
-            properties:
-              env:
-                description: |-
-                  Env is vestigial for an in-cluster operator (crd-vcluster.md §2.1: one
-                  operator per host cluster) and kept only so the POC can call the
-                  existing service methods unchanged.
-                type: string
-              vclusterName:
-                description: |-
-                  VClusterName is the vcluster this marker drives. Its namespace
-                  (vcluster-<name>) is where the marker lives, so deleting the vcluster
-                  garbage-collects the marker without an ownerReference.
-                minLength: 1
-                type: string
-            required:
-            - vclusterName
-            type: object
           status:
             description: |-
               VClusterVeleroOpsStatus is written only through the /status subresource, by
@@ -92,17 +70,6 @@ spec:
                     type: string
                   phase:
                     type: string
-                  requestedTTL:
-                    description: |-
-                      RequestedTTL records a TTL asked for through AnnBackupTTL. The POC
-                      records it but cannot honour it: TriggerVeleroBackup is hardcoded on
-                      cfg.VeleroDefaultTTL. Written down rather than silently dropped.
-                    type: string
-                  ttlHonoured:
-                    description: |-
-                      TTLHonoured is false whenever RequestedTTL is set, until the service
-                      accepts a per-request TTL.
-                    type: boolean
                 type: object
               conditions:
                 items:
@@ -163,15 +130,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              observedGeneration:
-                format: int64
-                type: integer
               restore:
                 description: |-
-                  RestoreOpsStatus is a direct transcription of service.VeleroRestoreStatusView
-                  plus Stage: the controller does not invent a new contract, it writes the
-                  existing one to status instead of returning it over HTTP.
+                  RestoreOpsStatus is a direct transcription of service.VeleroRestoreStatusView:
+                  the controller does not invent a new contract, it writes the existing one to
+                  status instead of returning it over HTTP.
+
+                  Note what is deliberately absent: a record of how far the destructive sequence
+                  got. Both facts that matter — is the volume gone, is a restore running — are
+                  read back from the cluster on recovery (service.InspectInterruptedRestore),
+                  which cannot go stale the way a written record can.
                 properties:
+                  firstTerminalAt:
+                    description: |-
+                      FirstTerminalAt is when the restore was first seen settled. It is what
+                      makes the give-up bound survive a controller restart, unlike the in-memory
+                      deadline it replaces.
+                    format: date-time
+                    type: string
                   fromBackup:
                     type: string
                   inPlace:
@@ -188,9 +164,6 @@ spec:
                     type: boolean
                   resumePending:
                     type: boolean
-                  stage:
-                    description: Stage survives a controller restart. See RestoreStage.
-                    type: string
                   target:
                     description: Target empty means in-place.
                     type: string

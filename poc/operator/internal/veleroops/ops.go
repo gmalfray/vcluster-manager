@@ -24,11 +24,14 @@ type Ops interface {
 	// GetVeleroBackupPhase polls one backup's phase.
 	GetVeleroBackupPhase(ctx context.Context, backup, env string) (string, error)
 
-	// CreateVeleroRestoreWithHooks runs the restore sequence, announcing each
-	// destructive step through hooks.OnStage so the reconciler can persist it,
-	// and with hooks.OwnsFollowUp set so the service does not also start its
-	// own background watcher.
-	CreateVeleroRestoreWithHooks(ctx context.Context, actor models.Actor, name, env, backupName, targetName string, hooks service.RestoreHooks) (service.VeleroRestoreView, error)
+	// CreateVeleroRestoreUnwatched runs the restore sequence without starting the
+	// service's own background watcher: the reconcile loop owns the follow-up.
+	CreateVeleroRestoreUnwatched(ctx context.Context, actor models.Actor, name, env, backupName, targetName string) (service.VeleroRestoreView, error)
+
+	// InspectInterruptedRestore reads back, from the cluster, what an
+	// interrupted sequence left behind — whether the volume is gone, and whether
+	// a restore is already running.
+	InspectInterruptedRestore(ctx context.Context, name, env string) (service.InterruptedRestoreView, error)
 
 	// GetVeleroRestoreStatus polls a restore and, for an in-place one, reports
 	// whether Flux is actually back.

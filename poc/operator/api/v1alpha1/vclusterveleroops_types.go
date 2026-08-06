@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -12,42 +14,18 @@ const (
 	// AnnBackupRequestedAt carries an RFC3339 timestamp that changes on every
 	// backup request. Same value seen twice ⇒ nothing happens (§5 dedup).
 	AnnBackupRequestedAt = "backup.vcluster.rebuild-it.fr/requestedAt"
-	// AnnBackupTTL is optional; empty means the app's VeleroDefaultTTL.
-	AnnBackupTTL = "backup.vcluster.rebuild-it.fr/ttl"
 
 	// AnnRestoreRequestedAt is the restore counterpart of AnnBackupRequestedAt.
 	AnnRestoreRequestedAt = "restore.vcluster.rebuild-it.fr/requestedAt"
 	// AnnRestoreFromBackup is the Velero backup to restore. Required.
 	AnnRestoreFromBackup = "restore.vcluster.rebuild-it.fr/from-backup"
-	// AnnRestoreTarget is the destination vcluster. Empty or equal to
-	// spec.vclusterName means an in-place restore (the destructive path).
+	// AnnRestoreTarget is the destination vcluster. Empty or equal to the
+	// marker's own name means an in-place restore (the destructive path).
 	AnnRestoreTarget = "restore.vcluster.rebuild-it.fr/target"
 	// AnnRestoreRequestedBy is free-form traceability for a kubectl-driven
 	// request; the authoritative audit entry is written by the service when it
 	// patches the annotation (design §6 point 3).
 	AnnRestoreRequestedBy = "restore.vcluster.rebuild-it.fr/requested-by"
-)
-
-// RestoreStage is how far the in-place restore sequence of
-// service.CreateVeleroRestore has actually got. It is persisted in status
-// *before* each step runs, which is the whole point: a controller that dies
-// mid-sequence and comes back must know which side of the point of no return
-// (StagePVCDeleted) it is on, because that decides whether resuming Flux is
-// the repair or the thing that destroys the evidence.
-type RestoreStage string
-
-const (
-	// StageFluxSuspended: Flux suspended, volume still intact.
-	StageFluxSuspended RestoreStage = "FluxSuspended"
-	// StageScaledDown: workloads at 0 replicas, volume still intact.
-	StageScaledDown RestoreStage = "ScaledDown"
-	// StagePVCDeleted: point of no return — the volume is gone. Resuming Flux
-	// from here lets the StatefulSet recreate an empty PVC and hides the
-	// failure (service.ErrRestoreStageFailedVolumeGone).
-	StagePVCDeleted RestoreStage = "PVCDeleted"
-	// StageRestoreCreated: the Velero Restore object exists; from here on it is
-	// a poll-until-terminal, then resume Flux.
-	StageRestoreCreated RestoreStage = "RestoreCreated"
 )
 
 // Condition types surfaced on the marker (design §3, §4, crd-vcluster.md §3.3).
@@ -64,22 +42,11 @@ const (
 	CondRestoreNeedsRetry = "RestoreNeedsRetry"
 )
 
-// VClusterVeleroOpsSpec is deliberately tiny: the marker holds no desired
-// state. A backup or a restore is an order, not a desired state (design §1) —
-// spec only says which vcluster the orders apply to.
-type VClusterVeleroOpsSpec struct {
-	// VClusterName is the vcluster this marker drives. Its namespace
-	// (vcluster-<name>) is where the marker lives, so deleting the vcluster
-	// garbage-collects the marker without an ownerReference.
-	// +kubebuilder:validation:MinLength=1
-	VClusterName string `json:"vclusterName"`
-
-	// Env is vestigial for an in-cluster operator (crd-vcluster.md §2.1: one
-	// operator per host cluster) and kept only so the POC can call the
-	// existing service methods unchanged.
-	// +optional
-	Env string `json:"env,omitempty"`
-}
+// ResumeGiveUpAfter bounds how long the controller keeps trying to resume Flux
+// after a restore has settled. Past that it stops requeueing and says so, rather
+// than retrying every 10s forever — a vcluster stuck suspended is a real problem
+// someone has to be told about. Same budget as the goroutine this replaces.
+const ResumeGiveUpAfter = 2 * time.Hour
 
 // BackupOpsStatus reports the last handled backup request.
 type BackupOpsStatus struct {
@@ -91,20 +58,16 @@ type BackupOpsStatus struct {
 	BackupName string `json:"backupName,omitempty"`
 	// +optional
 	Phase string `json:"phase,omitempty"`
-	// RequestedTTL records a TTL asked for through AnnBackupTTL. The POC
-	// records it but cannot honour it: TriggerVeleroBackup is hardcoded on
-	// cfg.VeleroDefaultTTL. Written down rather than silently dropped.
-	// +optional
-	RequestedTTL string `json:"requestedTTL,omitempty"`
-	// TTLHonoured is false whenever RequestedTTL is set, until the service
-	// accepts a per-request TTL.
-	// +optional
-	TTLHonoured bool `json:"ttlHonoured,omitempty"`
 }
 
-// RestoreOpsStatus is a direct transcription of service.VeleroRestoreStatusView
-// plus Stage: the controller does not invent a new contract, it writes the
-// existing one to status instead of returning it over HTTP.
+// RestoreOpsStatus is a direct transcription of service.VeleroRestoreStatusView:
+// the controller does not invent a new contract, it writes the existing one to
+// status instead of returning it over HTTP.
+//
+// Note what is deliberately absent: a record of how far the destructive sequence
+// got. Both facts that matter — is the volume gone, is a restore running — are
+// read back from the cluster on recovery (service.InspectInterruptedRestore),
+// which cannot go stale the way a written record can.
 type RestoreOpsStatus struct {
 	// +optional
 	LastHandledRequestedAt string `json:"lastHandledRequestedAt,omitempty"`
@@ -117,11 +80,13 @@ type RestoreOpsStatus struct {
 	Target string `json:"target,omitempty"`
 	// +optional
 	InPlace bool `json:"inPlace,omitempty"`
-	// Stage survives a controller restart. See RestoreStage.
-	// +optional
-	Stage RestoreStage `json:"stage,omitempty"`
 	// +optional
 	Phase string `json:"phase,omitempty"`
+	// FirstTerminalAt is when the restore was first seen settled. It is what
+	// makes the give-up bound survive a controller restart, unlike the in-memory
+	// deadline it replaces.
+	// +optional
+	FirstTerminalAt *metav1.Time `json:"firstTerminalAt,omitempty"`
 	// +optional
 	ResumePending bool `json:"resumePending,omitempty"`
 	// +optional
@@ -138,8 +103,6 @@ type RestoreOpsStatus struct {
 // the controller only (design §5).
 type VClusterVeleroOpsStatus struct {
 	// +optional
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-	// +optional
 	Backup BackupOpsStatus `json:"backup,omitempty"`
 	// +optional
 	Restore RestoreOpsStatus `json:"restore,omitempty"`
@@ -149,23 +112,29 @@ type VClusterVeleroOpsStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// VClusterVeleroOps is the marker resource carrying backup/restore orders for
-// one vcluster.
+// VClusterVeleroOps carries backup/restore orders for one vcluster.
+//
+// It has no spec at all, on purpose. The vcluster it drives is its own
+// metadata.name, in namespace vcluster-<name> — adding a spec.vclusterName would
+// be a third copy of the same string, and crd-vcluster.md §2.1 argues against
+// carrying an environment in spec (the operator runs in the environment it
+// reconciles). No spec also means metadata.generation never moves, which is why
+// there is no observedGeneration to report either.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=vvo
-// +kubebuilder:printcolumn:name="VCluster",type=string,JSONPath=`.spec.vclusterName`
 // +kubebuilder:printcolumn:name="Restore",type=string,JSONPath=`.status.restore.phase`
-// +kubebuilder:printcolumn:name="Stage",type=string,JSONPath=`.status.restore.stage`
 // +kubebuilder:printcolumn:name="Backup",type=string,JSONPath=`.status.backup.phase`
 type VClusterVeleroOps struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   VClusterVeleroOpsSpec   `json:"spec,omitempty"`
 	Status VClusterVeleroOpsStatus `json:"status,omitempty"`
 }
+
+// VClusterName is the vcluster this marker drives.
+func (o *VClusterVeleroOps) VClusterName() string { return o.Name }
 
 // VClusterVeleroOpsList is the list form of VClusterVeleroOps.
 //

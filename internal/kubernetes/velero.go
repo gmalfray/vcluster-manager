@@ -461,6 +461,30 @@ func (s *StatusClient) ScaleVClusterWorkloads(ctx context.Context, name string, 
 // from backup — `data-vcluster-<name>-etcd-0` with external etcd,
 // `data-vcluster-<name>-0` when it's embedded. The workload(s) must be
 // scaled to 0 first, or the PVC stays stuck Terminating.
+// GetVClusterPVCState reports whether a vcluster's data volume is still there.
+//
+// This is how a caller that was interrupted mid-restore finds out which side of
+// the point of no return it is on, without having had to write anything down
+// beforehand: the cluster already knows. deleting is true once the PVC carries a
+// deletionTimestamp — Delete only returns after the apiserver has set it, so a
+// process killed during the deletion is still detected as "past the point of no
+// return", which is the safe direction.
+func (s *StatusClient) GetVClusterPVCState(ctx context.Context, name string) (exists, deleting bool, err error) {
+	topo, err := s.detectVClusterTopology(ctx, name)
+	if err != nil {
+		return false, false, fmt.Errorf("detecting vcluster topology: %w", err)
+	}
+	ns := "vcluster-" + name
+	pvc, err := s.client.Resource(persistentVolumeClaimGVR).Namespace(ns).Get(ctx, topo.PVCName, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, false, nil
+	case err != nil:
+		return false, false, fmt.Errorf("reading PVC %s: %w", topo.PVCName, err)
+	}
+	return true, pvc.GetDeletionTimestamp() != nil, nil
+}
+
 func (s *StatusClient) DeleteVClusterPVC(ctx context.Context, name string) error {
 	topo, err := s.detectVClusterTopology(ctx, name)
 	if err != nil {

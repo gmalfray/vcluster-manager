@@ -1,5 +1,19 @@
 # Design — déclenchement backup/restore Velero piloté par annotation
 
+> ⚠️ **Deux corrections après implémentation** (voir `poc-operator-tech-decision.md` §5bis) :
+> 1. **§1 argumente à côté.** Les deux raisons données pour préférer l'annotation à un champ de spec
+>    ne tiennent pas ici : (a) « committer une action ponctuelle en Git n'a pas de sens » ne
+>    s'applique pas, ce marqueur n'étant **jamais** commité dans fluxprod — il est créé en cluster ;
+>    (b) « un champ de spec redéclenche à chaque reconcile » est faux, on déduplique de la même façon
+>    avec `lastHandledRequestedAt`, que le nonce vive dans une annotation ou dans le spec. Le choix
+>    de l'annotation **est conservé** (neutre aujourd'hui, payant si le marqueur migre un jour sur le
+>    `VCluster` commité, §10 — où l'argument (a) devient, lui, valable), mais pas pour les raisons
+>    écrites ci-dessous.
+> 2. **§4 point 4 est abandonné, pas réparé.** Persister l'étape atteinte à chaque pas est
+>    contradictoire avec « appeler `CreateVeleroRestore` sans modifier sa séquence interne », et
+>    surtout inutile : l'état se **relit dans le cluster** (PVC absent ou en `Terminating`, restore
+>    Velero actif) via `Service.InspectInterruptedRestore`. Un fait observé ne périme pas.
+>
 > Étude, pas d'implémentation. Statut : proposition à valider (ne touche pas à l'ADR-001, ne
 > dépend pas de la maturité de kro ni du POC controller-runtime sur le chemin de suppression).
 > Portée : comment faire passer `TriggerVeleroBackup` et `CreateVeleroRestore`
