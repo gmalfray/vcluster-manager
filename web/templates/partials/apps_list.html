@@ -13,15 +13,15 @@
 {{else}}
 <div class="wf-info-grid">
     {{range .Apps}}
-    <div class="wf-info-card accent-purple" style="gap:10px;{{if .Migrating}}background:repeating-linear-gradient(-45deg,var(--surface),var(--surface) 10px,rgba(168,85,247,0.07) 10px,rgba(168,85,247,0.07) 20px);border-color:rgba(168,85,247,0.5);{{end}}">
+    <div class="wf-info-card accent-orange" style="gap:10px;{{if .Migrating}}background:repeating-linear-gradient(-45deg,var(--surface),var(--surface) 10px,rgba(255,122,69,0.07) 10px,rgba(255,122,69,0.07) 20px);border-color:rgba(255,122,69,0.5);{{end}}">
         <!-- Header -->
         <div class="wf-info-card-header">
-            <div class="wf-banner-icon purple">
+            <div class="wf-banner-icon orange">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" stroke="currentColor"/></svg>
             </div>
             <span class="wf-info-card-title" style="font-size:0.75rem;text-transform:none;letter-spacing:0;">{{.Name}}</span>
             {{if .Migrating}}
-            <span style="margin-left:auto;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:999px;background:rgba(168,85,247,0.15);color:#a855f7;white-space:nowrap;">
+            <span style="margin-left:auto;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:999px;background:var(--accent-dim);color:var(--accent);white-space:nowrap;">
                 ⟳ {{.MigratingLabel}}
             </span>
             {{end}}

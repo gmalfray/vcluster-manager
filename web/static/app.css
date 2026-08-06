@@ -2,17 +2,23 @@
    Wave Flow — Design System
    vCluster Manager — tokens alignés sur la charte Rebuild IT
    (rebuild-it/branding/brand.md : indigo #4F46E5, accent orange #FF7A45,
-   mint #22C3A6 pour les statuts positifs, Space Grotesk + Inter)
+   ink #17171F pour les fonds sombres, mint #22C3A6 pour les statuts positifs,
+   Space Grotesk + Inter. Pas de violet dans la charte.)
    ═══════════════════════════════════════════════════════════════════════════════ */
 
 :root {
-  --bg:           #0a0c12;
-  --surface:      #111420;
-  --surface-hover:#161a28;
-  --surface2:     #1a1f2e;
-  --surface3:     #212738;
-  --border:       #252b3d;
-  --border-subtle:#1e2333;
+  /* Fonds sombres derives de l'ink de charte (#17171F), meme hue/saturation
+     (~240deg, ~15%) que la teinte de marque plutot qu'un navy generique.
+     --surface est litteralement l'ink de charte ; les autres paliers gardent
+     les memes niveaux de luminosite qu'avant (contrastes texte inchanges),
+     recoloriés sur cette famille. */
+  --bg:           #0c0c10;
+  --surface:      #17171f;
+  --surface-hover:#1a1a24;
+  --surface2:     #1f1f29;
+  --surface3:     #262633;
+  --border:       #2a2a38;
+  --border-subtle:#22222f;
   --text:         #e4e7f0;
   --text-secondary:#8b92a8;
   --text-muted:   #565e78;
@@ -38,8 +44,6 @@
   --green-dim:    rgba(34,195,166,0.12);
   --green-border: rgba(34,195,166,0.28);
 
-  --purple:       #a78bfa;
-  --purple-dim:   rgba(167,139,250,0.1);
   --amber:        #fbbf24;
   --amber-dim:    rgba(251,191,36,0.1);
   --red:          #f87171;
@@ -96,13 +100,11 @@ body {
 .bg-yellow-100 { background-color: var(--amber-dim)  !important; }
 .bg-indigo-100 { background-color: var(--indigo-dim) !important; }
 .bg-orange-100 { background-color: var(--amber-dim)  !important; }
-.bg-purple-100 { background-color: var(--purple-dim) !important; }
 
 .bg-blue-600   { background-color: var(--indigo)  !important; }
 .bg-blue-700   { background-color: var(--indigo-hover)        !important; }
 .bg-green-600  { background-color: var(--indigo)  !important; }
 .bg-red-600    { background-color: var(--red-dim) !important; }
-.bg-purple-600 { background-color: var(--purple-dim) !important; }
 .bg-gray-600   { background-color: var(--surface3) !important; }
 
 .text-gray-900 { color: var(--text)           !important; }
@@ -127,8 +129,6 @@ body {
 .text-yellow-800{ color: var(--amber)   !important; }
 .text-indigo-600{ color: var(--indigo)  !important; }
 .text-indigo-800{ color: var(--indigo)  !important; }
-.text-purple-600{ color: var(--purple)  !important; }
-.text-purple-800{ color: var(--purple)  !important; }
 .text-white     { color: #fff           !important; }
 
 .border-gray-200  { border-color: var(--border-subtle) !important; }
@@ -187,7 +187,7 @@ input[type="file"]::file-selector-button:hover {
 .wf-nav {
   position: sticky; top: 0; z-index: 100;
   height: var(--nav-height);
-  background: rgba(10,12,18,0.88);
+  background: rgba(12,12,16,0.88);
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
   border-bottom: 1px solid var(--border-subtle);
@@ -195,36 +195,31 @@ input[type="file"]::file-selector-button:hover {
   display: flex; align-items: center;
   padding: 0 28px; gap: 8px;
 }
+/* Lockup identite nav : mark Rebuild IT + wordmark editeur en tete, "vCluster
+   Manager" en nom de produit a la suite (moins proeminent, cf. app.css login
+   plus bas pour le meme lockup en plus grand). */
 .wf-nav-logo {
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; align-items: center; gap: 9px;
   margin-right: 20px; text-decoration: none; flex-shrink: 0;
 }
-.wf-nav-logo-row { display: flex; align-items: center; gap: 10px; }
-.wf-nav-logo-sub {
-  font-family: 'Space Grotesk', sans-serif; font-weight: 500;
-  font-size: 0.72rem; color: var(--text-muted);
-  letter-spacing: 0.06em; text-transform: uppercase;
-}
-/* Signature editeur, sur sa propre ligne sous le wordmark (finding recette 1.4.1
-   #1 : avant, elle etait collee au numero de version dans la meme ligne, illisible).
-   IT en accent charte. */
-.wf-nav-editor {
-  margin-left: 1px;
-  font-family: 'Space Grotesk', sans-serif; font-weight: 600;
-  font-size: 0.62rem; letter-spacing: 0.02em; color: var(--text-muted);
+.wf-nav-mark { flex-shrink: 0; }
+.wf-nav-wordmark {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+  font-size: 1rem; letter-spacing: -0.01em; color: var(--text);
   white-space: nowrap;
 }
-.wf-nav-editor-it { color: var(--accent); margin-left: 1px; }
-/* Numero de version : sorti du bloc logo, en pilule discrete a part (meme finding). */
+.wf-nav-wordmark-it { color: var(--accent); }
+.wf-nav-sep { color: var(--text-muted); font-size: 0.9rem; }
+.wf-nav-product {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 500;
+  font-size: 0.84rem; color: var(--text-secondary); white-space: nowrap;
+}
+/* Numero de version : pilule discrete a part, apres le lockup identite. */
 .wf-nav-version {
   font-family: 'JetBrains Mono', monospace; font-size: 0.68rem;
   color: var(--text-muted); background: var(--surface2);
   border: 1px solid var(--border-subtle); border-radius: 999px;
   padding: 3px 9px; margin-right: 12px; flex-shrink: 0;
-}
-.wf-login-editor {
-  margin: -6px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 600;
-  font-size: 0.72rem; letter-spacing: 0.04em; color: var(--text-muted);
 }
 .wf-nav-links { display: flex; gap: 2px; }
 .wf-nav-link {
@@ -715,12 +710,15 @@ input[type="file"]::file-selector-button:hover {
   background: var(--surface); border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
 }
-.wf-login-logo {
-  display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 32px;
+/* Lockup identite login : meme mark que la nav, en plus grand, assume en tete de
+   carte. "vCluster Manager" en sous-titre produit sous le wordmark editeur. */
+.wf-login-wordmark {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+  font-size: 1.35rem; letter-spacing: -0.01em; color: var(--text);
 }
-.wf-login-sub {
-  font-family: 'Space Grotesk', sans-serif; font-size: 0.72rem;
-  color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
+.wf-login-product {
+  font-family: 'Space Grotesk', sans-serif; font-weight: 500;
+  font-size: 0.82rem; color: var(--text-secondary); margin-top: 2px;
 }
 .wf-login-err {
   background: var(--red-dim); border: 1px solid var(--red-border);
@@ -793,7 +791,7 @@ input[type="file"]::file-selector-button:hover {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   width: 100%; height: 100%;
-  background: rgba(10, 11, 20, 0.4);
+  background: rgba(12, 12, 16, 0.4);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   z-index: 9000;
@@ -853,9 +851,8 @@ input[type="file"]::file-selector-button:hover {
 .wf-alert-cyan a  { color: var(--cyan); }
 .wf-alert-red   { background: var(--red-dim);    border-color: var(--red-border);     color: var(--red); }
 
-/* ─── Banner variants (purple) ──────────────────────────────────────────────── */
-.wf-banner-purple { --wf-banner-accent: #a855f7; border-color: rgba(168,85,247,0.2); }
-.wf-banner-icon.purple { background: rgba(168,85,247,0.1); color: #a855f7; }
+/* ─── Banner variants (orange, accent secondaire charte) ────────────────────── */
+.wf-banner-icon.orange { background: var(--accent-dim); color: var(--accent); }
 .wf-banner-body {
   font-size: 0.84rem; color: var(--text-secondary); flex: 1;
 }
@@ -882,7 +879,7 @@ input[type="file"]::file-selector-button:hover {
 }
 .wf-info-card.accent-cyan   { --wf-info-accent: var(--cyan);   border-color: rgba(34,211,238,0.2); }
 .wf-info-card.accent-indigo { --wf-info-accent: var(--indigo); border-color: var(--indigo-border); }
-.wf-info-card.accent-purple { --wf-info-accent: #a855f7;       border-color: rgba(168,85,247,0.2); }
+.wf-info-card.accent-orange { --wf-info-accent: var(--accent); border-color: var(--accent-border); }
 .wf-info-card-header { display: flex; align-items: center; gap: 10px; }
 .wf-info-card-title {
   font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
@@ -979,7 +976,7 @@ input[type="file"]::file-selector-button:hover {
    Replaces window.confirm() and htmx's native confirm() dialog. */
 .wf-confirm-overlay {
   position: fixed; inset: 0; z-index: 1000;
-  background: rgba(6,7,12,0.6); backdrop-filter: blur(2px);
+  background: rgba(8,8,10,0.6); backdrop-filter: blur(2px);
   display: flex; align-items: center; justify-content: center; padding: 16px;
 }
 .wf-confirm-overlay[hidden] { display: none; }

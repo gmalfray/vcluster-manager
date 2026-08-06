@@ -3,12 +3,12 @@
     <linearGradient id="wf1" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#4F46E5"/>
       <stop offset="50%" stop-color="#FF7A45"/>
-      <stop offset="100%" stop-color="#22C3A6"/>
+      <stop offset="100%" stop-color="#4338CA"/>
     </linearGradient>
     <linearGradient id="wf1b" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" stop-color="#4F46E5" stop-opacity="0.35"/>
       <stop offset="50%" stop-color="#FF7A45" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#22C3A6" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#4338CA" stop-opacity="0.35"/>
     </linearGradient>
   </defs>
   <path d="M8,44 C22,30 36,30 50,44 C64,58 78,58 92,44" fill="none" stroke="url(#wf1b)" stroke-width="3" stroke-linecap="round"/>
@@ -18,8 +18,8 @@
   <circle cx="8" cy="30" r="3.5" fill="#4F46E5"/>
   <circle cx="50" cy="30" r="6" fill="#FF7A45" opacity="0.15"/>
   <circle cx="50" cy="30" r="4" fill="#FF7A45"/>
-  <circle cx="92" cy="30" r="5" fill="#22C3A6" opacity="0.2"/>
-  <circle cx="92" cy="30" r="3.5" fill="#22C3A6"/>
+  <circle cx="92" cy="30" r="5" fill="#4338CA" opacity="0.2"/>
+  <circle cx="92" cy="30" r="3.5" fill="#4338CA"/>
   <text x="110" y="33" fill="#e8eaf0" font-family="Space Grotesk, sans-serif" font-size="22" font-weight="700" letter-spacing="-0.5">vCluster</text>
   <text x="110" y="52" fill="#6b7190" font-family="Space Grotesk, sans-serif" font-size="11.5" font-weight="500" letter-spacing="3">MANAGER</text>
 </svg>
