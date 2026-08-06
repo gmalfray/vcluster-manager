@@ -1,6 +1,9 @@
 # ADR-002 — Le modèle en cells remplace `prod`/`preprod`
 
 > Statut : **acceptée** (2026-08-06), y compris le sort du cycle de vie (§5).
+> ⏳ **Horizon : lointain.** Les cells n'arrivent pas bientôt. Ce document donne la
+> **direction**, pas un plan de travail imminent — voir §8, à lire avant d'entamer
+> quoi que ce soit au nom de cette ADR.
 > Reste une sous-question mineure : le nom de la branche fluxprod unique.
 > Complète [`adr-001-source-de-verite.md`](adr-001-source-de-verite.md), ne la remplace pas.
 
@@ -141,16 +144,42 @@ n'est pas un simple `git branch -m`.
 
 ## 6. Ce qui reste bon à faire quel que soit le choix
 
-- **Nommer la branche fluxprod** en une constante (~40 littéraux) : le garde-fou
-  d'origine tombe avec la promotion (§5), mais la constante reste **la carte des
-  sites que la migration devra revisiter**, et elle rend le renommage de la branche
-  mécanique au lieu d'être un `grep` à l'aveugle.
+- **Nommer les deux branches** en constantes (`sourceBranch = "preprod"`,
+  `deployedBranch = "master"`, ~40 littéraux). Le garde-fou est **actif tant que la
+  promotion existe**, c'est-à-dire longtemps (§8), et la constante sert en plus de
+  carte des sites que la migration devra revisiter.
 - **Supprimer les 15 replis `env = "preprod"` dupliqués** (−42 lignes) : le helper
   existe déjà deux fois dans le dépôt, il n'a simplement pas été propagé.
 
-## 7. Ce qu'on ne fait pas
+## 7. Ce qu'on ne fait pas (et surtout pas maintenant)
 
 Pas de `map[string]CellConfig`, pas de type `Cell`, pas de refactor de
 `internal/config` (0 % de couverture, aucun test, client en production). Tant que
 §5 n'est pas tranché, généraliser serait du générique spéculatif : on paierait un
 coût certain contre un bénéfice dont on ne connaît pas encore la forme.
+
+## 8. Horizon, et ce que ça implique d'ici là
+
+Les cells arrivent **beaucoup plus tard** que le chantier opérateur. Trois
+conséquences pratiques, à ne pas se tromper dessus :
+
+**1. `prod`/`preprod` et leur promotion restent en place longtemps.** Les ~130
+sites listés en §5 ne sont donc **pas** un chantier à ouvrir : ils décrivent ce qui
+disparaîtra le jour de la migration, pas du travail en attente. Rien dans cette ADR
+ne justifie de toucher à la MR permanente, à l'état `pending` ou à la
+« contrepartie » aujourd'hui.
+
+**2. Le garde-fou de §6 redevient pleinement valide.** J'avais écrit qu'il tombait
+avec la promotion — vrai à terme, faux pour longtemps. Tant que la promotion
+existe, rien n'empêche quelqu'un de « paramétrer proprement » les ~40 littéraux de
+branche par environnement et de committer des changements prod sur `master`, en
+contournant la promotion, directement dans ce que Flux prod surveille. **Les deux
+constantes (`sourceBranch`/`deployedBranch`) valent donc d'être posées maintenant**,
+pour la raison d'origine — pas seulement comme carte de migration.
+
+**3. Il y a déjà deux cells.** C'est la façon la plus juste de voir l'état actuel :
+les deux clusters hôtes existants *sont* deux cells, qui portent des noms d'étages
+de cycle de vie. La migration ne consiste donc pas à inventer un concept, mais à
+en **ajouter d'autres** et à **retirer la sémantique de promotion** attachée aux
+deux premiers. C'est ce qui rend `--cell=preprod` cohérent dès aujourd'hui : le
+flag nomme le cluster hôte, et ce cluster hôte s'appelle `preprod`.
