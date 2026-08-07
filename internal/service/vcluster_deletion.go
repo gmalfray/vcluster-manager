@@ -60,6 +60,15 @@ type CleanupJobState struct {
 type RancherTeardownState struct {
 	// Enabled: Rancher is configured and turned on for this cell.
 	Enabled bool
+	// NotConfigured: ce processus n'a pas de client Rancher du tout.
+	//
+	// Distinct d'Enabled=false pour exactement la raison qui rend LookupFailed
+	// distinct de StillKnown=false, un cran plus haut : « Rancher est éteint sur
+	// cette cell » veut dire qu'il n'y a rien à dépairer, alors que « je n'ai pas
+	// de client » veut dire que je ne peux pas savoir. Les confondre fait
+	// rapporter l'étape comme faite par un binaire incapable de l'exécuter, et
+	// laisse un cluster fantôme dans Rancher sans une ligne pour le dire.
+	NotConfigured bool
 	// LookupFailed: Rancher did not answer. Distinct from StillKnown=false —
 	// treating an unreachable Rancher as "already unpaired" would skip the
 	// unpairing entirely and leave a ghost cluster behind.
@@ -80,6 +89,16 @@ type RancherTeardownState struct {
 // LookupFailed so the caller always gets something to decide on.
 func (s *Service) InspectRancherTeardown(ctx context.Context, name, env string) RancherTeardownState {
 	env = envOrDefault(env)
+	// NotConfigured seulement si la cell annonce Rancher actif. Un client absent
+	// sur une cell sans Rancher n'est pas une mauvaise configuration : « il n'y a
+	// rien à dépairer » y est un fait, et le signaler ferait crier l'étape sur
+	// toute installation qui n'utilise pas Rancher.
+	if s.rancher == nil && s.cfg.RancherEnabledForEnv(env) {
+		return RancherTeardownState{
+			NotConfigured: true,
+			Detail:        "ce processus n'a pas de client Rancher : le dépairage ne peut pas être effectué ni vérifié",
+		}
+	}
 	if s.rancher == nil || !s.cfg.RancherEnabledForEnv(env) {
 		return RancherTeardownState{Detail: "Rancher n'est pas actif sur cette cell"}
 	}
@@ -148,6 +167,13 @@ func (s *Service) UnpairForDeletion(ctx context.Context, actor models.Actor, nam
 		return ErrInvalidName
 	}
 	env = envOrDefault(env)
+	// « Pas de client » ne peut pas rendre nil : pour l'appelant, nil veut dire
+	// « le dépairage est passé ». Le finalizer posait donc la condition
+	// RancherPaired/Unpairing et avançait, sur un dépairage qui n'avait jamais eu
+	// lieu. Une erreur, au moins, se voit.
+	if s.rancher == nil && s.cfg.RancherEnabledForEnv(env) {
+		return ErrRancherNotConfigured
+	}
 	if s.rancher == nil || !s.cfg.RancherEnabledForEnv(env) {
 		return nil
 	}
@@ -323,19 +349,39 @@ func (s *Service) TeardownVCluster(ctx context.Context, actor models.Actor, name
 		slog.Warn("suppression : "+what, "vcluster", name, "cell", env, "err", err)
 		warnings = append(warnings, what+" : "+err.Error())
 	}
+	absent := func(what string) {
+		slog.Warn("suppression : étape non exécutable, client absent de ce processus",
+			"vcluster", name, "cell", env, "etape", what)
+		warnings = append(warnings, what+" : non traité, ce processus n'a pas le client correspondant")
+	}
 
-	if s.keycloak != nil {
-		if err := s.keycloak.DeleteArgoCDClients(name); err != nil {
-			warn("clients OIDC Keycloak pas supprimés", err)
-		}
+	// Un client absent produit un AVERTISSEMENT, pas un saut silencieux.
+	//
+	// Ces `!= nil` ont été écrits pour l'app web, où les clients sont toujours là.
+	// Le finalizer les a hérités, et l'opérateur, lui, tourne avec un Deps
+	// volontairement partiel : les trois branches ci-dessous ne s'exécutaient donc
+	// jamais, et le status annonçait quand même « séquence de suppression
+	// terminée ». Résultat sur un vcluster client : clients OIDC et backend d'auth
+	// orphelins, invisibles.
+	if s.keycloak == nil {
+		absent("clients OIDC Keycloak")
+	} else if err := s.keycloak.DeleteArgoCDClients(name); err != nil {
+		warn("clients OIDC Keycloak pas supprimés", err)
 	}
-	if s.vault != nil {
-		if err := s.vault.DisableAuth(ctx, "kubernetes-vcluster-"+name+"-"+env); err != nil {
-			warn("backend d'auth Vault pas désactivé", err)
-		}
+
+	if s.vault == nil {
+		absent("backend d'auth Vault")
+	} else if err := s.vault.DisableAuth(ctx, "kubernetes-vcluster-"+name+"-"+env); err != nil {
+		warn("backend d'auth Vault pas désactivé", err)
 	}
-	if opts.DeleteAppManifestsRepo && s.gitlab != nil {
-		if err := s.gitlab.DeleteProject(name); err != nil {
+
+	if opts.DeleteAppManifestsRepo {
+		// Le pire cas des trois : la suppression du dépôt est un geste EXPLICITE,
+		// demandé par annotation. Sans avertissement, il devenait un no-op qui
+		// rapportait un succès.
+		if s.gitlab == nil {
+			absent("dépôt app-manifests (suppression demandée par annotation)")
+		} else if err := s.gitlab.DeleteProject(name); err != nil {
 			warn("dépôt app-manifests pas supprimé", err)
 		}
 	}

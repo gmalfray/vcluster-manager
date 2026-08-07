@@ -158,11 +158,11 @@ func (r *VClusterReconciler) reconcileAll(ctx context.Context, vc *v1alpha1.VClu
 
 	// Le budget avant le provisionnement : on ne matérialise rien qu'on
 	// refuserait ensuite.
-	ok, err := r.checkResourceBudget(ctx, vc)
+	withinBudget, err := r.checkResourceBudget(ctx, vc)
 	if err != nil {
 		return 0, err
 	}
-	if !ok {
+	if !withinBudget {
 		// Refus explicite, pas une erreur de réconciliation : rien ne sera
 		// réessayé tant que le spec ou le plafond n'a pas changé, et la
 		// condition BudgetOK dit pourquoi.
@@ -176,8 +176,18 @@ func (r *VClusterReconciler) reconcileAll(ctx context.Context, vc *v1alpha1.VClu
 		return 0, nil
 	}
 
-	if err := r.reconcileProvisioning(ctx, vc); err != nil {
+	provisioned, err := r.reconcileProvisioning(ctx, vc)
+	if err != nil {
 		return 0, err
+	}
+	if !provisioned {
+		// Refus, pas erreur : le spec doit changer. On agrège quand même, pour la
+		// raison qui vaut pour le budget juste au-dessus — sans ça le refus reste
+		// enfermé dans ResourcesProvisioned, l'observation qui suit la réécrit
+		// depuis ce qu'elle voit, et un CR refusé ressort Ready=True sur le canal
+		// que Flux lit.
+		aggregateVClusterStatus(vc)
+		return 0, nil
 	}
 
 	// Les intégrations (Vault, Keycloak, Rancher) avant l'observation : c'est

@@ -214,6 +214,15 @@ func (r *VClusterReconciler) checkDeletionProtection(_ context.Context, _ VClust
 // le vcluster, avant que celui-ci disparaisse (§4.4 étape 1).
 func (r *VClusterReconciler) reconcileRancherTeardown(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
 	st := ops.InspectRancherTeardown(ctx, vc.Name, r.Cell)
+	if st.NotConfigured {
+		// On continue — un CR ne doit pas rester coincé en Terminating parce que
+		// l'opérateur est mal câblé — mais on l'écrit. Sans cette condition,
+		// l'étape se rapportait comme faite et le cluster restait dans Rancher
+		// sans que personne ne l'apprenne.
+		setVClusterCond(vc, v1alpha1.CondRancherPaired, metav1.ConditionUnknown, "NoRancherClient",
+			st.Detail+" ; la suppression continue, le cluster est à retirer à la main dans Rancher")
+		return true, 0, nil
+	}
 	if !st.Enabled {
 		return true, 0, nil
 	}

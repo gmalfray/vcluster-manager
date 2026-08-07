@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,48 +53,62 @@ func TestOperatorWiringSkipsTheRancherTeardownSilently(t *testing.T) {
 	stOn := operatorWiredService(rancherOn).InspectRancherTeardown(ctx, "demo", "preprod")
 	stOff := operatorWiredService(rancherOff).InspectRancherTeardown(ctx, "demo", "preprod")
 
-	if stOn.Enabled {
-		t.Fatal("Enabled=true : le service distingue enfin « pas de client » de " +
-			"« Rancher désactivé », ce test a fait son temps")
+	// « Pas de client » et « Rancher désactivé » doivent être distinguables : le
+	// premier veut dire « je ne peux pas savoir », le second « il n'y a rien à
+	// dépairer ». Les confondre faisait rapporter l'étape comme faite par un
+	// binaire incapable de l'exécuter, et laissait un cluster fantôme dans
+	// Rancher sans une ligne pour le dire.
+	if !stOn.NotConfigured {
+		t.Error("client Rancher absent sur une cell qui l'annonce actif : NotConfigured=false, " +
+			"donc le finalizer va sauter l'étape en silence")
 	}
-	if stOn != stOff {
-		t.Fatalf("les deux cas sont désormais distinguables (%+v vs %+v) : très bien, "+
-			"mettre à jour ce test", stOn, stOff)
+	if stOff.NotConfigured {
+		t.Error("Rancher désactivé rapporté comme mal configuré : « rien à dépairer » est un fait")
 	}
-	t.Logf("RANCHER_ENABLED_PREPROD=true mais client nil ⇒ %+v — le finalizer saute l'étape", stOn)
+	if stOn == stOff {
+		t.Fatalf("les deux cas restent indiscernables (%+v)", stOn)
+	}
 }
 
-// Le dépairage lui-même répond « c'est fait » sans avoir rien fait.
-//
-// UnpairForDeletion rend nil quand le client Rancher est absent. Pour le
-// finalizer, nil veut dire « le dépairage est passé » : il pose la condition
-// RancherPaired/Unpairing et avance. Un retour d'erreur ferait au moins
-// apparaître la panne dans le status.
+// Le dépairage ne répond plus « c'est fait » sans avoir rien fait.
 func TestOperatorWiringReportsAnUnpairThatNeverHappened(t *testing.T) {
 	s := operatorWiredService(&config.Config{RancherEnabledPreprod: true})
 	admin := models.Actor{Username: "vcluster-operator", IsAdmin: true}
 
-	if err := s.UnpairForDeletion(context.Background(), admin, "demo", "preprod"); err != nil {
-		t.Fatalf("UnpairForDeletion rend %v : le service signale enfin le client manquant, "+
-			"ce test a fait son temps", err)
+	// nil voudrait dire « le dépairage est passé » : le finalizer posait la
+	// condition Unpairing et avançait sur un dépairage qui n'avait jamais eu lieu.
+	// Même convention que son voisin UnpairRancher, qui rend ErrRancherNotConfigured
+	// avant même de regarder l'environnement.
+	if err := s.UnpairForDeletion(context.Background(), admin, "demo", "preprod"); !errors.Is(err, ErrRancherNotConfigured) {
+		t.Fatalf("UnpairForDeletion rend %v, attendu ErrRancherNotConfigured : le finalizer "+
+			"prendrait ce nil pour un dépairage réussi", err)
 	}
 }
 
-// Le status observé ment de la même façon : la condition RancherPaired sort à
-// False/Disabled — « Rancher n'est pas activé pour cette cell » — sur une cell
-// où il l'est.
+// Le status observé ne dit plus « Rancher éteint » sur une cell où il est actif.
 //
-// C'est la version lisible du même trou : l'exploitant qui regarde
-// `kubectl describe vc` conclut que l'appairage Rancher n'a jamais été demandé.
+// C'était la version lisible du même trou : l'exploitant qui regarde
+// `kubectl describe vc` concluait que l'appairage n'avait jamais été demandé.
+//
+// `Enabled` reste false — c'est le contrat de l'UI (« y a-t-il une section
+// Rancher à montrer »), et le retourner afficherait une section inutilisable sur
+// toute installation sans Rancher. C'est `NotConfigured` qui porte la nuance,
+// donc l'ajout est purement additif et les tests existants de GetRancherStatus
+// gardent leur sens.
 func TestOperatorWiringReportsRancherOffOnACellWhereItIsOn(t *testing.T) {
 	s := operatorWiredService(&config.Config{RancherEnabledPreprod: true})
 	st := s.GetRancherStatus(context.Background(), "demo", "preprod")
 
-	if st.Enabled {
-		t.Fatal("Enabled=true : le service distingue enfin les deux cas, retirer ce test")
+	if !st.NotConfigured {
+		t.Fatal("client absent non signalé : l'observation va écrire « rien à appairer »")
 	}
-	if rancherStateOf(st) != RancherStateOff {
-		t.Fatalf("état = %q, ce test fige Off", rancherStateOf(st))
+	if got := rancherStateOf(st); got != RancherStateUnknown {
+		t.Fatalf("état = %q, attendu %q : « éteint » est une affirmation, or on ne sait pas",
+			got, RancherStateUnknown)
+	}
+	obs := s.ObserveVCluster(context.Background(), "demo", "preprod")
+	if obs.RancherKnown {
+		t.Error("RancherKnown=true sans client pour interroger Rancher")
 	}
 }
 
@@ -119,5 +135,66 @@ func TestDeletionOpsStillRefuseANonAdminAndABadName(t *testing.T) {
 	}
 	if _, err := s.InspectDeletionBackup(ctx, "../kube-system", "preprod", time.Time{}); err != ErrInvalidName {
 		t.Fatalf("InspectDeletionBackup sur un nom refusé = %v, attendu ErrInvalidName", err)
+	}
+}
+
+// operatorWiredServiceWithK8s ajoute le seul client que l'opérateur a vraiment,
+// pour que TeardownVCluster aille au-delà de son garde ErrK8sUnavailable.
+func operatorWiredServiceWithK8s(cfg *config.Config) *Service {
+	var mu sync.RWMutex
+	return New(Deps{
+		Cfg:          cfg,
+		K8sClients:   map[string]*kubernetes.StatusClient{"preprod": kubernetes.NewTestStatusClient()},
+		K8sClientsMu: &mu,
+	})
+}
+
+// Chaque étape de destruction que ce processus ne peut pas exécuter doit
+// apparaître dans les avertissements.
+//
+// C'était le trou le plus coûteux du câblage : les branches Keycloak, Vault et
+// GitLab étaient gardées par des `!= nil` écrits pour l'app web, où les clients
+// sont toujours là. Dans l'opérateur ils sont nil, donc les trois étaient sautées
+// sans un mot, et le status annonçait « séquence de suppression terminée ».
+//
+// Le pire des trois est le dépôt app-manifests : sa suppression est un geste
+// EXPLICITE, demandé par annotation, qui devenait un no-op rapportant un succès.
+func TestOperatorWiringWarnsAboutEveryTeardownStepItCannotRun(t *testing.T) {
+	ctx := context.Background()
+	s := operatorWiredServiceWithK8s(&config.Config{})
+	admin := models.Actor{Username: "vcluster-operator", IsAdmin: true}
+
+	warnings, err := s.TeardownVCluster(ctx, admin, "demo", "preprod",
+		TeardownOptions{DeleteAppManifestsRepo: true})
+	if err != nil {
+		t.Fatalf("TeardownVCluster: %v", err)
+	}
+
+	joint := strings.Join(warnings, " | ")
+	for _, attendu := range []string{"Keycloak", "Vault", "app-manifests"} {
+		if !strings.Contains(joint, attendu) {
+			t.Errorf("aucun avertissement pour %s : l'étape est sautée en silence et le status "+
+				"annoncera « séquence terminée ». Avertissements = %q", attendu, joint)
+		}
+	}
+}
+
+// Le pendant : les avertissements doivent être SPÉCIFIQUES, pas systématiques.
+// Sans ce test, une implémentation qui avertit toujours de tout passerait le test
+// ci-dessus sans rien dire d'utile.
+func TestTeardownDoesNotWarnAboutAStepNobodyAskedFor(t *testing.T) {
+	ctx := context.Background()
+	s := operatorWiredServiceWithK8s(&config.Config{})
+	admin := models.Actor{Username: "vcluster-operator", IsAdmin: true}
+
+	// DeleteAppManifestsRepo à false : le dépôt survit par défaut, il n'y a donc
+	// rien à signaler à son sujet.
+	warnings, err := s.TeardownVCluster(ctx, admin, "demo", "preprod", TeardownOptions{})
+	if err != nil {
+		t.Fatalf("TeardownVCluster: %v", err)
+	}
+	if joint := strings.Join(warnings, " | "); strings.Contains(joint, "app-manifests") {
+		t.Errorf("avertissement sur le dépôt app-manifests alors que sa suppression n'était pas "+
+			"demandée : %q", joint)
 	}
 }

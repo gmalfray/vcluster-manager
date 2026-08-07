@@ -72,6 +72,8 @@ linters:
         - restauration
         - substitue
         - structurel
+        - normalis
+        - partiel
 
   exclusions:
     generated: lax

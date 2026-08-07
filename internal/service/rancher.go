@@ -65,6 +65,12 @@ type RancherStatus struct {
 	Pairing bool `json:"pairing"`
 	// Unknown means the Rancher status could not be determined (lookup failed).
 	Unknown bool `json:"unknown"`
+	// NotConfigured : la cell annonce Rancher actif, mais ce processus n'a pas de
+	// client. C'est une mauvaise configuration, pas un état de repos — d'où un
+	// champ à part plutôt qu'un Enabled=false indiscernable du cas « Rancher n'est
+	// pas déployé ici ». Lu par l'opérateur, dont le Deps est volontairement
+	// partiel, pour qu'il n'écrive pas « rien à appairer » quand il ne sait pas.
+	NotConfigured bool `json:"not_configured"`
 	// ManuallyPaired means Rancher agents were detected via K8s pod labels while
 	// no matching cluster was found by name (manual pairing under a different name).
 	ManuallyPaired bool `json:"manually_paired"`
@@ -82,7 +88,17 @@ func (s *Service) GetRancherStatus(ctx context.Context, name, env string) Ranche
 	env = envOrDefault(env)
 
 	if s.rancher == nil || !s.cfg.RancherEnabledForEnv(env) {
-		return RancherStatus{Enabled: false}
+		// NotConfigured, et pas Enabled=true/Unknown=true : `Enabled` est le
+		// contrat de l'UI (« y a-t-il une section Rancher à montrer »), et le
+		// retourner ici afficherait une section inutilisable sur toute
+		// installation sans Rancher. Le champ est donc ADDITIF — il dit « la cell
+		// annonce Rancher actif mais ce processus n'a pas de client », ce qui est
+		// une mauvaise configuration et non un état de repos. Seul l'opérateur le
+		// lit, pour ne pas rapporter « rien à appairer » quand il ne sait pas.
+		return RancherStatus{
+			Enabled:       false,
+			NotConfigured: s.rancher == nil && s.cfg.RancherEnabledForEnv(env),
+		}
 	}
 
 	cleaning := s.cfg.IsCleaning(name, env)

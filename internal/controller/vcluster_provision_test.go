@@ -277,8 +277,13 @@ func TestProvisioningRefusesAnUnsafeName(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "../kube-system", Namespace: "default"},
 		Spec:       v1alpha1.VClusterSpec{Owner: "greg"},
 	}
-	if err := r.reconcileProvisioning(ctx, vc); err != nil {
+	provisionne, err := r.reconcileProvisioning(ctx, vc)
+	if err != nil {
 		t.Fatalf("attendu un refus sans erreur de réconciliation, obtenu: %v", err)
+	}
+	if provisionne {
+		t.Fatal("le refus n'est pas signalé à l'appelant : la réconciliation va enchaîner " +
+			"sur l'observation, qui réécrira la condition")
 	}
 	if ops.renderCall != 0 {
 		t.Fatal("le nom a été transmis au rendu malgré le refus")
@@ -301,14 +306,18 @@ func TestCAPITypeProvisionsNothing(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "provision-capi", Namespace: "default"},
 		Spec:       v1alpha1.VClusterSpec{Owner: "greg", Type: v1alpha1.VClusterTypeCAPI},
 	}
-	if err := r.reconcileProvisioning(ctx, vc); err != nil {
+	provisionne, err := r.reconcileProvisioning(ctx, vc)
+	if err != nil {
 		t.Fatalf("reconcile: %v", err)
+	}
+	if provisionne {
+		t.Fatal("le refus n'est pas signalé à l'appelant")
 	}
 	if ops.renderCall != 0 {
 		t.Fatal("un CR capi a été rendu")
 	}
 	var ns corev1.Namespace
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: "vcluster-provision-capi"}, &ns)
+	err = k8sClient.Get(ctx, types.NamespacedName{Name: "vcluster-provision-capi"}, &ns)
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("namespace créé pour un type non implémenté (err=%v)", err)
 	}

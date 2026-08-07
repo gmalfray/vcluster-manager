@@ -103,49 +103,49 @@ func budgetedReconciler(ops any) *VClusterReconciler {
 }
 
 // --- provisionnement × status observé --------------------------------------
-
-// Un refus de provisionnement doit survivre à l'étape qui passe juste après.
+// Un refus de provisionnement survit à l'observation qui le suit, ET descend
+// jusqu'à Ready.
 //
-// L'observation a « le dernier mot » sur ResourcesProvisioned, par choix
-// délibéré : c'est ce que le cluster montre qui fait foi. Mais un refus n'est
-// pas une observation périmée, c'est une décision — et elle est réécrite par un
-// pas qui ne sait rien du refus qu'il efface.
+// C'était le trou : reconcileProvisioning rendait `nil` sur ses trois chemins de
+// refus, donc reconcileAll enchaînait, et applyObservation réécrivait
+// ResourcesProvisioned depuis un cluster parfaitement sain. Le CR ressortait
+// Ready=True — sur le canal exact que Flux prend comme health check.
 //
-// TROU CONNU : le refus disparaît. Un CR `type: capi` ressort Ready/True,
-// ResourcesProvisioned/Healthy, phase Ready, alors que reconcileProvisioning
-// vient de poser TypeNotImplemented et n'a rien provisionné. Attendu : le refus
-// devrait couper reconcileAll comme le fait le refus de budget, qui appelle
-// l'agrégation lui-même et rend la main.
-func TestCAPIRefusalIsErasedByTheObservationStep(t *testing.T) {
+// Le patron correct existait juste à côté, celui du refus de budget : signaler le
+// refus à l'appelant, qui agrège et s'arrête.
+//
+// Appel direct à reconcileAll et pas via l'API : la règle CEL de la CRD refuse
+// `type: capi` à l'admission, donc un test qui passe par Create ne ferait que se
+// sauter lui-même. Ce qu'on vérifie ici est la défense en profondeur — la branche
+// qui couvre un CR admis avant que la règle n'existe.
+func TestARefusedProvisioningIsAggregatedIntoReady(t *testing.T) {
 	ctx := context.Background()
-	ops := newFakeProvisioner() // rend une observation saine
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+	ops := newFullOps()
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
-	vc := newVCluster("capi-efface", func(v *v1alpha1.VCluster) {
-		v.Spec.Type = v1alpha1.VClusterTypeCAPI
-	})
+	vc := &v1alpha1.VCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "capi-refus-tient", Namespace: "default"},
+		Spec:       v1alpha1.VClusterSpec{Owner: "greg", Type: v1alpha1.VClusterTypeCAPI},
+	}
 
 	if _, err := r.reconcileAll(ctx, vc); err != nil {
 		t.Fatalf("reconcileAll: %v", err)
 	}
 
-	c := vcCondition(vc, v1alpha1.CondResourcesProvisioned)
-	if c == nil {
-		t.Fatal("ResourcesProvisioned absente")
+	requireVCCond(t, vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "TypeNotImplemented")
+
+	// Le cœur du test : sans agrégation sur le chemin de refus, Ready garderait sa
+	// valeur du passage précédent — ici absente, en production « sain ».
+	ready := vcCondition(vc, v1alpha1.CondVClusterReady)
+	if ready == nil {
+		t.Fatal("Ready n'a pas été agrégée sur le chemin de refus : elle garderait sa valeur " +
+			"du passage précédent, et Flux verrait un vcluster sain")
 	}
-	if c.Reason == "TypeNotImplemented" {
-		t.Fatal("le refus a survécu à l'observation — le trou est bouché, retirer ce test")
+	if ready.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready = %s (%s), attendu False : rien n'a été provisionné", ready.Status, ready.Reason)
 	}
-	if c.Status != metav1.ConditionTrue {
-		t.Fatalf("ResourcesProvisioned = %s/%s : ce test fige le cas où l'observation "+
-			"écrase le refus par un True ; s'il change, relire pourquoi", c.Status, c.Reason)
-	}
-	if got := vcCondition(vc, v1alpha1.CondVClusterReady); got.Status != metav1.ConditionTrue {
-		t.Fatalf("Ready = %s, ce test fige True", got.Status)
-	}
-	if vc.Status.Phase != v1alpha1.VClusterPhaseReady {
-		t.Fatalf("phase = %q, ce test fige Ready : un type non implémenté est annoncé sain "+
-			"à Flux, dont le health check lit précisément Ready", vc.Status.Phase)
+	if vc.Status.Phase == v1alpha1.VClusterPhaseReady {
+		t.Fatal("phase Ready sur un type non implémenté")
 	}
 }
 
@@ -159,9 +159,11 @@ func TestCAPIRefusalIsErasedByTheObservationStep(t *testing.T) {
 // placement valide maintenant le nom AVANT reconcileAll, donc reconcileProvisioning
 // ne le voit plus jamais.
 //
-// Ce test garde les deux moitiés : la garde refuse (non-régression), et la branche
-// InvalidName de reconcileProvisioning serait toujours effacée si on l'atteignait
-// (le trou de fond, pas encore bouché — voir le test CAPI juste au-dessus).
+// La garde refuse avant même le provisionnement, donc la branche InvalidName de
+// reconcileProvisioning n'est plus atteignable par le reconcile. On vérifie
+// quand même qu'elle refuse pour de bon si on l'appelle directement : c'est la
+// défense en profondeur, et elle ne doit pas se contenter de poser une condition
+// que l'observation effacerait.
 func TestAnInvalidNameIsStoppedByTheGuardBeforeProvisioning(t *testing.T) {
 	ctx := context.Background()
 	ops := newFakeProvisioner()
@@ -197,9 +199,11 @@ func TestAnInvalidNameIsStoppedByTheGuardBeforeProvisioning(t *testing.T) {
 	if _, err := r2.reconcileAll(ctx, direct); err != nil {
 		t.Fatalf("reconcileAll: %v", err)
 	}
-	if c := vcCondition(direct, v1alpha1.CondResourcesProvisioned); c.Reason == "InvalidName" {
-		t.Fatal("le refus survit maintenant à l'observation : le trou de fond est bouché, " +
-			"simplifier ce test")
+	if c := vcCondition(direct, v1alpha1.CondResourcesProvisioned); c == nil || c.Reason != "InvalidName" {
+		t.Fatalf("ResourcesProvisioned = %+v : le refus a été effacé par l'observation qui suit", c)
+	}
+	if c := vcCondition(direct, v1alpha1.CondVClusterReady); c != nil && c.Status == metav1.ConditionTrue {
+		t.Fatal("Ready=True sur un nom refusé : Flux verrait un vcluster sain")
 	}
 }
 

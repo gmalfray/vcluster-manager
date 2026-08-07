@@ -83,8 +83,14 @@ type VClusterObservation struct {
 	// RancherEnabled is false when Rancher is not configured for the cell at
 	// all. In that case RancherKnown is true and the state is Off: "there is
 	// nothing to pair with" is a fact, not an unknown.
+	//
+	// L'exception est le processus qui n'a pas de client alors que la cell
+	// annonce Rancher actif : « rien à appairer » n'y est plus un fait, c'est une
+	// mauvaise configuration. RancherStatus.NotConfigured porte ce cas et le
+	// ramène ici en Unknown.
 	RancherEnabled bool
-	// RancherKnown is false only when the lookup itself failed.
+	// RancherKnown is false when the lookup failed, or when this process has no
+	// Rancher client to ask with.
 	RancherKnown  bool
 	RancherState  string
 	RancherPaired bool
@@ -186,7 +192,7 @@ func (s *Service) ObserveVCluster(ctx context.Context, name, env string) VCluste
 
 	obs.RancherEnabled = rancher.Enabled
 	obs.RancherPaired = rancher.Paired
-	obs.RancherKnown = !rancher.Unknown
+	obs.RancherKnown = !rancher.Unknown && !rancher.NotConfigured
 	obs.RancherState = rancherStateOf(rancher)
 
 	obs.ProtectionKnown = protection.Available
@@ -208,6 +214,10 @@ func (s *Service) ObserveVCluster(ctx context.Context, name, env string) VCluste
 // must not be dressed up as any of the states below it.
 func rancherStateOf(rs RancherStatus) string {
 	switch {
+	// Avant !Enabled : un processus sans client rend Enabled=false, et le
+	// rapporter Off dirait « rien à appairer » là où on ne sait simplement pas.
+	case rs.NotConfigured:
+		return RancherStateUnknown
 	case !rs.Enabled:
 		return RancherStateOff
 	case rs.Unknown:

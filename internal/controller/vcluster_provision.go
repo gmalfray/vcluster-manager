@@ -67,14 +67,23 @@ var _ VClusterProvisioner = (*service.Service)(nil)
 // manager (inconnue 1) puisque Flux n'écrit jamais ces deux objets, et pas de
 // prune à faire (inconnue 2) puisque désactiver une option vide une clé au lieu
 // de retirer un objet. Le prune du reste appartient à Flux, qui le fait déjà.
-func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1alpha1.VCluster) error {
+// Retourne (continuer, erreur). `continuer=false` sans erreur est un REFUS :
+// rien n'a été provisionné et rien ne le sera tant que le spec n'aura pas changé.
+// L'appelant doit alors s'arrêter là et agréger — même patron que
+// checkResourceBudget.
+//
+// C'est ce que rendre `nil` ne disait pas : la réconciliation enchaînait sur
+// l'observation, qui réécrivait ResourcesProvisioned depuis ce qu'elle voyait, et
+// un CR refusé ressortait Ready=True. Le refus disparaissait sur le canal même
+// que Flux lit pour son health check.
+func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1alpha1.VCluster) (bool, error) {
 	// §4.1 étape 1. La règle CEL de la CRD refuse déjà `capi` à l'admission ;
 	// cette branche couvre un CR admis avant que la règle n'existe.
 	if vc.Spec.Type == v1alpha1.VClusterTypeCAPI {
 		vc.Status.Phase = v1alpha1.VClusterPhaseFailed
 		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "TypeNotImplemented",
 			"type: capi est réservé, Cluster API n'est pas implémenté (docs/etude-cluster-api.md) — rien n'a été provisionné")
-		return nil
+		return false, nil
 	}
 
 	// Le nom sert de suffixe de namespace juste après. Un namespace est la seule
@@ -86,7 +95,7 @@ func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1al
 		vc.Status.Phase = v1alpha1.VClusterPhaseFailed
 		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "InvalidName",
 			fmt.Sprintf("nom de vcluster refusé (%q) : attendu [a-z][a-z0-9-]*", vc.Name))
-		return nil
+		return false, nil
 	}
 
 	provisioner, ok := r.Ops.(VClusterProvisioner)
@@ -98,12 +107,12 @@ func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1al
 		// silence.
 		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "RendererUnavailable",
 			"cet opérateur n'a pas de générateur : rien n'est provisionné")
-		return nil
+		return false, nil
 	}
 
 	objects, err := provisioner.RenderVClusterSubstitutions(createRequestFromCR(vc), r.Cell, vc.Spec.K8sVersion)
 	if err != nil {
-		return r.provisionFailed(ctx, vc, "RenderFailed", err)
+		return false, r.provisionFailed(ctx, vc, "RenderFailed", err)
 	}
 
 	for _, obj := range objects {
@@ -111,7 +120,7 @@ func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1al
 		// v0.23 au profit de Client.Apply, qui prend une ApplyConfiguration.
 		if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj),
 			client.FieldOwner(ProvisionFieldManager), client.ForceOwnership); err != nil {
-			return r.provisionFailed(ctx, vc, "ApplyFailed",
+			return false, r.provisionFailed(ctx, vc, "ApplyFailed",
 				fmt.Errorf("application de %s %s/%s : %w", obj.GetKind(), obj.GetNamespace(), obj.GetName(), err))
 		}
 	}
@@ -121,7 +130,7 @@ func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1al
 	}
 	setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionTrue, "Applied",
 		fmt.Sprintf("namespace et substitutions appliqués ; Flux rend les ressources tenant depuis ./lib avec ces valeurs (%d objets)", len(objects)))
-	return nil
+	return true, nil
 }
 
 // provisionFailed enregistre pourquoi le provisionnement s'est arrêté, puis rend

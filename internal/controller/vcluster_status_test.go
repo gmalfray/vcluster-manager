@@ -11,6 +11,7 @@ import (
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // fakeObserver adds the read half of the seam to the suspend/resume fake. It
@@ -32,6 +33,18 @@ func (f *fakeObserver) ObserveVCluster(_ context.Context, name, env string) serv
 	o := f.obs
 	o.Name, o.Env = name, env
 	return o
+}
+
+// RenderVClusterSubstitutions fait de ce faux un provisionneur en plus d'un
+// observateur, sans rien à appliquer.
+//
+// Nécessaire depuis qu'un refus de provisionnement coupe la réconciliation : un
+// faux qui n'implémente que l'observation déclenchait RendererUnavailable, donc
+// un refus, donc ces tests mesuraient l'agrégation d'un opérateur cassé au lieu
+// de l'agrégation d'un opérateur sain. C'est exactement le défaut que la recette
+// a nommé — chaque campagne n'a fourni que sa moitié du seam.
+func (f *fakeObserver) RenderVClusterSubstitutions(*models.CreateRequest, string, string) ([]*unstructured.Unstructured, error) {
+	return nil, nil
 }
 
 func (f *fakeObserver) setObservation(o service.VClusterObservation) {
@@ -546,9 +559,18 @@ func TestSuspendedVClusterIsNotObserved(t *testing.T) {
 
 // Sans observateur branché, l'opérateur dit qu'il ne sait pas — il n'invente pas
 // un verdict et il ne tombe pas.
+// provisionneurSansObservateur isole l'absence d'observateur. Il faut un
+// provisionneur, sinon c'est le refus de provisionnement qui coupe la
+// réconciliation et le test mesure autre chose que ce qu'il annonce.
+type provisionneurSansObservateur struct{ fakeVClusterOps }
+
+func (*provisionneurSansObservateur) RenderVClusterSubstitutions(*models.CreateRequest, string, string) ([]*unstructured.Unstructured, error) {
+	return nil, nil
+}
+
 func TestNoObserverReportsUnknownRatherThanFailing(t *testing.T) {
 	ctx := context.Background()
-	ops := &fakeVClusterOps{} // n'implémente que la moitié écriture du seam
+	ops := &provisionneurSansObservateur{}
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
 
 	vc := newObservedVCluster(t, ctx, "sans-observateur", nil)
