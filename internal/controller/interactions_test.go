@@ -315,17 +315,18 @@ func TestQuotasBlockAbsentIsProvisionedAndBilled(t *testing.T) {
 //
 // crd-vcluster.md §4.1 point 2 demande explicitement un « Requeue périodique (le
 // budget peut se libérer si un autre vcluster est supprimé entretemps) ».
-// reconcileAll rend `0, nil` : aucun requeue. Et le reconciler ne surveille que
-// les VCluster (`For(&VCluster{})`), donc la suppression d'un VOISIN ne produit
-// aucun événement sur celui-ci.
+// reconcileAll rendait `0, nil` : aucun requeue. Et le reconciler ne surveille
+// que les VCluster (`For(&VCluster{})`), donc la suppression d'un VOISIN — qui est
+// justement ce qui libère la place — ne produit aucun événement sur celui-ci.
 //
-// Conséquence : un vcluster refusé pour dépassement reste en Failed jusqu'à ce
-// que quelqu'un touche son spec ou redémarre l'opérateur — même quand la place
-// s'est libérée depuis longtemps. C'est le scénario normal de la file d'attente
-// (« je crée, ça ne rentre pas, je supprime un vieux, ça devrait repartir »).
+// Le vcluster refusé restait donc en Failed jusqu'à ce que quelqu'un touche son
+// spec ou redémarre l'opérateur, même quand la place s'était libérée depuis
+// longtemps. C'est le scénario normal de la file d'attente (« je crée, ça ne
+// rentre pas, je supprime un vieux, ça devrait repartir ») qui ne fonctionnait
+// pas.
 //
-// TROU CONNU : l'exigence du document n'est pas implémentée.
-func TestABudgetRefusalNeverRequeuesItself(t *testing.T) {
+// Corrigé : le refus demande un requeue périodique.
+func TestABudgetRefusalRequeuesItself(t *testing.T) {
 	ctx := context.Background()
 	ops := newFullOps()
 	r := &VClusterReconciler{
@@ -347,26 +348,28 @@ func TestABudgetRefusalNeverRequeuesItself(t *testing.T) {
 	if got.Status.Phase != v1alpha1.VClusterPhaseFailed {
 		t.Fatalf("phase = %q, attendu Failed", got.Status.Phase)
 	}
-	if res.RequeueAfter != 0 {
-		t.Fatalf("requeue %s : le refus se réévalue enfin tout seul, §4.1 est respecté — "+
-			"retirer ce test", res.RequeueAfter)
+	if res.RequeueAfter != BudgetRetryInterval {
+		t.Fatalf("requeue %s, attendu %s : sans requeue le refus ne se réévalue jamais tout "+
+			"seul, et la suppression du voisin qui libère la place ne produit aucun événement "+
+			"sur ce CR", res.RequeueAfter, BudgetRetryInterval)
 	}
 }
 
-// Un vcluster qui tourne et que le budget vient de refuser cesse d'être observé.
+// Un vcluster qui tourne et que le budget refuse continue d'être observé, et
+// n'est pas déclaré en panne.
 //
 // Le budget est revérifié à chaque passage, pas seulement à la création : baisser
 // RESOURCE_BUDGET_CPU, ou voir un voisin grossir, suffit à faire basculer un
-// vcluster déjà provisionné et sain. reconcileAll rend la main sur le refus, donc
-// l'observation ne tourne plus : chartVersion, usage des quotas, état Rancher et
-// dernier backup se figent à la dernière valeur connue, et Ready passe à False —
-// c'est-à-dire que le health check de la Kustomization Flux devient rouge pour un
-// vcluster qui, lui, va parfaitement bien.
+// vcluster déjà provisionné et sain. reconcileAll rendait alors la main, donc
+// l'observation ne tournait plus : chartVersion, usage des quotas, état Rancher et
+// dernier backup se figeaient, et Ready passait à False — le health check de la
+// Kustomization Flux devenait rouge pour un vcluster qui va parfaitement bien.
 //
-// Rien n'est détruit, et c'est le bon choix. Mais « refuser d'allouer plus » et
-// « déclarer en panne » ne sont pas la même chose, et le CR ne dit que la
-// seconde.
-func TestALiveVClusterRefusedByTheBudgetStopsBeingObserved(t *testing.T) {
+// « Refuser d'allouer plus » et « déclarer en panne » ne sont pas la même chose.
+// Le budget est un contrôle d'admission, pas un interrupteur d'extinction : la
+// condition BudgetOK reste visible et dit ce qui se passe, elle ne prétend plus
+// que le vcluster est cassé.
+func TestALiveVClusterRefusedByTheBudgetKeepsBeingObserved(t *testing.T) {
 	ctx := context.Background()
 	ops := newFullOps()
 	reader := &fakeBudgetReader{used: models.BudgetUsage{CPU: qty("10")}}
@@ -389,7 +392,7 @@ func TestALiveVClusterRefusedByTheBudgetStopsBeingObserved(t *testing.T) {
 
 	// L'exploitation baisse le plafond de la cell.
 	r.Budget = BudgetLimits{CPU: "12"}
-	// Et le vcluster a monté de version entre-temps : personne ne le verra.
+	// Et le vcluster monte de version entre-temps : ça doit se voir.
 	moved := healthyObservation()
 	moved.ChartVersion = "0.21.0"
 	ops.setObservation(moved)
@@ -398,14 +401,21 @@ func TestALiveVClusterRefusedByTheBudgetStopsBeingObserved(t *testing.T) {
 		t.Fatalf("reconcile 2: %v", err)
 	}
 	after := fetchVCluster(t, ctx, vc)
+
+	// Le dépassement est dit.
 	requireVCCond(t, after, v1alpha1.CondBudgetOK, metav1.ConditionFalse, "BudgetExceeded")
-	requireVCCond(t, after, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "BudgetOKNotMet")
-	if after.Status.Phase != v1alpha1.VClusterPhaseFailed {
-		t.Fatalf("phase = %q, attendu Failed", after.Status.Phase)
+
+	// Mais le vcluster n'est ni aveugle ni déclaré cassé.
+	if after.Status.ChartVersion != "0.21.0" {
+		t.Fatalf("chartVersion = %q, attendu 0.21.0 : l'observation ne tourne plus, l'état du "+
+			"vcluster se fige à sa dernière valeur connue", after.Status.ChartVersion)
 	}
-	if after.Status.ChartVersion != "0.20.0" {
-		t.Fatalf("chartVersion = %q : l'observation tourne désormais malgré le refus de "+
-			"budget, relire ce test", after.Status.ChartVersion)
+	if c := vcCondition(after, v1alpha1.CondVClusterReady); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %+v, attendu True : le health check de la Kustomization Flux devient "+
+			"rouge pour un vcluster qui va bien", c)
+	}
+	if after.Status.Phase == v1alpha1.VClusterPhaseFailed {
+		t.Fatal("phase Failed sur un vcluster debout et sain : trop gros pour la cell n'est pas en panne")
 	}
 }
 

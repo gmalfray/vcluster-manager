@@ -163,17 +163,30 @@ func (r *VClusterReconciler) reconcileAll(ctx context.Context, vc *v1alpha1.VClu
 		return 0, err
 	}
 	if !withinBudget {
-		// Refus explicite, pas une erreur de réconciliation : rien ne sera
-		// réessayé tant que le spec ou le plafond n'a pas changé, et la
-		// condition BudgetOK dit pourquoi.
+		// Refus explicite, pas une erreur de réconciliation. Mais il ne faut pas
+		// non plus s'arrêter là, et pour deux raisons distinctes.
 		//
-		// L'agrégation tourne quand même. Sans elle, le refus resterait enfermé
-		// dans BudgetOK : Ready garderait sa valeur du passage précédent, donc
-		// le health check de la Kustomization Flux verrait un vcluster sain
-		// alors que rien n'a été provisionné. Un refus qui ne se voit pas dans
-		// l'agrégat n'est pas un refus.
+		// 1. Un vcluster DÉJÀ EN MARCHE continue d'être observé. Le budget est un
+		//    contrôle d'admission — « faut-il matérialiser ceci » — pas un
+		//    interrupteur d'extinction. Un plafond baissé, ou un voisin qui
+		//    grossit, refusait jusqu'ici un vcluster parfaitement sain : son
+		//    chartVersion, son usage de quotas et son état Rancher se figeaient au
+		//    dernier passage. Le témoin est chartVersion, écrit uniquement quand un
+		//    chart a réellement déployé et jamais effacé.
+		//
+		// 2. Un vcluster jamais monté doit revenir frapper à la porte. On ne
+		//    l'observe pas — il n'y a rien à observer, et un port-forward vers un
+		//    namespace inexistant coûte son délai d'attente à chaque tour — mais on
+		//    demande un requeue périodique.
+		if vc.Status.ChartVersion != "" {
+			return r.reconcileObservedState(ctx, vc)
+		}
+		// L'agrégation, sans laquelle le refus resterait enfermé dans BudgetOK :
+		// Ready garderait sa valeur du passage précédent, donc le health check de
+		// la Kustomization Flux verrait un vcluster sain alors que rien n'a été
+		// provisionné.
 		aggregateVClusterStatus(vc)
-		return 0, nil
+		return BudgetRetryInterval, nil
 	}
 
 	provisioned, err := r.reconcileProvisioning(ctx, vc)

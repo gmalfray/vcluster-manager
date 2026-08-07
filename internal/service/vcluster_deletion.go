@@ -389,3 +389,26 @@ func (s *Service) TeardownVCluster(ctx context.Context, actor models.Actor, name
 	audit.LogActor(actor.Username, "vcluster-teardown", name, env)
 	return warnings, nil
 }
+
+// HostNamespaceState dit si le namespace hôte du vcluster existe, et si on a pu
+// le savoir.
+//
+// Sert au finalizer à distinguer « ce vcluster n'a jamais été matérialisé » de
+// « je n'arrive pas à regarder ». Le premier n'a pas de données à sauvegarder ; le
+// second doit garder le filet.
+//
+// Pas dérivé du status : `chartVersion` vide voudrait dire « jamais provisionné »
+// dans la plupart des cas, mais il serait aussi vide sur un vcluster dont
+// l'observation n'a jamais abouti — donc éventuellement sur un vcluster qui porte
+// des données. Pour un garde-fou de données, la question se pose au moment de la
+// suppression, au cluster.
+func (s *Service) HostNamespaceState(ctx context.Context, name, env string) (exists, known bool) {
+	if !validName(name) {
+		return false, false
+	}
+	k8s := s.k8sForEnv(envOrDefault(env))
+	if k8s == nil {
+		return false, false
+	}
+	return k8s.HostNamespaceExists(ctx, name)
+}

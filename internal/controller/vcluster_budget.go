@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,6 +43,20 @@ var _ QuotaResolver = (*service.Service)(nil)
 // errNoQuotaResolver ne peut arriver qu'avec un double de test incomplet ; en
 // production l'assertion ci-dessus l'exclut.
 var errNoQuotaResolver = errors.New("l'implémentation de VClusterOps ne sait pas résoudre les quotas effectifs")
+
+// BudgetRetryInterval est le rythme auquel un vcluster refusé pour dépassement
+// revient frapper à la porte.
+//
+// Sans lui, un refus ne se réveillait jamais tout seul : reconcileAll rendait
+// `0, nil`, et le reconciler ne surveille que les VCluster — la suppression d'un
+// VOISIN, qui est justement ce qui libère la place, ne produit aucun événement
+// ici. Le scénario normal de la file d'attente (« je crée, ça ne rentre pas, je
+// supprime un vieux, ça devrait repartir ») ne fonctionnait donc pas :
+// crd-vcluster.md §4.1 point 2 demande explicitement ce requeue.
+//
+// Cinq minutes : la place se libère à l'échelle d'une suppression de vcluster,
+// pas à la seconde, et un refus qui repolle vite ne libère rien plus tôt.
+const BudgetRetryInterval = 5 * time.Minute
 
 // BudgetReader reads the cell's current allocation. Declared here, where it is
 // consumed; the production implementation lives in the service.

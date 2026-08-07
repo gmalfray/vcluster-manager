@@ -90,6 +90,10 @@ type VClusterDeletionOps interface {
 	GetProtection(ctx context.Context, name, env string) service.ProtectionState
 	SetProtection(ctx context.Context, actor models.Actor, name, env string, enabled bool) (service.ProtectionState, error)
 
+	// HostNamespaceState dit si le namespace hôte existe, et si on a pu le savoir.
+	// Un vcluster jamais matérialisé n'a pas de données à sauvegarder.
+	HostNamespaceState(ctx context.Context, name, env string) (exists, known bool)
+
 	// TeardownVCluster détruit : finalizers Flux du namespace, puis Keycloak,
 	// Vault et éventuellement le dépôt app-manifests.
 	TeardownVCluster(ctx context.Context, actor models.Actor, name, env string, opts service.TeardownOptions) ([]string, error)
@@ -320,6 +324,22 @@ func overrideDisarms(v string) bool {
 
 func (r *VClusterReconciler) reconcileDeletionBackup(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
 	vc.Status.Deletion.Stage = stageBackupPending
+
+	// Rien à sauvegarder s'il n'y a rien : un CR refusé par le budget, ou dont le
+	// provisionnement n'a jamais abouti, reçoit quand même son finalizer — il est
+	// posé sur le chemin vivant, avant le contrôle de budget. Sa suppression
+	// déclenchait alors l'exigence de sauvegarde Velero d'un namespace inexistant,
+	// et le seul déblocage était l'annotation « détruire sans filet ». Normaliser
+	// ce geste-là est bien plus dangereux que le cas qu'il débloque.
+	//
+	// `known` compte autant que `exists` : sur une lecture ratée on garde le filet.
+	// « Je n'arrive pas à regarder » n'est pas « il n'y a rien ».
+	if exists, known := ops.HostNamespaceState(ctx, vc.Name, r.Cell); known && !exists {
+		setVClusterCond(vc, v1alpha1.CondVClusterBackupCompleted, metav1.ConditionTrue, "NothingToBackUp",
+			"aucun namespace vcluster-"+vc.Name+" sur la cell : ce vcluster n'a jamais été "+
+				"matérialisé, il n'y a pas de données à sauvegarder")
+		return true, 0, nil
+	}
 
 	if override := vc.Annotations[v1alpha1.AnnDeletionBackupOverride]; overrideDisarms(override) {
 		// Qui a désarmé le filet. L'annotation est le seul garde-fou de données

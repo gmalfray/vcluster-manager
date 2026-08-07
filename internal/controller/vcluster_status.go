@@ -263,9 +263,19 @@ func deletionProtectedFrom(vc *v1alpha1.VCluster, obs service.VClusterObservatio
 // integration, an intent, and a step of the deletion sequence.
 func blockingConditions(vc *v1alpha1.VCluster) []string {
 	types := []string{
-		v1alpha1.CondBudgetOK,
 		v1alpha1.CondResourcesProvisioned,
 		v1alpha1.CondVaultConfigured,
+	}
+	// BudgetOK ne bloque que tant que le vcluster n'a jamais tourné.
+	//
+	// Sur un vcluster déjà en marche, un dépassement de plafond est un fait
+	// d'exploitation — plafond baissé, voisin qui a grossi — et non une panne :
+	// faire virer Ready au rouge rendrait le health check de la Kustomization Flux
+	// rouge pour un vcluster qui va parfaitement bien. La condition BudgetOK reste
+	// visible et dit ce qui se passe ; elle ne prétend simplement plus que le
+	// vcluster est cassé.
+	if vc.Status.ChartVersion == "" {
+		types = append([]string{v1alpha1.CondBudgetOK}, types...)
 	}
 	// A stale ArgoCDReady left over from before ArgoCD was turned off must not
 	// keep blocking Ready.
@@ -366,7 +376,12 @@ func phaseFor(vc *v1alpha1.VCluster, ready metav1.ConditionStatus) v1alpha1.VClu
 	// The budget is the one definitive refusal: nothing is provisioned and
 	// nothing will be until the cap moves or another vcluster goes away
 	// (crd-vcluster.md §4.1 step 2).
-	if c := apimeta.FindStatusCondition(vc.Status.Conditions, v1alpha1.CondBudgetOK); c != nil && c.Status == metav1.ConditionFalse {
+	//
+	// Tant que rien n'a jamais tourné, seulement : un vcluster debout que le
+	// plafond vient de refuser n'est pas en échec, il est trop gros pour la cell.
+	// Le déclarer Failed effacerait de la vue qu'il fonctionne.
+	if c := apimeta.FindStatusCondition(vc.Status.Conditions, v1alpha1.CondBudgetOK); c != nil &&
+		c.Status == metav1.ConditionFalse && vc.Status.ChartVersion == "" {
 		return v1alpha1.VClusterPhaseFailed
 	}
 

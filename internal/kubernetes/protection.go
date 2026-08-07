@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -34,4 +36,23 @@ func (s *StatusClient) SetNamespaceProtection(ctx context.Context, name string, 
 	ns.SetAnnotations(annotations)
 	_, err = s.client.Resource(namespaceGVR).Update(ctx, ns, metav1.UpdateOptions{})
 	return err
+}
+
+// HostNamespaceExists dit si le namespace hôte du vcluster est là.
+//
+// Trois réponses et non deux, délibérément : « il existe », « il n'existe pas »,
+// et « je n'ai pas pu savoir ». C'est le défaut de GetNamespaceProtection juste
+// au-dessus, qui rend false pour une absence d'annotation comme pour un namespace
+// illisible — et cette fonction-ci sert à décider s'il faut exiger une sauvegarde
+// avant destruction, donc confondre les deux ferait sauter le filet sur un
+// hoquet d'API.
+func (s *StatusClient) HostNamespaceExists(ctx context.Context, name string) (exists, known bool) {
+	_, err := s.client.Resource(namespaceGVR).Get(ctx, "vcluster-"+name, metav1.GetOptions{})
+	if err == nil {
+		return true, true
+	}
+	if apierrors.IsNotFound(err) {
+		return false, true
+	}
+	return false, false
 }

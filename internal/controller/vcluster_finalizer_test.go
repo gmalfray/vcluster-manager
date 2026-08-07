@@ -38,6 +38,19 @@ type fakeDeletionOps struct {
 
 	teardownWarnings []string
 	teardownErr      error
+
+	// nsAbsent / nsUnknown : par défaut le namespace existe, ce qui est le cas de
+	// tous les tests de suppression écrits avant que la question ne se pose.
+	nsAbsent  bool
+	nsUnknown bool
+}
+
+func (f *fakeDeletionOps) HostNamespaceState(_ context.Context, _, _ string) (bool, bool) {
+	f.record("namespace-state")
+	if f.nsUnknown {
+		return false, false
+	}
+	return !f.nsAbsent, true
 }
 
 func (f *fakeDeletionOps) record(call string) {
@@ -689,5 +702,58 @@ func TestDeletionWithoutTheFinalizerDoesNothing(t *testing.T) {
 	}
 	if len(ops.trace()) != 0 {
 		t.Fatalf("le contrôleur a agi sur un objet qui ne lui appartient pas : %v", ops.trace())
+	}
+}
+
+// Supprimer un vcluster jamais matérialisé n'exige pas l'annotation « détruire
+// sans filet ».
+//
+// Le finalizer est posé sur le chemin vivant, avant le contrôle de budget : un CR
+// refusé pour dépassement le porte donc quand même. Sa suppression déclenchait
+// l'exigence de sauvegarde Velero d'un namespace qui n'existe pas, et le seul
+// déblocage était `backup-override`. Normaliser le geste qui désarme le garde-fou
+// de données est bien plus dangereux que le cas qu'il débloque.
+func TestDeletingANeverMaterialisedVClusterNeedsNoOverride(t *testing.T) {
+	ctx := context.Background()
+	ops := unpairedOps()
+	ops.nsAbsent = true
+	// Velero refuserait : personne ne doit l'appeler.
+	ops.triggerErr = errors.New("velero pas installé")
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+
+	vc := newDeletingVCluster(t, ctx, "jamais-monte", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !vclusterGone(t, ctx, vc) {
+		t.Fatal("bloqué sur l'exigence de sauvegarde alors qu'il n'y a rien à sauvegarder : " +
+			"le seul déblocage serait l'annotation « détruire sans filet »")
+	}
+	if n := ops.count("trigger-backup"); n != 0 {
+		t.Fatalf("sauvegarde tentée %d fois sur un namespace inexistant", n)
+	}
+}
+
+// Une lecture ratée garde le filet. « Je n'arrive pas à regarder » n'est pas
+// « il n'y a rien » — c'est la même discipline que partout ailleurs, et ici elle
+// protège des données.
+func TestAnUnreadableNamespaceStillRequiresTheBackup(t *testing.T) {
+	ctx := context.Background()
+	ops := unpairedOps()
+	ops.nsUnknown = true
+	ops.triggerErr = errors.New("velero pas installé")
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+
+	vc := newDeletingVCluster(t, ctx, "namespace-illisible", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if vclusterGone(t, ctx, vc) {
+		t.Fatal("détruit sans sauvegarde alors qu'on ne sait pas si des données existent")
+	}
+	if n := ops.count("trigger-backup"); n == 0 {
+		t.Fatal("l'étape de sauvegarde a été sautée sur une lecture ratée")
 	}
 }
