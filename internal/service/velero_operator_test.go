@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clienttesting "k8s.io/client-go/testing"
 
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 )
@@ -527,5 +528,59 @@ func TestGetVeleroBackupPhase_ValidatesBeforeK8sLookup(t *testing.T) {
 	}
 	if _, err := s.GetVeleroBackupPhase(context.Background(), "", "preprod"); !errors.Is(err, ErrBackupNameRequired) {
 		t.Fatalf("expected ErrBackupNameRequired, got %v", err)
+	}
+}
+
+// --- L'annotation de cible ---------------------------------------------
+//
+// Finding 4 de l'audit sécurité. L'opérateur décide `inPlace` en lisant
+// l'absence de cette annotation, donc l'oublier ne rate pas une restauration :
+// elle en fait une AUTRE, destructrice, sur le mauvais vcluster.
+
+func TestRequestVeleroRestore_CrossVClusterNamesItsTarget(t *testing.T) {
+	ctx := context.Background()
+	k8s := kubernetes.NewTestStatusClient()
+	s := newVeleroTestService(k8s)
+
+	// Restaurer un backup de `source` DANS `cible` : le marqueur est celui de la
+	// cible, parce que la source peut avoir disparu.
+	if _, err := s.RequestVeleroRestore(ctx, adminActor(), "source", "preprod", "backup-source-1", "cible"); err != nil {
+		t.Fatalf("RequestVeleroRestore: %v", err)
+	}
+
+	ann, err := k8s.ReadTestVeleroOpsAnnotations(ctx, "cible")
+	if err != nil {
+		t.Fatalf("relecture du marqueur : %v", err)
+	}
+	if got := ann[v1alpha1.AnnRestoreTarget]; got != "cible" {
+		t.Fatalf("annotation de cible = %q, attendu \"cible\" : l'opérateur conclurait à une "+
+			"restauration in-place et supprimerait le volume de la cible pour y restaurer un "+
+			"backup qui ne contient pas son namespace — perte sèche", got)
+	}
+}
+
+func TestRequestVeleroRestore_InPlaceOverwritesAStaleTarget(t *testing.T) {
+	ctx := context.Background()
+	k8s := kubernetes.NewTestStatusClient()
+	s := newVeleroTestService(k8s)
+
+	// Une restauration croisée d'abord : elle pose target=demo sur le marqueur.
+	if _, err := s.RequestVeleroRestore(ctx, adminActor(), "source", "preprod", "backup-source-1", "demo"); err != nil {
+		t.Fatalf("restauration croisée : %v", err)
+	}
+	// Puis un in-place sur ce même vcluster. RequestVeleroOps fait un patch de
+	// FUSION : ne pas réécrire la clé la laisserait collée, et cet in-place
+	// deviendrait silencieusement une nouvelle croisée vers une cible périmée.
+	if _, err := s.RequestVeleroRestore(ctx, adminActor(), "demo", "preprod", "backup-demo-1", ""); err != nil {
+		t.Fatalf("restauration in-place : %v", err)
+	}
+
+	ann, err := k8s.ReadTestVeleroOpsAnnotations(ctx, "demo")
+	if err != nil {
+		t.Fatalf("relecture du marqueur : %v", err)
+	}
+	if got := ann[v1alpha1.AnnRestoreTarget]; got != "" {
+		t.Fatalf("annotation de cible = %q après un in-place, attendu vide : la cible de la "+
+			"demande précédente est restée collée au marqueur", got)
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"sort"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/models"
@@ -324,8 +326,17 @@ func (s *Service) createVeleroRestore(ctx context.Context, actor models.Actor, n
 			slog.Warn("pods didn't terminate in time, deleting PVC anyway", "vcluster", name, "err", err)
 		}
 		if err := k8s.DeleteVClusterPVC(ctx, name); err != nil {
-			s.abortInPlaceRestore(k8s, name)
-			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suppression du volume : %w", err)}
+			// Volume déjà absent : on est DÉJÀ au-delà du point de non-retour, pas
+			// en échec. C'est le cas du rejeu après un ErrRestoreStageFailedVolumeGone,
+			// que le message d'erreur recommande justement. Le traiter comme un
+			// échec d'étape faisait reprendre Flux sur un vcluster sans volume — le
+			// StatefulSet recréait alors un PVC vide, exactement ce que la sentinelle
+			// existe pour empêcher, contourné par le chemin de reprise documenté.
+			if !apierrors.IsNotFound(err) {
+				s.abortInPlaceRestore(k8s, name)
+				return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suppression du volume : %w", err)}
+			}
+			slog.Info("volume déjà absent, on poursuit : le point de non-retour était déjà franchi", "vcluster", name)
 		}
 		pvcDeleted = true
 	}
@@ -482,9 +493,23 @@ func (s *Service) RequestVeleroRestore(ctx context.Context, actor models.Actor, 
 	}
 
 	requestedAt := newRequestNonce()
+	// La cible est TOUJOURS posée, y compris à la chaîne vide pour un in-place.
+	//
+	// Deux bugs en un si on l'omet. D'abord, une restauration croisée devenait
+	// une restauration in-place sur la cible : l'opérateur lisait une annotation
+	// absente, concluait `inPlace`, supprimait le volume de la CIBLE puis
+	// restaurait un backup de la SOURCE dans le namespace de la cible — donc
+	// rien, puisque le backup ne contient pas ce namespace. Perte du volume de la
+	// cible, par une opération de routine.
+	//
+	// Ensuite, RequestVeleroOps fait un patch de FUSION, qui ne retire aucune
+	// clé : une cible posée une fois resterait collée au marqueur, et tous les
+	// in-place suivants deviendraient silencieusement des restaurations croisées
+	// vers cette cible périmée. Écrire la chaîne vide écrase la précédente.
 	annotations := map[string]string{
 		v1alpha1.AnnRestoreRequestedAt: requestedAt,
 		v1alpha1.AnnRestoreFromBackup:  backupName,
+		v1alpha1.AnnRestoreTarget:      targetName,
 		v1alpha1.AnnRestoreRequestedBy: actor.Username,
 	}
 	if err := k8s.RequestVeleroOps(ctx, markerVCluster, annotations); err != nil {
@@ -895,6 +920,11 @@ type VeleroBackupCreated struct {
 func (s *Service) TriggerVeleroBackup(ctx context.Context, actor models.Actor, name, env string) (VeleroBackupCreated, error) {
 	if !actor.IsAdmin {
 		return VeleroBackupCreated{}, ErrForbidden
+	}
+	// Seul point d'entrée Velero qui ne validait pas le nom, alors qu'il sert à
+	// construire le namespace sauvegardé par concaténation.
+	if !validName(name) {
+		return VeleroBackupCreated{}, ErrInvalidName
 	}
 	env = envOrDefault(env)
 	k8s := s.k8sForEnv(env)

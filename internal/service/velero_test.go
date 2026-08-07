@@ -8,8 +8,10 @@ import (
 	"sync"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/gmalfray/vcluster-manager/internal/config"
@@ -384,15 +386,23 @@ func TestCreateVeleroRestore_AbortsWhenScaleDownFails(t *testing.T) {
 	}
 }
 
+// Une suppression de PVC qui échoue POUR UNE AUTRE RAISON que « absent » laisse
+// le volume intact : il faut abandonner et reprendre Flux.
 func TestCreateVeleroRestore_AbortsWhenPVCDeleteFails(t *testing.T) {
-	// Suspend and scale-down both succeed (StatefulSet seeded, embedded
-	// topology, no pod so the wait returns immediately), but there's no PVC
-	// under the expected name to delete.
-	k8s := kubernetes.NewTestStatusClient(
+	refus := func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "delete" && action.GetResource().Resource == "persistentvolumeclaims" {
+			return true, nil, apierrors.NewForbidden(
+				schema.GroupResource{Resource: "persistentvolumeclaims"}, "data-vcluster-demo-0",
+				fmt.Errorf("refusé par un webhook"))
+		}
+		return false, nil, nil
+	}
+	k8s := kubernetes.NewTestStatusClientWithReactor(refus,
 		newBackupObj("manual-demo-1", "velero-system", "Completed"),
 		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
 		newKustomizationObj("tenant-demo", "flux-system"),
 		newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
+		newPVCObj("data-vcluster-demo-0", "vcluster-demo"),
 	)
 	s := newVeleroTestService(k8s)
 
@@ -403,6 +413,46 @@ func TestCreateVeleroRestore_AbortsWhenPVCDeleteFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "suppression du volume") {
 		t.Errorf("expected the error to name the failed stage, got %q", err.Error())
+	}
+}
+
+// Le volume DÉJÀ absent n'est pas un échec : c'est le rejeu après un
+// ErrRestoreStageFailedVolumeGone, que le message d'erreur recommande. Le
+// traiter comme un échec faisait reprendre Flux sur un vcluster sans volume,
+// donc recréer un PVC vide — précisément ce que la sentinelle interdit.
+func TestCreateVeleroRestore_AlreadyDeletedVolumeIsNotAFailure(t *testing.T) {
+	var mu sync.Mutex
+	helmReleasePatches := 0
+	compteur := func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "patch" && action.GetResource().Resource == "helmreleases" {
+			mu.Lock()
+			helmReleasePatches++
+			mu.Unlock()
+		}
+		return false, nil, nil
+	}
+	// Aucun PVC semé : la suppression renverra NotFound.
+	k8s := kubernetes.NewTestStatusClientWithReactor(compteur,
+		newBackupObj("manual-demo-1", "velero-system", "Completed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+		newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.CreateVeleroRestoreUnwatched(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+	if err != nil {
+		t.Fatalf("le rejeu a échoué alors que le volume était déjà parti : %v", err)
+	}
+	if view.RestoreName == "" {
+		t.Fatal("aucun restore créé")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// Un seul patch = SetFluxSuspend(true). Un second voudrait dire que Flux a
+	// été repris, donc qu'un PVC vide va être recréé.
+	if helmReleasePatches != 1 {
+		t.Fatalf("%d patches sur le HelmRelease : Flux a été repris alors que le volume est parti", helmReleasePatches)
 	}
 }
 
@@ -463,18 +513,6 @@ func TestCreateVeleroRestore_AbortResumesFluxOnlyBeforeThePVCIsGone(t *testing.T
 				newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
 				newKustomizationObj("tenant-demo", "flux-system"),
 				// no StatefulSet: ScaleVClusterWorkloads fails
-			},
-			wantErr:         ErrRestoreStageFailed,
-			wantFluxResumed: true,
-		},
-		{
-			name: "PVC delete fails, so the PVC never actually goes away: flux is resumed",
-			objs: []runtime.Object{
-				newBackupObj("manual-demo-1", "velero-system", "Completed"),
-				newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
-				newKustomizationObj("tenant-demo", "flux-system"),
-				newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
-				// no PVC under the expected name: DeleteVClusterPVC fails
 			},
 			wantErr:         ErrRestoreStageFailed,
 			wantFluxResumed: true,

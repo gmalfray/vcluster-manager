@@ -9,6 +9,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
@@ -58,8 +59,19 @@ type VClusterReconciler struct {
 	// — réservé aux tests qui ne portent pas sur le budget.
 	BudgetOps BudgetReader
 
+	// Namespace est le seul namespace d'où des VCluster sont acceptés. Vide =
+	// DefaultVClustersNamespace. Voir namespace_guard.go pour le pourquoi.
+	Namespace string
+
 	// GracePeriod overrides DefaultGracePeriod. Zero means the default.
 	GracePeriod time.Duration
+}
+
+func (r *VClusterReconciler) vclustersNamespace() string {
+	if r.Namespace != "" {
+		return r.Namespace
+	}
+	return DefaultVClustersNamespace
 }
 
 func (r *VClusterReconciler) gracePeriod() time.Duration {
@@ -76,6 +88,13 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Avant tout le reste, y compris la suppression : un CR mal placé ne doit
+	// ni piloter le vcluster homonyme, ni se voir poser un finalizer.
+	if reason := vclusterMisplaced(&vc, r.vclustersNamespace()); reason != "" {
+		setVClusterCond(&vc, v1alpha1.CondAccepted, metav1.ConditionFalse, "NamespaceMismatch", reason)
+		return ctrl.Result{}, r.Status().Update(ctx, &vc)
+	}
+
 	// Un deletionTimestamp veut dire que le CR s'en va : ce chemin appartient au
 	// finalizer, pas à la réconciliation normale.
 	if !vc.DeletionTimestamp.IsZero() {
@@ -84,44 +103,60 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	vc.Status.ObservedGeneration = vc.Generation
 
-	// Le sommeil d'abord : inutile de provisionner ce qu'on vient d'endormir.
-	if err := r.reconcileSuspend(ctx, &vc); err != nil {
-		return ctrl.Result{}, err
-	}
+	// Le status est écrit sur TOUS les chemins, y compris en erreur.
+	//
+	// Sinon toute condition posée avant un échec est perdue : on retourne
+	// l'erreur, le status n'est jamais écrit, et un SuspendFailed n'apparaît
+	// jamais dans `kubectl describe`. C'est exactement l'échec silencieux contre
+	// lequel ADR-001 met en garde — l'exploitant voit un reconcile qui boucle
+	// sans jamais savoir pourquoi.
+	requeue, reconcileErr := r.reconcileAll(ctx, &vc)
 
-	var requeue time.Duration
-	if vc.Status.Phase != v1alpha1.VClusterPhaseSuspended {
-		// Le budget avant le provisionnement : on ne matérialise rien qu'on
-		// refuserait ensuite.
-		ok, err := r.checkResourceBudget(ctx, &vc)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !ok {
-			// Refus explicite, pas une erreur de réconciliation : rien ne sera
-			// réessayé tant que le spec ou le plafond n'a pas changé, et la
-			// condition BudgetOK dit pourquoi.
-			if err := r.Status().Update(ctx, &vc); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		}
-
-		if err := r.reconcileProvisioning(ctx, &vc); err != nil {
-			return ctrl.Result{}, err
-		}
-		d, err := r.reconcileObservedState(ctx, &vc)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		requeue = d
-	}
-
-	// Status only, always: the spec belongs to whoever commits in Git.
 	if err := r.Status().Update(ctx, &vc); err != nil {
+		// L'erreur de réconciliation prime : c'est elle qui dit ce qui ne va
+		// vraiment pas. L'échec d'écriture du status est journalisé sans masquer
+		// la première.
+		if reconcileErr != nil {
+			log.FromContext(ctx).Error(err, "écriture du status après un échec de réconciliation")
+			return ctrl.Result{}, reconcileErr
+		}
 		return ctrl.Result{}, err
+	}
+	if reconcileErr != nil {
+		return ctrl.Result{}, reconcileErr
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// reconcileAll enchaîne les étapes et rend la main à la première erreur. Son
+// appelant écrit le status quoi qu'il arrive, donc les conditions posées ici
+// survivent à un échec.
+func (r *VClusterReconciler) reconcileAll(ctx context.Context, vc *v1alpha1.VCluster) (time.Duration, error) {
+	// Le sommeil d'abord : inutile de provisionner ce qu'on vient d'endormir.
+	if err := r.reconcileSuspend(ctx, vc); err != nil {
+		return 0, err
+	}
+	if vc.Status.Phase == v1alpha1.VClusterPhaseSuspended {
+		return 0, nil
+	}
+
+	// Le budget avant le provisionnement : on ne matérialise rien qu'on
+	// refuserait ensuite.
+	ok, err := r.checkResourceBudget(ctx, vc)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		// Refus explicite, pas une erreur de réconciliation : rien ne sera
+		// réessayé tant que le spec ou le plafond n'a pas changé, et la
+		// condition BudgetOK dit pourquoi.
+		return 0, nil
+	}
+
+	if err := r.reconcileProvisioning(ctx, vc); err != nil {
+		return 0, err
+	}
+	return r.reconcileObservedState(ctx, vc)
 }
 
 // reconcileSuspend applies — or undoes — the reversible sleep.

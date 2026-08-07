@@ -65,6 +65,16 @@ func (r *VeleroOpsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// La garde de placement passe avant la moindre lecture d'annotation : le
+	// marqueur doit d'abord prouver qu'il parle du vcluster où il vit.
+	// Pas d'erreur retournée — rien ne sera réessayé, et c'est voulu : un objet
+	// refusé le restera tant qu'il n'aura pas bougé, et le requeuer en boucle
+	// donnerait à n'importe qui un moyen de faire tourner l'opérateur à vide.
+	if reason := markerMisplaced(&ops); reason != "" {
+		refuseMarker(&ops, reason)
+		return ctrl.Result{}, r.Status().Update(ctx, &ops)
+	}
+
 	// Restore before backup: it is the destructive path, and an interrupted one
 	// must not wait behind a backup poll.
 	restoreRequeue, restoreErr := r.reconcileRestore(ctx, &ops)

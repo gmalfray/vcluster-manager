@@ -88,3 +88,14 @@ func NewTestStatusClientWithReactor(reactor clienttesting.ReactionFunc, objs ...
 	client.PrependReactor("*", "*", reactor)
 	return &StatusClient{client: client}
 }
+
+// ReadTestVeleroOpsAnnotations reads back the annotations RequestVeleroOps
+// wrote on a marker. Test-only, and it goes through the production GVR for the
+// same pluralisation reason as SeedTestVeleroOpsMarker.
+func (s *StatusClient) ReadTestVeleroOpsAnnotations(ctx context.Context, name string) (map[string]string, error) {
+	obj, err := s.client.Resource(veleroOpsGVR).Namespace("vcluster-"+name).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return obj.GetAnnotations(), nil
+}

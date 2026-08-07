@@ -161,6 +161,9 @@ const (
 // a Kustomization health check — which is what makes a failure visible in
 // `flux get kustomizations` without needing an admission webhook.
 const (
+	// CondAccepted est partagée avec le marqueur, déclarée dans
+	// vclusterveleroops_types.go : la garde de placement est la même règle sur
+	// les deux CRD, elle mérite un seul nom.
 	CondVClusterReady           = "Ready"
 	CondResourcesProvisioned    = "ResourcesProvisioned"
 	CondBudgetOK                = "BudgetOK"

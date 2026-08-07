@@ -32,7 +32,7 @@ import (
 )
 
 func main() {
-	var metricsAddr, probeAddr, cell string
+	var metricsAddr, probeAddr, cell, vclustersNamespace string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address the metric endpoint binds to")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address the probe endpoint binds to")
@@ -43,6 +43,8 @@ func main() {
 	// ADR-002. Not used to choose a client (there is only one), but it labels the
 	// audit trail and the Prometheus series: an operator reporting another cell's
 	// name would be actively misleading, so the overlay must set this.
+	flag.StringVar(&vclustersNamespace, "vclusters-namespace", controller.DefaultVClustersNamespace,
+		"seul namespace d'où des VCluster sont acceptés — un CR déposé ailleurs est ignoré")
 	flag.StringVar(&cell, "cell", "preprod", "nom de la cell (cluster hôte) que cet opérateur réconcilie — étiquette l'audit et les métriques")
 	// Leader election matters even for a single replica: it stops a rolling
 	// update's old and new pods from both driving a destructive restore sequence
@@ -121,9 +123,10 @@ func main() {
 	}
 
 	if err := (&controller.VClusterReconciler{
-		Client: mgr.GetClient(),
-		Ops:    svc,
-		Cell:   cell,
+		Client:    mgr.GetClient(),
+		Ops:       svc,
+		Cell:      cell,
+		Namespace: vclustersNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "câblage du reconciler VCluster")
 		os.Exit(1)

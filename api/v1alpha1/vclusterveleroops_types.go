@@ -30,6 +30,9 @@ const (
 
 // Condition types surfaced on the marker (design §3, §4, crd-vcluster.md §3.3).
 const (
+	// CondAccepted dit si l'objet a passé la garde de placement. False veut dire
+	// qu'il a été ignoré ENTIÈREMENT, pas qu'une opération a échoué.
+	CondAccepted          = "Accepted"
 	CondBackupCompleted   = "BackupCompleted"
 	CondRestoreInProgress = "RestoreInProgress"
 	// CondRestoreRejectedBusy is the guard the imperative path does not have

@@ -26,6 +26,19 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "list", "update"]
   # Velero backup management (list backups, create download requests and restores)
+  # Le marqueur d'opérations Velero (VELERO_TRIGGER_MODE=annotation). L'app pose
+  # la demande, l'opérateur l'exécute — d'où create/patch ici et pas dans le
+  # ClusterRole de l'opérateur, qui ne fait que la lire.
+  #
+  # Ces droits sont cluster-wide, donc ils ne bornent RIEN à eux seuls : c'est
+  # la garde de placement du reconciler (internal/controller/namespace_guard.go)
+  # qui fait qu'un marqueur ne peut parler que du vcluster où il vit. Les deux
+  # sont indissociables — accorder ceci sans la garde rend n'importe quel
+  # vcluster pilotable depuis n'importe quel namespace.
+  - apiGroups: ["vcluster.rebuild-it.fr"]
+    resources: ["vclusterveleroops"]
+    verbs: ["get", "list", "create", "patch"]
+
   - apiGroups: ["velero.io"]
     resources: ["backups", "restores", "downloadrequests", "schedules"]
     verbs: ["get", "list", "create", "delete"]

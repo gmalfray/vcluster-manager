@@ -78,7 +78,7 @@ func vcReq(vc *v1alpha1.VCluster) ctrl.Request {
 func TestSuspendOpensAGracePeriodAndDestroysNothing(t *testing.T) {
 	ctx := context.Background()
 	ops := &fakeVClusterOps{}
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
 	vc := createVCluster(t, ctx, "sommeil", true)
 	defer func() { _ = k8sClient.Delete(ctx, vc) }()
@@ -107,7 +107,7 @@ func TestSuspendOpensAGracePeriodAndDestroysNothing(t *testing.T) {
 func TestSuspendIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	ops := &fakeVClusterOps{}
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
 	vc := createVCluster(t, ctx, "sommeil-idempotent", true)
 	defer func() { _ = k8sClient.Delete(ctx, vc) }()
@@ -127,7 +127,7 @@ func TestSuspendIsIdempotent(t *testing.T) {
 func TestUnsuspendResumesAndClearsTheWindow(t *testing.T) {
 	ctx := context.Background()
 	ops := &fakeVClusterOps{}
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
 	vc := createVCluster(t, ctx, "annulation", true)
 	defer func() { _ = k8sClient.Delete(ctx, vc) }()
@@ -162,7 +162,7 @@ func TestUnsuspendResumesAndClearsTheWindow(t *testing.T) {
 func TestSuspendFailureDoesNotClaimSuccess(t *testing.T) {
 	ctx := context.Background()
 	ops := &fakeVClusterOps{suspendErr: errors.New("flux injoignable")}
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
 	vc := createVCluster(t, ctx, "sommeil-echec", true)
 	defer func() { _ = k8sClient.Delete(ctx, vc) }()
@@ -181,7 +181,7 @@ func TestSuspendFailureDoesNotClaimSuccess(t *testing.T) {
 func TestVClusterReconcilerPassesItsCell(t *testing.T) {
 	ctx := context.Background()
 	ops := &fakeVClusterOps{}
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell2"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell2", Namespace: "default"}
 
 	vc := createVCluster(t, ctx, "cell-propagation", true)
 	defer func() { _ = k8sClient.Delete(ctx, vc) }()
