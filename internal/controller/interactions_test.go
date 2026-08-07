@@ -47,6 +47,14 @@ import (
 type fullOps struct {
 	*fakeDeletionOps
 
+	// Le cinquième seam. fullOps existe pour être le SEUL faux qui les implémente
+	// tous : chaque campagne de chantier n'a fourni que sa moitié, donc chacune a
+	// mesuré, sans le savoir, le comportement de l'opérateur avec un contrôleur
+	// incomplet. Le chantier intégrations en a ajouté un — sans cette ligne, les
+	// tests d'interaction continuaient de voir ArgoCDReady et VaultConfigured
+	// absentes, c'est-à-dire exactement le faux vert qu'ils dénonçaient.
+	integrations fakeIntegrationOps
+
 	gen *gitops.Generator
 
 	obsMu sync.Mutex
@@ -54,11 +62,12 @@ type fullOps struct {
 }
 
 var (
-	_ VClusterOps         = (*fullOps)(nil)
-	_ VClusterObserver    = (*fullOps)(nil)
-	_ VClusterProvisioner = (*fullOps)(nil)
-	_ VClusterDeletionOps = (*fullOps)(nil)
-	_ QuotaResolver       = (*fullOps)(nil)
+	_ VClusterOps            = (*fullOps)(nil)
+	_ VClusterObserver       = (*fullOps)(nil)
+	_ VClusterProvisioner    = (*fullOps)(nil)
+	_ VClusterDeletionOps    = (*fullOps)(nil)
+	_ QuotaResolver          = (*fullOps)(nil)
+	_ VClusterIntegrationOps = (*fullOps)(nil)
 )
 
 // EffectiveQuotas délègue au VRAI générateur, comme le rendu : c'est toute la
@@ -70,11 +79,44 @@ func (f *fullOps) EffectiveQuotas(req *models.CreateRequest, env string) (string
 		subs["QUOTAS_ENABLED"] == "true", nil
 }
 
+func (f *fullOps) VaultAuthConfigured(ctx context.Context, name, env string) (bool, error) {
+	return f.integrations.VaultAuthConfigured(ctx, name, env)
+}
+
+func (f *fullOps) VaultWebhookReady(ctx context.Context, name, env string) (bool, error) {
+	return f.integrations.VaultWebhookReady(ctx, name, env)
+}
+
+func (f *fullOps) ConfigureVaultAuth(ctx context.Context, name, env string) error {
+	return f.integrations.ConfigureVaultAuth(ctx, name, env)
+}
+
+func (f *fullOps) EnsureKeycloakClient(name, env string) error {
+	return f.integrations.EnsureKeycloakClient(name, env)
+}
+
+func (f *fullOps) GetRancherStatus(ctx context.Context, name, env string) service.RancherStatus {
+	return f.integrations.GetRancherStatus(ctx, name, env)
+}
+
+func (f *fullOps) PairRancher(ctx context.Context, actor models.Actor, name, env string) (service.RancherStatus, error) {
+	return f.integrations.PairRancher(ctx, actor, name, env)
+}
+
 func newFullOps() *fullOps {
 	return &fullOps{
 		fakeDeletionOps: unpairedOps(),
-		gen:             newFakeProvisioner().gen,
-		obs:             healthyObservation(),
+		// Intégrations saines par défaut, même intention que healthyObservation() :
+		// ces tests portent sur les interactions entre étapes, pas sur les pannes
+		// de tiers. Un défaut « vault pas prêt » ferait échouer Ready partout et
+		// masquerait ce qu'ils mesurent.
+		integrations: fakeIntegrationOps{
+			vaultExists:   true,
+			vaultReady:    true,
+			rancherStatus: service.RancherStatus{Enabled: true, Paired: true},
+		},
+		gen: newFakeProvisioner().gen,
+		obs: healthyObservation(),
 	}
 }
 
@@ -421,42 +463,60 @@ func TestALiveVClusterRefusedByTheBudgetKeepsBeingObserved(t *testing.T) {
 
 // --- l'agrégat × les étapes que personne n'a écrites -------------------------
 
-// ArgoCD activé, Ready quand même : aucune étape de l'opérateur ne pose
-// ArgoCDReady, donc la condition est absente, donc l'agrégat la saute.
+// ArgoCD activé : Ready exige désormais qu'on ait regardé.
 //
-// La règle « une condition absente veut dire que l'étape n'a pas encore tourné »
-// est juste tant qu'une étape finira par tourner. Ici il n'y en a aucune :
-// Keycloak, le dépôt GitLab et la Kustomization ArgoCD ne sont vérifiés par
-// personne dans l'opérateur, et VaultConfigured est dans le même cas. Un
-// vcluster qui demande ArgoCD est donc déclaré prêt sans que rien d'ArgoCD
-// n'ait été regardé — et c'est ce Ready que le health check de Flux lit.
+// C'était le faux vert. La règle « une condition absente veut dire que l'étape
+// n'a pas encore tourné » est juste tant qu'une étape finira par tourner — et il
+// n'y en avait aucune : ni ArgoCDReady ni VaultConfigured n'étaient écrites par
+// qui que ce soit, donc l'agrégat les sautait et un vcluster demandant ArgoCD
+// était déclaré prêt sans que rien d'ArgoCD n'ait été vérifié. C'est ce Ready que
+// le health check de Flux lit.
 //
-// TROU CONNU, de couverture fonctionnelle plutôt que de code : les étapes
-// §4.1 point 4 (Keycloak / GitLab / Vault) ne sont pas portées.
-func TestArgoCDEnabledIsReadyWithoutAnybodyCheckingArgoCD(t *testing.T) {
+// Réserve assumée, portée par le message de la condition et non cachée derrière
+// un True optimiste : ArgoCDReady ne couvre aujourd'hui que le volet Keycloak. Le
+// dépôt GitLab et la santé de la Kustomization ArgoCD ne sont pas encore vérifiés.
+func TestArgoCDEnabledIsNotReadyUntilArgoCDIsChecked(t *testing.T) {
 	ctx := context.Background()
-	ops := newFullOps()
-	r := budgetedReconciler(ops)
-
-	vc := newProvisioningVCluster(t, ctx, "argo-non-verifie", v1alpha1.VClusterSpec{
+	spec := v1alpha1.VClusterSpec{
 		ArgoCD: &v1alpha1.ArgoCDSpec{Enabled: true, RBACGroups: []string{"team-a"}},
-	})
-	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+	}
+
+	// 1. Keycloak en panne : Ready ne doit pas être True.
+	casse := newFullOps()
+	casse.integrations.keycloakErr = errors.New("keycloak injoignable")
+	rCasse := budgetedReconciler(casse)
+	vcCasse := newProvisioningVCluster(t, ctx, "argo-keycloak-casse", spec)
+
+	// L'échec Keycloak remonte en erreur de réconciliation, c'est voulu : il sera
+	// réessayé. Ce qui compte est que le status ne prétende pas que tout va bien.
+	_, _ = rCasse.Reconcile(ctx, vcReq(vcCasse))
+
+	gotCasse := fetchVCluster(t, ctx, vcCasse)
+	requireVCCond(t, gotCasse, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "KeycloakClientFailed")
+	if c := vcCondition(gotCasse, v1alpha1.CondVClusterReady); c != nil && c.Status == metav1.ConditionTrue {
+		t.Fatalf("Ready=True alors que le client OIDC ArgoCD n'a pas pu être créé : %+v", c)
+	}
+
+	// 2. Tout sain : les deux conditions sont écrites, et Ready peut être True.
+	sain := newFullOps()
+	rSain := budgetedReconciler(sain)
+	vcSain := newProvisioningVCluster(t, ctx, "argo-verifie", spec)
+	if _, err := rSain.Reconcile(ctx, vcReq(vcSain)); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	got := fetchVCluster(t, ctx, vc)
-	if c := vcCondition(got, v1alpha1.CondArgoCDReady); c != nil {
-		t.Fatalf("ArgoCDReady = %s/%s : quelqu'un écrit enfin cette condition, "+
-			"ce test a fait son temps", c.Status, c.Reason)
+	gotSain := fetchVCluster(t, ctx, vcSain)
+	for _, condType := range []string{v1alpha1.CondArgoCDReady, v1alpha1.CondVaultConfigured} {
+		c := vcCondition(gotSain, condType)
+		if c == nil {
+			t.Fatalf("%s absente : personne ne l'écrit, donc l'agrégat la saute et Ready ne "+
+				"veut rien dire pour ce volet", condType)
+		}
+		if c.Status != metav1.ConditionTrue {
+			t.Errorf("%s = %s/%s", condType, c.Status, c.Reason)
+		}
 	}
-	if c := vcCondition(got, v1alpha1.CondVaultConfigured); c != nil {
-		t.Fatalf("VaultConfigured = %s/%s : idem", c.Status, c.Reason)
-	}
-	requireVCCond(t, got, v1alpha1.CondVClusterReady, metav1.ConditionTrue, "AllChecksPassed")
-	if got.Status.Phase != v1alpha1.VClusterPhaseReady {
-		t.Fatalf("phase = %q, ce test fige Ready", got.Status.Phase)
-	}
+	requireVCCond(t, gotSain, v1alpha1.CondVClusterReady, metav1.ConditionTrue, "AllChecksPassed")
 }
 
 // --- garde de placement × finalizer ----------------------------------------
@@ -859,4 +919,49 @@ func TestAnEmptyBackupOverrideStillBlocks(t *testing.T) {
 	}
 	requireVClusterCond(t, fetchVCluster(t, ctx, vc), v1alpha1.CondVClusterBackupCompleted,
 		metav1.ConditionFalse, "BackupTriggerFailed")
+}
+
+// Un opérateur sans clients d'intégration rend Ready=Unknown, jamais True.
+//
+// C'est le pendant côté déploiement de N4, et c'est le cas ACTUEL :
+// cmd/operator/main.go ne câble ni Vault, ni Keycloak, ni Rancher. Les étapes
+// écrivent donc Unknown/NotConfigured, ce qui est honnête — mais comme
+// VaultConfigured et ArgoCDReady sont bloquantes, l'agrégat sort Unknown et le
+// health check de la Kustomization Flux ne passe jamais au vert.
+//
+// Ce test fige cette conséquence pour qu'elle soit un fait écrit et non une
+// surprise : soit on câble les identifiants sur l'opérateur, soit on accepte que
+// tout vcluster demandant ArgoCD reste Unknown. Le choix a un coût de sécurité —
+// donner à ce pod le token GitLab, le secret client Keycloak et les creds Vault
+// élargit ce qu'une compromission emporte — donc il ne se décide pas ici.
+func TestAnOperatorWithoutIntegrationClientsIsUnknownNotReady(t *testing.T) {
+	ctx := context.Background()
+	ops := newFullOps()
+	ops.integrations.vaultExistsErr = service.ErrVaultNotConfigured
+	ops.integrations.keycloakErr = service.ErrKeycloakNotConfigured
+	r := budgetedReconciler(ops)
+
+	vc := newProvisioningVCluster(t, ctx, "sans-integrations", v1alpha1.VClusterSpec{
+		ArgoCD: &v1alpha1.ArgoCDSpec{Enabled: true},
+	})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := fetchVCluster(t, ctx, vc)
+	requireVCCond(t, got, v1alpha1.CondVaultConfigured, metav1.ConditionUnknown, "VaultNotConfigured")
+	requireVCCond(t, got, v1alpha1.CondArgoCDReady, metav1.ConditionUnknown, "KeycloakNotConfigured")
+
+	ready := vcCondition(got, v1alpha1.CondVClusterReady)
+	if ready == nil {
+		t.Fatal("Ready absente")
+	}
+	if ready.Status == metav1.ConditionTrue {
+		t.Fatalf("Ready=True (%s) alors qu'aucune intégration n'a pu être vérifiée : "+
+			"c'est le faux vert de N4, une couche plus bas", ready.Reason)
+	}
+	if ready.Status != metav1.ConditionUnknown {
+		t.Errorf("Ready = %s/%s, attendu Unknown : rien n'est cassé, on n'a simplement "+
+			"pas pu regarder", ready.Status, ready.Reason)
+	}
 }

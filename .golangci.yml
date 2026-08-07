@@ -74,6 +74,10 @@ linters:
         - structurel
         - normalis
         - partiel
+        - contribue
+        - existant
+        - interm
+        - inventer
 
   exclusions:
     generated: lax

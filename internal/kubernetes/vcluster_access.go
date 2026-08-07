@@ -14,6 +14,7 @@ import (
 	"time"
 
 	authv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -339,6 +340,41 @@ func (s *StatusClient) WaitForVaultWebhookReady(ctx context.Context, name string
 		case <-time.After(30 * time.Second):
 		}
 	}
+}
+
+// VaultWebhookReady reports, from a single read, whether vault-webhook is
+// Ready right now — same two checks as WaitForVaultWebhookReady (the
+// Kustomization, then the HelmRelease it deploys inside the vcluster), but no
+// polling loop.
+//
+// A reconcile loop already has its own retry through requeue; a helper that
+// blocks here would block the reconcile with it, and the operator would lose
+// the wait on every restart the way the goroutine it replaces does. "Not
+// found" reads as "not ready yet" (the Kustomization simply has not been
+// applied yet), not as an error — only a genuine read failure is.
+func (s *StatusClient) VaultWebhookReady(ctx context.Context, name string) (bool, error) {
+	namespace := "vcluster-" + name
+	ksName := "vault-webhook-" + name
+
+	ks, err := s.client.Resource(kustomizationGVR).Namespace(namespace).Get(ctx, ksName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lecture de la Kustomization %s: %w", ksName, err)
+	}
+	if extractConditionStatus(ks, "Ready") != "Ready" {
+		return false, nil
+	}
+
+	hr, err := s.client.Resource(helmReleaseGVR).Namespace(namespace).Get(ctx, "vault-webhook", metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lecture du HelmRelease vault-webhook: %w", err)
+	}
+	return extractConditionStatus(hr, "Ready") == "Ready", nil
 }
 
 // CreateVaultReviewerToken creates a long-lived TokenRequest for the vault-webhook service
