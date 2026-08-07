@@ -169,7 +169,25 @@ func (r *VClusterReconciler) reconcileAll(ctx context.Context, vc *v1alpha1.VClu
 	if err := r.reconcileProvisioning(ctx, vc); err != nil {
 		return 0, err
 	}
-	return r.reconcileObservedState(ctx, vc)
+
+	// Les intégrations (Vault, Keycloak, Rancher) avant l'observation : c'est
+	// elle qui constate leur résultat, et constater avant d'agir ferait toujours
+	// voir l'état du passage précédent.
+	integrationRequeue, err := r.reconcileIntegrations(ctx, vc)
+	if err != nil {
+		return 0, err
+	}
+
+	observeRequeue, err := r.reconcileObservedState(ctx, vc)
+	if err != nil {
+		return 0, err
+	}
+	// Le plus court des deux : une intégration qui progresse ne doit pas attendre
+	// le rythme de croisière de l'observation.
+	if integrationRequeue > 0 && (observeRequeue == 0 || integrationRequeue < observeRequeue) {
+		return integrationRequeue, nil
+	}
+	return observeRequeue, nil
 }
 
 // reconcileSuspend applies — or undoes — the reversible sleep.
@@ -233,6 +251,21 @@ func (r *VClusterReconciler) reconcileSuspend(ctx context.Context, vc *v1alpha1.
 // reconcileObservedState est implémenté dans vcluster_status.go : il remplit le
 // status observé (versions, quotas, Rancher, protection, dernier backup) et
 // agrège la phase + la condition Ready (crd-vcluster.md §2.4, §3.3).
+
+// reconcileIntegrations configure ce qui vit hors du cluster hôte et que le CR
+// doit piloter : le backend d'authentification Vault, le client OIDC Keycloak,
+// l'appairage Rancher. Retourne le délai de re-scrutation souhaité.
+//
+// C'est le remplacement de la map mémoire `vaultStates` des handlers et de sa
+// goroutine : un état de configuration qui vit dans le processus disparaît à
+// chaque redémarrage, d'où le rattrapage au démarrage qui rescanne tout. Sur le
+// status du CR, il survit comme le reste.
+//
+// Implémentation attendue dans vcluster_integrations.go.
+func (r *VClusterReconciler) reconcileIntegrations(ctx context.Context, vc *v1alpha1.VCluster) (time.Duration, error) {
+	_, _ = ctx, vc
+	return 0, nil
+}
 
 // reconcileDeletion porte le finalizer et la séquence de suppression, garde-fou
 // deletionProtection compris (crd-vcluster.md §4.3, §4.4).
