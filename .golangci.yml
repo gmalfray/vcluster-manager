@@ -59,10 +59,19 @@ linters:
       # The user-facing strings (README templates, GitLab repo descriptions,
       # error messages) are in French. The default US dictionary flags
       # legitimate French words as typos — whitelist them.
+      # La liste s'allonge à mesure que les commentaires passent au français.
       ignore-rules:
         - manifestes
         - exemple
         - correspondant
+        - conflit
+        - distincte
+        - journalis
+        - marrage
+        - recommande
+        - restauration
+        - substitue
+        - structurel
 
   exclusions:
     generated: lax

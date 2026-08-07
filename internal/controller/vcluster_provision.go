@@ -107,7 +107,9 @@ func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1al
 	}
 
 	for _, obj := range objects {
-		if err := r.Patch(ctx, obj, client.Apply,
+		// client.Apply comme type de patch est déprécié depuis controller-runtime
+		// v0.23 au profit de Client.Apply, qui prend une ApplyConfiguration.
+		if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj),
 			client.FieldOwner(ProvisionFieldManager), client.ForceOwnership); err != nil {
 			return r.provisionFailed(ctx, vc, "ApplyFailed",
 				fmt.Errorf("application de %s %s/%s : %w", obj.GetKind(), obj.GetNamespace(), obj.GetName(), err))

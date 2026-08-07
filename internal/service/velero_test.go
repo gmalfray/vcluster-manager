@@ -487,17 +487,6 @@ func TestCreateVeleroRestore_SucceedsWhenAllStagesSucceed(t *testing.T) {
 // to the HelmRelease to tell whether SetFluxSuspend(false) actually ran a
 // second time (the abort), on top of the initial SetFluxSuspend(true).
 
-// failCreateReactor makes the fake dynamic client fail every create of the
-// given resource (e.g. "restores"), leaving everything else untouched.
-func failCreateReactor(resource string) clienttesting.ReactionFunc {
-	return func(action clienttesting.Action) (bool, runtime.Object, error) {
-		if action.GetVerb() == "create" && action.GetResource().Resource == resource {
-			return true, nil, fmt.Errorf("simulated failure creating %s", resource)
-		}
-		return false, nil, nil
-	}
-}
-
 func TestCreateVeleroRestore_AbortResumesFluxOnlyBeforeThePVCIsGone(t *testing.T) {
 	tests := []struct {
 		name              string

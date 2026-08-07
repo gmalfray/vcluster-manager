@@ -87,7 +87,14 @@ func redirectToLogin(w http.ResponseWriter, r *http.Request) {
 // LoginHandler initiates the OIDC flow.
 func (a *OIDCAuth) LoginHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		state := generateState()
+		state, err := generateState()
+		if err != nil {
+			// Pas de repli : sans state imprévisible, la connexion ne doit pas
+			// avoir lieu du tout.
+			slog.Error("état OIDC non généré, connexion refusée", "err", err)
+			http.Error(w, "connexion indisponible", http.StatusInternalServerError)
+			return
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     "oauth_state",
 			Value:    state,
@@ -204,10 +211,21 @@ func NoopMiddleware(next http.Handler) http.Handler {
 	return next
 }
 
-func generateState() string {
+// generateState produit le paramètre `state` de l'OIDC, celui qui lie la
+// redirection au navigateur qui l'a demandée.
+//
+// L'erreur de rand.Read était ignorée. En pratique crypto/rand n'échoue jamais
+// sur Linux, mais le code était écrit pour rendre silencieusement un buffer de
+// zéros : un state CONSTANT, identique pour tout le monde, donc un contrôle
+// anti-CSRF qui ne contrôle plus rien — n'importe qui peut forger un callback
+// dont le state correspond. Échouer bruyamment est la seule issue acceptable
+// pour une valeur dont toute la valeur est d'être imprévisible.
+func generateState() (string, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("génération du state OIDC : %w", err)
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
 }
 
 // UserFromRequest returns the authenticated user's claims as a JSON-safe map for use in templates.

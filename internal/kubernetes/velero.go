@@ -457,6 +457,15 @@ func (s *StatusClient) ScaleVClusterWorkloads(ctx context.Context, name string, 
 	return nil
 }
 
+// RequestVeleroOps deposits a backup/restore order as annotations on the
+// vcluster's VClusterVeleroOps marker, creating the marker if it does not exist
+// yet.
+//
+// Merge patch and not Server-Side Apply: the fake dynamic client used by the
+// tests cannot Apply. The consequence matters for callers — a merge patch never
+// REMOVES a key, so an annotation that must not persist across requests has to
+// be rewritten explicitly, empty string included.
+//
 // DeleteVClusterPVC deletes the vcluster's data PVC so Velero can restore it
 // from backup — `data-vcluster-<name>-etcd-0` with external etcd,
 // `data-vcluster-<name>-0` when it's embedded. The workload(s) must be

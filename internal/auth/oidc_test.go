@@ -55,7 +55,10 @@ func TestSplitJWT_Empty(t *testing.T) {
 // --- generateState ---
 
 func TestGenerateState_NonEmpty(t *testing.T) {
-	s := generateState()
+	s, err := generateState()
+	if err != nil {
+		t.Fatalf("generateState: %v", err)
+	}
 	if s == "" {
 		t.Fatal("generateState returned empty string")
 	}
@@ -64,7 +67,10 @@ func TestGenerateState_NonEmpty(t *testing.T) {
 func TestGenerateState_Unique(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 20; i++ {
-		s := generateState()
+		s, err := generateState()
+		if err != nil {
+			t.Fatalf("generateState: %v", err)
+		}
 		if seen[s] {
 			t.Fatalf("duplicate state generated: %s", s)
 		}
