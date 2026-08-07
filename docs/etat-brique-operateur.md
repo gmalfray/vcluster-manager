@@ -1,6 +1,6 @@
 # État de la brique opérateur
 
-> Écrit le 2026-08-07, au commit `ab3c982`. Ce document dit **ce qui est construit**,
+> Écrit le 2026-08-07, tenu à jour jusqu'à `3471db9`. Ce document dit **ce qui est construit**,
 > pas ce qui est conçu — pour la conception, voir `adr-001-source-de-verite.md`,
 > `adr-002-modele-cells.md` et `crd-vcluster.md`.
 
@@ -16,7 +16,7 @@ Un opérateur controller-runtime (`cmd/operator`), deux reconcilers.
 | sommeil | `vcluster_controller.go` | applique `spec.suspend`, ouvre la fenêtre d'annulation |
 | budget | `vcluster_budget.go` | refuse ce qui ferait dépasser le plafond de la cell |
 | provisionnement | `vcluster_provision.go` | applique le namespace + le ConfigMap de substitutions |
-| intégrations | `vcluster_integrations.go` | *(stub — chantier en cours)* Vault, Keycloak, Rancher |
+| intégrations | `vcluster_integrations.go` | backend d'auth Vault, client OIDC Keycloak, appairage Rancher |
 | status observé | `vcluster_status.go` | lit le cluster, agrège `Ready`, calcule la phase |
 | suppression | `vcluster_finalizer.go` | finalizer, garde-fou, sauvegarde puis destruction |
 
@@ -120,20 +120,27 @@ accès.**
 
 ## Ce qui n'est pas couvert
 
-- **Les intégrations externes** — chantier en cours. L'état de configuration Vault vit
-  encore dans une map mémoire des handlers (`vaultStates`), avec une goroutine par
-  vcluster et un rattrapage au démarrage qui rescanne tout parce que cet état ne
-  survit pas au processus. `status.vault` et `CondVaultConfigured` sont déclarés,
-  jamais écrits. Keycloak et Rancher sont asymétriques : détruits par l'opérateur,
-  jamais créés ni appairés par lui.
+- **Les accès aux intégrations, pas le code.** Le code est là : `VaultConfigured` et
+  `ArgoCDReady` sont écrites, l'appairage Rancher est piloté, et la map mémoire
+  `vaultStates` des handlers est remplacée par des étapes de reconcile. Ce qui manque
+  est le **câblage** : `cmd/operator/main.go` ne passe ni client Vault, ni Keycloak,
+  ni Rancher, donc les étapes rendent `Unknown/NotConfigured` — honnête, mais `Ready`
+  n'atteint jamais le vert pour un vcluster demandant ArgoCD. Décision prise :
+  après la recette preprod (voir les arbitrages ci-dessus).
+- **`ArgoCDReady` ne couvre que le volet Keycloak.** Le dépôt GitLab et la santé de
+  la Kustomization ArgoCD ne sont pas encore vérifiés — la réserve est portée par le
+  message de la condition, pas cachée derrière un `True` optimiste.
 - **`podCount`** — aucun lecteur ne le remplit. Écrire 0 affirmerait « aucun pod »,
   alors qu'on n'a qu'une absence.
 - **Les events Kubernetes** proposés en §3.3 — `VClusterReconciler` n'a pas de
   `record.EventRecorder`.
 - **`GetNamespaceProtection`** rend `false` aussi bien pour « pas d'annotation » que
   pour « namespace illisible ». Le correctif est de lui faire rendre `(bool, error)`.
+- **N6, décidé mais pas encore implémenté** : le finalizer doit supprimer le
+  namespace qu'il a créé. Voir les arbitrages ci-dessus.
 - **La recette réelle** — rien de tout cela n'a tourné sur un vrai cluster depuis la
-  fusion des cinq chantiers. L'infra est coupée.
+  fusion des chantiers. L'infra est coupée. Verdict de recette : **No-Go prod, Go
+  recette preprod sur vclusters jetables.**
 
 ## Dette assumée
 
