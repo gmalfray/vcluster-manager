@@ -326,9 +326,14 @@ func (s *Service) GetDeleteConfirm(ctx context.Context, actor models.Actor, name
 	counterpartFiles, _ := s.gitlab.ListFiles(ctx, gitops.SourceBranch, counterpartPath)
 	data.HasCounterpart = len(counterpartFiles) > 0
 
-	// Warn that protection will be lifted automatically by the deletion.
+	// Warn that protection will be lifted automatically by the deletion. This
+	// is display-only — it does not gate anything below — so on a failed read
+	// we just skip the warning instead of guessing, same best-effort spirit as
+	// the ParseVCluster call above.
 	if k8s := s.k8sForEnv(env); k8s != nil {
-		data.ProtectionEnabled = k8s.GetNamespaceProtection(ctx, name)
+		if protected, err := k8s.GetNamespaceProtection(ctx, name); err == nil {
+			data.ProtectionEnabled = protected
+		}
 	}
 
 	return data, nil
@@ -621,7 +626,31 @@ func (s *Service) PerformDeletion(ctx context.Context, name string, deletePrepro
 		if k8s == nil {
 			continue
 		}
-		if k8s.GetNamespaceProtection(ctx, name) {
+		// Only lift the flag when we've actually confirmed it's set. A failed read
+		// here isn't "not protected": clearing the annotation on a guess would
+		// strip a safeguard we never actually saw, on nothing more than an API
+		// hiccup.
+		//
+		// Be clear about what staying cautious costs, because it is NOT a free
+		// "we'll get it next time". There is no next time: everything below runs
+		// regardless — CleanupNamespace strips the Flux finalizers, the fluxprod
+		// commits remove the vcluster's files, and GitLab/Keycloak/Vault are torn
+		// down. The vcluster then vanishes from the dashboard, which is built from
+		// the Git branch, so no UI path leads back to it. What's left is a
+		// namespace still carrying protect-deletion and nothing in Git to reclaim
+		// it — an orphan, to be finished by hand. Hence the Error, not a Warn: this
+		// line is the only trace it will ever get.
+		//
+		// Whether that orphan actually survives depends on something this repo does
+		// not contain: no policy here enforces protect-deletion, so if nothing
+		// enforces it in the cluster either, the namespace goes away anyway and the
+		// annotation was never a safeguard to begin with.
+		protected, err := k8s.GetNamespaceProtection(ctx, name)
+		if err != nil {
+			slog.Error("suppression : protection du namespace illisible, laissée en place — "+
+				"le vcluster est supprimé partout ailleurs, ce namespace est à reprendre à la main",
+				"vcluster", name, "env", e, "err", err)
+		} else if protected {
 			if err := k8s.SetNamespaceProtection(ctx, name, false); err != nil {
 				slog.Warn("disabling namespace-protection failed", "vcluster", name, "env", e, "err", err)
 			} else {

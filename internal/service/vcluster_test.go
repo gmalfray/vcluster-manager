@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/models"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 func TestValidName(t *testing.T) {
@@ -129,6 +134,135 @@ func TestGetDeleteConfirm_ForbiddenForNonAdmin(t *testing.T) {
 	_, err := s.GetDeleteConfirm(context.Background(), models.Actor{Username: "bob", IsAdmin: false}, "demo", "preprod")
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected ErrForbidden for non-admin, got %v", err)
+	}
+}
+
+// --- GetDeleteConfirm / PerformDeletion: namespace protection ----------
+//
+// GetNamespaceProtection now returns (bool, error), so both call sites in
+// this file have to decide what "the read failed" means for them. These
+// tests exercise that decision, not RBAC or the GitOps side of deletion.
+
+func TestGetDeleteConfirm_ShowsProtectionWhenReadSucceeds(t *testing.T) {
+	cfg := newTestConfig(t)
+	var mu sync.RWMutex
+	s := newDashboardTestService(t, newFakeGitLab(), &mu, cfg)
+	s.k8sClients["preprod"] = kubernetes.NewTestStatusClient(
+		unstructuredNamespace("demo", map[string]string{"protect-deletion": "true"}))
+
+	data, err := s.GetDeleteConfirm(context.Background(), adminActor(), "demo", "preprod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !data.ProtectionEnabled {
+		t.Fatal("expected ProtectionEnabled=true, the annotation is set and the read succeeded")
+	}
+}
+
+// A failed read is display-only here — GetDeleteConfirm doesn't gate on it —
+// but it must not come back looking like an affirmative "not protected", and
+// it must not fail the whole confirmation page either.
+func TestGetDeleteConfirm_ReadFailureDoesNotFailThePage(t *testing.T) {
+	cfg := newTestConfig(t)
+	var mu sync.RWMutex
+	s := newDashboardTestService(t, newFakeGitLab(), &mu, cfg)
+	s.k8sClients["preprod"] = kubernetes.NewTestStatusClientWithReactor(func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "get" && action.GetResource().Resource == "namespaces" {
+			return true, nil, errors.New("api server unreachable")
+		}
+		return false, nil, nil
+	}, unstructuredNamespace("demo", map[string]string{"protect-deletion": "true"}))
+
+	data, err := s.GetDeleteConfirm(context.Background(), adminActor(), "demo", "preprod")
+	if err != nil {
+		t.Fatalf("a namespace-protection read failure must not fail the whole confirmation page: %v", err)
+	}
+	if data.Name != "demo" || data.Env != "preprod" {
+		t.Fatalf("expected the rest of the page data to still be filled in, got %+v", data)
+	}
+}
+
+// The annotation blocks FluxCD from actually removing the namespace (see the
+// comment on PerformDeletion), so lifting it on a guess would be wrong the
+// other way round too: SetNamespaceProtection must only run once we've
+// confirmed the annotation is there.
+func TestPerformDeletion_ClearsProtectionWhenConfirmedSet(t *testing.T) {
+	cfg := newTestConfig(t)
+	var mu sync.RWMutex
+	s := newDashboardTestService(t, newFakeGitLab(), &mu, cfg)
+	k8s := kubernetes.NewTestStatusClient(unstructuredNamespace("demo", map[string]string{"protect-deletion": "true"}))
+	s.k8sClients["preprod"] = k8s
+
+	s.PerformDeletion(context.Background(), "demo", true, false, false, false)
+
+	protected, err := k8s.GetNamespaceProtection(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("unexpected error reading back the annotation: %v", err)
+	}
+	if protected {
+		t.Fatal("expected the protect-deletion annotation to be lifted")
+	}
+}
+
+// A read that fails on the way in must not be treated as "not protected": that
+// would clear an annotation we never actually confirmed was there, on nothing
+// more than an API hiccup. Skipping the clear leaves the namespace protected —
+// the safe direction — for a future delete attempt to sort out.
+func TestPerformDeletion_LeavesProtectionUntouchedOnReadFailure(t *testing.T) {
+	cfg := newTestConfig(t)
+	var mu sync.RWMutex
+	s := newDashboardTestService(t, newFakeGitLab(), &mu, cfg)
+
+	var namespaceGets int
+	k8s := kubernetes.NewTestStatusClientWithReactor(func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() != "get" || action.GetResource().Resource != "namespaces" {
+			return false, nil, nil
+		}
+		namespaceGets++
+		if namespaceGets == 1 {
+			// Only the very first read (PerformDeletion's own check) fails; the
+			// verification read below must see the real, untouched state.
+			return true, nil, errors.New("api server unreachable")
+		}
+		return false, nil, nil
+	}, unstructuredNamespace("demo", map[string]string{"protect-deletion": "true"}))
+	s.k8sClients["preprod"] = k8s
+
+	s.PerformDeletion(context.Background(), "demo", true, false, false, false)
+
+	protected, err := k8s.GetNamespaceProtection(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("unexpected error reading back the annotation: %v", err)
+	}
+	if !protected {
+		t.Fatal("a failed read must not have cleared the protect-deletion annotation")
+	}
+}
+
+// Complements the two tests above: it isn't enough that the annotation ends
+// up unprotected, PerformDeletion must not even attempt to write it when the
+// read already says there's nothing to lift. Otherwise "only lift a
+// confirmed protection" degrades into "call SetNamespaceProtection every
+// time and let it be a no-op" — which happens to look the same when the
+// write itself never fails, but stops being true the moment it does.
+func TestPerformDeletion_DoesNotWriteWhenAlreadyUnprotected(t *testing.T) {
+	cfg := newTestConfig(t)
+	var mu sync.RWMutex
+	s := newDashboardTestService(t, newFakeGitLab(), &mu, cfg)
+
+	var namespaceUpdates int
+	k8s := kubernetes.NewTestStatusClientWithReactor(func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "update" && action.GetResource().Resource == "namespaces" {
+			namespaceUpdates++
+		}
+		return false, nil, nil
+	}, unstructuredNamespace("demo", nil))
+	s.k8sClients["preprod"] = k8s
+
+	s.PerformDeletion(context.Background(), "demo", true, false, false, false)
+
+	if namespaceUpdates != 0 {
+		t.Fatalf("expected no write to the namespace, the annotation was never set (got %d update(s))", namespaceUpdates)
 	}
 }
 

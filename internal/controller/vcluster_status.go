@@ -119,11 +119,17 @@ func applyObservation(vc *v1alpha1.VCluster, obs service.VClusterObservation) {
 	// that takes it over owns that field. Re-stamping "waiting" on every pass
 	// would be inventing a state.
 
-	// GetNamespaceProtection returns false both for "no annotation" and for "the
-	// namespace could not be read". Copying it after a read that timed out would
-	// quietly drop the protection flag, so we only take it when the cluster read
-	// actually completed. The real fix is upstream — that function should return
-	// (bool, error) — but it is shared code and not this change's business.
+	// ProtectionKnown now genuinely means "the read succeeded, whether or not
+	// the annotation was there". GetNamespaceProtection
+	// (internal/kubernetes/protection.go) used to fold "no annotation" and
+	// "namespace unreadable" into the same false, and ProtectionKnown inherited
+	// that ambiguity through it. That's fixed upstream now: a failed read comes
+	// back as an error, not a false.
+	//
+	// !obs.ClusterTimedOut stays regardless: a request whose context is dying
+	// can cut every source's read short at once, and this field would rather
+	// stay stale than take a value from a pass that may not have actually
+	// finished checking.
 	if obs.ProtectionKnown && !obs.ClusterTimedOut {
 		vc.Status.ProtectionEnabled = obs.Protected
 	}
