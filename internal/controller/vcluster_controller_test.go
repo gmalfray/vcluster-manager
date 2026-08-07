@@ -192,9 +192,16 @@ func TestVClusterReconcilerPassesItsCell(t *testing.T) {
 
 	ops.mu.Lock()
 	defer ops.mu.Unlock()
+	// Le len() d'abord : sans lui, la boucle ne tourne pas quand le service n'a
+	// reçu aucun appel, et le test annonce une propagation qu'il n'a pas vérifiée.
+	// C'est le contrôle que son jumeau TestReconcilerPassesItsCellToTheService
+	// fait déjà côté marqueurs Velero.
+	if len(ops.cellsSeen) == 0 {
+		t.Fatal("le service n'a reçu aucune cell : rien n'a été propagé, donc rien n'est vérifié")
+	}
 	for _, c := range ops.cellsSeen {
 		if c != "cell2" {
-			t.Fatalf("cell transmise = %q, attendu cell2", c)
+			t.Fatalf("cell transmise = %q, attendu cell2 (valeurs vues : %v)", c, ops.cellsSeen)
 		}
 	}
 }
