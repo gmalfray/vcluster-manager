@@ -1,0 +1,21 @@
+# Contrepartie fluxprod de la bascule navlink.
+#
+# À poser dans fluxprod sous lib/tenant-template/argocd/navlink/ (avec un
+# kustomization.yaml qui liste ce fichier) EN MÊME TEMPS que la montée de
+# vcluster-manager qui change navlink_kustomization.yaml.tmpl. Les deux moitiés
+# doivent partir ensemble : sans les placeholders ci-dessous, la Kustomization
+# navlink pointe sur un lib qui ne substitue rien et le lien de navigation
+# affiche le libellé du template au lieu du nom du vcluster.
+#
+# Les deux valeurs viennent du ConfigMap vcluster-<name>-substitutions, rendu par
+# l'opérateur depuis le CR (postBuild.substituteFrom sur la Kustomization).
+#
+# Ce fichier n'est pas déployé par ce dépôt : c'est le manifeste attendu côté
+# fluxprod, versionné ici pour que la bascule soit sans ambiguïté.
+apiVersion: ui.cattle.io/v1
+kind: NavLink
+metadata:
+  name: link-argocd
+spec:
+  label: "${ARGOCD_NAVLINK_LABEL}"
+  toURL: "${ARGOCD_URL}"

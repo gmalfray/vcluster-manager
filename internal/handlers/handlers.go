@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -508,34 +507,11 @@ func (h *Handlers) handleUpdateVeleroConfigError(w http.ResponseWriter, err erro
 
 // parseTTLText parses a short TTL string ("30j", "12h", "90m") into a Velero-compatible
 // Go duration string (e.g. "720h0m0s"). Returns "" if the input is invalid or empty.
+//
+// The rule itself moved to gitops, where the operator reads it too: a CR carries
+// the same short form as this form field, and two copies of a parser drift.
 func parseTTLText(text string) string {
-	text = strings.TrimSpace(strings.ToLower(text))
-	if text == "" {
-		return ""
-	}
-	var suffix byte
-	for _, s := range []byte{'j', 'h', 'm'} {
-		if text[len(text)-1] == s {
-			suffix = s
-			break
-		}
-	}
-	if suffix == 0 {
-		return ""
-	}
-	n, err := strconv.Atoi(text[:len(text)-1])
-	if err != nil || n <= 0 {
-		return ""
-	}
-	switch suffix {
-	case 'j':
-		return fmt.Sprintf("%dh0m0s", n*24)
-	case 'h':
-		return fmt.Sprintf("%dh0m0s", n)
-	case 'm':
-		return fmt.Sprintf("0h%dm0s", n)
-	}
-	return ""
+	return gitops.VeleroTTLFromShort(text)
 }
 
 // ttlToText converts a Velero TTL string (e.g. "720h0m0s") to short display form ("30j", "12h", "90m").

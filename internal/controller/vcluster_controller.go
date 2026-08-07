@@ -222,12 +222,7 @@ func (r *VClusterReconciler) reconcileSuspend(ctx context.Context, vc *v1alpha1.
 // pour qu'ils puissent avancer sans se marcher dessus. Les signatures sont
 // figées ; les implémentations remplacent ces stubs.
 
-// reconcileProvisioning expanse le CR en ressources (crd-vcluster.md §4.1, §3.1).
-// Implémentation attendue dans vcluster_provision.go.
-func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1alpha1.VCluster) error {
-	_, _ = ctx, vc
-	return nil
-}
+// reconcileProvisioning est implémenté dans vcluster_provision.go.
 
 // reconcileObservedState est implémenté dans vcluster_status.go : il remplit le
 // status observé (versions, quotas, Rancher, protection, dernier backup) et
