@@ -263,10 +263,23 @@ promettre.
 **Ce qui n'a pas bougé d'un iota** : la séquence in-place et ses deux sentinelles. Le `git diff` sur
 ce bloc ne montre plus que la disparition des appels de hook.
 
-**Une réserve à lever avant la mise en service** : l'inférence « PVC absent ⇒ nous avons supprimé le
-volume » suppose que rien d'autre ne supprime ce PVC. Aucun autre appelant de `DeleteVClusterPVC` dans
-le code, mais les manifests Flux et un éventuel `reclaimPolicy` agressif côté StorageClass n'ont pas
-été audités. **À confirmer sur preprod au prochain `up.sh`.**
+**Réserve levée sur la recette du 2026-08-07.** L'inférence « PVC absent ⇒ nous avons supprimé le
+volume » supposait que rien d'autre ne supprime ce PVC. Vérifié sur le cluster réel :
+
+- **`persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}`** sur le
+  StatefulSet etcd. C'était le vrai danger : avec `whenScaled: Delete`, le scale à 0 de la séquence
+  aurait supprimé le volume tout seul, et l'inférence aurait accusé la séquence à tort. La politique
+  est à `Retain` des deux côtés.
+- **Le PVC n'est pas géré par Flux** : ses labels sont ceux de Helm (`app`, `release`), pas ceux de
+  kustomize — le pruning de Flux ne le possède donc pas et ne le supprimera pas.
+- La StorageClass `local-path` est en `reclaimPolicy: Delete`, mais ça gouverne le **PV après**
+  suppression du PVC, pas le PVC lui-même. Aucune suppression parasite ; en revanche ça confirme que
+  la donnée est réellement perdue une fois le volume supprimé — ce qui est précisément pourquoi la
+  branche « ne pas reprendre Flux » existe.
+
+**Risque résiduel à surveiller** : cette politique de rétention vient du chart vcluster. Une montée de
+version du chart qui la basculerait à `Delete` casserait silencieusement l'inférence. À revérifier lors
+d'un changement de version de chart.
 
 ## 6. Suite
 
