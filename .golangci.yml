@@ -78,6 +78,9 @@ linters:
         - existant
         - interm
         - inventer
+        - terminaison
+        - portait
+        - demandes
 
   exclusions:
     generated: lax

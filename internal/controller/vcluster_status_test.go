@@ -2,10 +2,12 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
@@ -421,7 +423,10 @@ func TestSlowReadDegradesWithoutDroppingTheProtectionFlag(t *testing.T) {
 	slow.ChartVersion = ""
 	slow.K8sVersion = ""
 	slow.CPUUsage, slow.MemoryUsage, slow.StorageUsage = "", "", ""
-	slow.Protected = false // ce que GetNamespaceProtection rend quand il ne peut pas lire
+	// Protected à false ET ProtectionKnown à true : c'est bien le timeout, et lui
+	// seul, qui doit retenir l'écriture ici. Le cas « la lecture de la protection
+	// n'a pas abouti » est couvert par le test suivant, sur l'autre garde.
+	slow.Protected = false
 	ops.setObservation(slow)
 
 	res, err := r.Reconcile(ctx, vcReq(vc))
@@ -442,6 +447,57 @@ func TestSlowReadDegradesWithoutDroppingTheProtectionFlag(t *testing.T) {
 	requireVCCond(t, got, v1alpha1.CondDeletionProtected, metav1.ConditionTrue, "SpecOnly")
 	if res.RequeueAfter != ObserveIntervalMoving {
 		t.Fatalf("re-scrutation dans %s, attendu %s", res.RequeueAfter, ObserveIntervalMoving)
+	}
+}
+
+// L'autre garde, et elle seule : la lecture de la protection n'a pas abouti,
+// alors que tout le reste du passage s'est bien passé.
+//
+// Ce cas n'était couvert par aucun test du paquet. La branche
+// `ProtectionKnown == false` n'était jamais empruntée, donc retirer
+// `obs.ProtectionKnown` des deux gardes — un « nettoyage » plausible, puisque le
+// commentaire au-dessus insiste sur ClusterTimedOut — laissait tout au vert. Le
+// status serait alors repassé à `protectionEnabled: false` et la condition aurait
+// affirmé « l'annotation du namespace vaut false » sur une lecture qui n'a pas
+// eu lieu : très exactement le défaut que `GetNamespaceProtection` vient de
+// cesser de produire, réintroduit un étage plus haut.
+func TestAnUnreadableProtectionKeepsTheLastKnownValue(t *testing.T) {
+	ctx := context.Background()
+	protected := healthyObservation()
+	protected.Protected = true
+	ops := &fakeObserver{obs: protected}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "protection-illisible", func(vc *v1alpha1.VCluster) {
+		vc.Spec.DeletionProtection = true
+	})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+	if got := fetchVCluster(t, ctx, vc); !got.Status.ProtectionEnabled {
+		t.Fatal("préalable : la protection devait être vue active")
+	}
+
+	// Le namespace devient illisible : GetNamespaceProtection rend une erreur, donc
+	// Available=false, donc ProtectionKnown=false et Protected retombe à zéro. Rien
+	// d'autre ne bouge — pas de timeout, le reste du passage est bon.
+	unreadable := healthyObservation()
+	unreadable.ProtectionKnown = false
+	unreadable.Protected = false
+	ops.setObservation(unreadable)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	if !got.Status.ProtectionEnabled {
+		t.Fatal("protectionEnabled retombé à false parce que le namespace n'a pas pu être lu : " +
+			"« je n'arrive pas à regarder » n'est pas « la protection a été retirée »")
+	}
+	requireVCCond(t, got, v1alpha1.CondDeletionProtected, metav1.ConditionTrue, "SpecOnly")
+	if c := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.CondDeletionProtected); c != nil &&
+		strings.Contains(c.Message, "vaut false") {
+		t.Fatalf("la condition affirme l'état de l'annotation sans l'avoir lue : %s", c.Message)
 	}
 }
 

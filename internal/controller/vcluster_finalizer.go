@@ -41,6 +41,14 @@ const (
 	rancherTeardownGiveUpAfter = 10 * time.Minute
 	backupGiveUpAfter          = 2 * time.Hour
 	deletionStepRequeue        = 30 * time.Second
+	// namespaceRemovalGiveUpAfter borne l'attente de disparition du namespace.
+	//
+	// Dix minutes comme Rancher, et pour la même raison : au-delà, ce qui retient
+	// le namespace n'est plus un délai de terminaison mais quelque chose qui le
+	// retient POUR DE BON — un finalizer tiers, ou la Kustomization Flux du tenant
+	// qui le réapplique aussi vite qu'on le supprime. Insister n'y changerait
+	// rien ; ce qu'il faut alors, c'est le dire.
+	namespaceRemovalGiveUpAfter = 10 * time.Minute
 )
 
 // Étapes écrites dans `status.deletion.stage`.
@@ -91,8 +99,13 @@ type VClusterDeletionOps interface {
 	SetProtection(ctx context.Context, actor models.Actor, name, env string, enabled bool) (service.ProtectionState, error)
 
 	// HostNamespaceState dit si le namespace hôte existe, et si on a pu le savoir.
-	// Un vcluster jamais matérialisé n'a pas de données à sauvegarder.
+	// Un vcluster jamais matérialisé n'a pas de données à sauvegarder ; et c'est
+	// aussi ce qui CONSTATE la fin de la suppression.
 	HostNamespaceState(ctx context.Context, name, env string) (exists, known bool)
+
+	// DeleteHostNamespace supprime le namespace du vcluster. Idempotente : elle ne
+	// conclut rien, elle demande — c'est HostNamespaceState qui conclut.
+	DeleteHostNamespace(ctx context.Context, actor models.Actor, name, env string) error
 
 	// TeardownVCluster détruit : finalizers Flux du namespace, puis Keycloak,
 	// Vault et éventuellement le dépôt app-manifests.
@@ -166,18 +179,36 @@ func (r *VClusterReconciler) reconcileDeletion(ctx context.Context, vc *v1alpha1
 	return ctrl.Result{}, nil
 }
 
+// deletionRun porte ce que deux étapes d'un MÊME tour se transmettent — en
+// l'occurrence les restes que le teardown signale et que la conclusion, écrite
+// une étape plus loin, doit reprendre.
+//
+// Il est alloué par tour et passé en paramètre, jamais posé en champ du
+// reconciler : le manager réconcilie plusieurs vclusters en parallèle sur la même
+// instance, et un champ partagé attribuerait les restes de l'un au status de
+// l'autre — quand il ne les corromprait pas franchement.
+//
+// Ce n'est pas un registre au sens que la doctrine interdit : rien ici ne
+// survit au tour, et aucune décision ne s'y prend. Ce qui décide se relit
+// toujours au cluster.
+type deletionRun struct {
+	teardownWarnings []string
+}
+
 // runDeletionSequence enchaîne les étapes de §4.4 dans l'ordre. Chacune commence
 // par constater si elle a déjà été faite, donc rejouer la séquence ne redétruit
 // rien et ne se bloque pas.
 func (r *VClusterReconciler) runDeletionSequence(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
-	steps := []func(context.Context, VClusterDeletionOps, *v1alpha1.VCluster) (bool, time.Duration, error){
+	run := &deletionRun{}
+	steps := []func(context.Context, VClusterDeletionOps, *v1alpha1.VCluster, *deletionRun) (bool, time.Duration, error){
 		r.checkDeletionProtection,
 		r.reconcileRancherTeardown,
 		r.reconcileDeletionBackup,
 		r.reconcileFinalTeardown,
+		r.reconcileNamespaceRemoval,
 	}
 	for _, step := range steps {
-		done, requeue, err := step(ctx, ops, vc)
+		done, requeue, err := step(ctx, ops, vc, run)
 		if err != nil || !done {
 			return false, requeue, err
 		}
@@ -192,7 +223,7 @@ func (r *VClusterReconciler) runDeletionSequence(ctx context.Context, ops VClust
 // condition de bascule) : la protection n'est pas seulement lue dans un diff
 // pendant la revue, elle est relue ici, alors que l'objet est déjà en
 // Terminating et qu'il ne reste que la destruction à faire.
-func (r *VClusterReconciler) checkDeletionProtection(_ context.Context, _ VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
+func (r *VClusterReconciler) checkDeletionProtection(_ context.Context, _ VClusterDeletionOps, vc *v1alpha1.VCluster, _ *deletionRun) (bool, time.Duration, error) {
 	if !vc.Spec.DeletionProtection {
 		setVClusterCond(vc, v1alpha1.CondDeletionProtected, metav1.ConditionFalse, "ProtectionLifted",
 			"protection levée, la séquence de suppression peut se dérouler")
@@ -216,7 +247,7 @@ func (r *VClusterReconciler) checkDeletionProtection(_ context.Context, _ VClust
 
 // reconcileRancherTeardown dépaire et laisse le job de nettoyage tourner *dans*
 // le vcluster, avant que celui-ci disparaisse (§4.4 étape 1).
-func (r *VClusterReconciler) reconcileRancherTeardown(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
+func (r *VClusterReconciler) reconcileRancherTeardown(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster, _ *deletionRun) (bool, time.Duration, error) {
 	st := ops.InspectRancherTeardown(ctx, vc.Name, r.Cell)
 	if st.NotConfigured {
 		// On continue — un CR ne doit pas rester coincé en Terminating parce que
@@ -322,7 +353,7 @@ func overrideDisarms(v string) bool {
 	return true
 }
 
-func (r *VClusterReconciler) reconcileDeletionBackup(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
+func (r *VClusterReconciler) reconcileDeletionBackup(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster, _ *deletionRun) (bool, time.Duration, error) {
 	vc.Status.Deletion.Stage = stageBackupPending
 
 	// Rien à sauvegarder s'il n'y a rien : un CR refusé par le budget, ou dont le
@@ -426,15 +457,41 @@ func (r *VClusterReconciler) reconcileDeletionBackup(ctx context.Context, ops VC
 // Les deux tiennent dans la même passe parce qu'elles n'attendent rien. La
 // protection tombe au dernier moment, précisément pour que tout ce qui précède
 // ait pu échouer sans jamais laisser le namespace à découvert.
-func (r *VClusterReconciler) reconcileFinalTeardown(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
+func (r *VClusterReconciler) reconcileFinalTeardown(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster, run *deletionRun) (bool, time.Duration, error) {
 	vc.Status.Deletion.Stage = stageProtectionRemoval
-	if p := ops.GetProtection(ctx, vc.Name, r.Cell); p.Available && p.Protected {
+
+	p := ops.GetProtection(ctx, vc.Name, r.Cell)
+	if !p.Available {
+		// On ne SAIT PAS si ce namespace est protégé, et tout ce qui suit détruit :
+		// les finalizers Flux, Keycloak, Vault, puis le namespace lui-même. Ne pas
+		// lever une annotation qu'on n'a pas lue est le bon réflexe, mais s'arrêter
+		// là et détruire quand même le vide de son sens — le garde-fou serait
+		// contourné par la panne qu'il devrait faire échouer.
+		//
+		// C'est un durcissement de N6, et il n'était pas nécessaire avant : tant
+		// que la destruction du namespace passait par le prune Flux, une protection
+		// non lue restait posée et retenait Flux. Depuis que le finalizer supprime
+		// lui-même, plus rien ne la lit sur ce chemin.
+		//
+		// On requeue plutôt que de bloquer sec : ce qui débloque ici est une panne
+		// d'API qui se répare toute seule, contrairement à une sauvegarde en échec,
+		// dont le déblocage est un geste humain que le watch rapporte.
+		msg := "impossible de lire la protection du namespace : " + p.Detail +
+			" — la séquence s'arrête avant de détruire quoi que ce soit"
+		vc.Status.Deletion.Message = msg
+		setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "ProtectionUnknown", msg)
+		return false, deletionStepRequeue, nil
+	}
+	if p.Protected {
 		if _, err := ops.SetProtection(ctx, SystemActor, vc.Name, r.Cell, false); err != nil {
 			setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "ProtectionRemovalFailed",
 				"protection du namespace pas retirée : "+err.Error())
 			return false, deletionStepRequeue, err
 		}
 	}
+	// Écrit seulement ici, une fois la lecture aboutie : sur la branche du dessus,
+	// affirmer `false` serait dire « ce namespace n'est plus protégé » sans avoir
+	// regardé — le défaut même qu'on vient de fermer, un maillon plus loin.
 	vc.Status.ProtectionEnabled = false
 
 	vc.Status.Deletion.Stage = stageDestroying
@@ -446,13 +503,131 @@ func (r *VClusterReconciler) reconcileFinalTeardown(ctx context.Context, ops VCl
 		setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "TeardownFailed", err.Error())
 		return false, deletionStepRequeue, err
 	}
+	run.teardownWarnings = warnings
+	return true, 0, nil
+}
 
+// reconcileNamespaceRemoval supprime le namespace du vcluster et attend de le
+// voir disparaître (§4.4 étape 4, arbitrage N6 du 2026-08-07).
+//
+// C'est l'opérateur qui supprime, et pas Flux. L'étape `Destroying` se contentait
+// avant de retirer les finalizers Flux du namespace « pour qu'il puisse être
+// supprimé proprement », puis annonçait « séquence de suppression terminée » : la
+// suppression elle-même était le prune d'un commit que le finalizer n'écrit pas
+// et ne vérifie pas. Un CR pouvait donc disparaître en laissant le namespace, ses
+// pods et son volume derrière lui, avec un status qui affirmait le contraire.
+//
+// Des deux issues possibles — supprimer soi-même, ou attendre de constater que
+// Flux l'a fait — c'est la première : l'opérateur applique déjà ce namespace en
+// Server-Side Apply, il en est propriétaire de fait, et la faire dépendre de Flux
+// aurait été une attente sans borne naturelle sur un acteur qu'on ne pilote pas.
+//
+// L'observation conclut, pas l'appel. Un `delete` sur un namespace ne fait que
+// poser un deletionTimestamp : rendre `true` juste après aurait reproduit le
+// défaut qu'on corrige, à un maillon près.
+func (r *VClusterReconciler) reconcileNamespaceRemoval(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster, run *deletionRun) (bool, time.Duration, error) {
+	vc.Status.Deletion.Stage = stageDestroying
+
+	// Demander d'abord, constater ensuite, dans le même tour. L'ordre inverse
+	// serait plus joli à lire mais coûterait un requeue de 30 s à toute
+	// suppression, y compris au cas courant où le namespace part tout de suite —
+	// il ne reste rien dedans à ce stade, le teardown vient de retirer les
+	// finalizers Flux qui le retenaient.
+	//
+	// La demande est rejouée à chaque tour tant que la disparition n'est pas
+	// constatée. Elle est idempotente, et la rejouer couvre le cas où le premier
+	// appel est parti avec le process qui l'a émis : la reprise ne relit pas un
+	// registre, elle redemande.
+	if err := ops.DeleteHostNamespace(ctx, SystemActor, vc.Name, r.Cell); err != nil {
+		// Un refus n'a PAS de borne, contrairement à un namespace qui traîne, et
+		// c'est délibéré. Les deux situations n'ont pas la même issue sûre : un
+		// namespace en Terminating est déjà condamné, donc lâcher le CR ne perd
+		// rien ; un `forbidden` — le ClusterRole pas redéployé — veut dire que RIEN
+		// n'a été détruit et que les données sont intactes. Lâcher le CR
+		// transformerait alors une panne réparable, visible et nommée, en un
+		// namespace orphelin que plus aucun objet ne réclame.
+		//
+		// Ce qui reste dû dans ce cas, c'est de le dire, et de dire que ça dure —
+		// le bug 1 du POC était une boucle silencieuse, pas une boucle.
+		msg := "suppression du namespace refusée : " + err.Error()
+		if r.overdue(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, namespaceRemovalGiveUpAfter) {
+			msg += " — refusée depuis plus de " + namespaceRemovalGiveUpAfter.String() +
+				" : ce n'est pas un hoquet. Vérifier que le ClusterRole de l'opérateur porte " +
+				"bien `delete` sur les namespaces. Rien n'a été détruit, le CR attend."
+		}
+		setVClusterCond(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "DeleteFailed", msg)
+		return false, deletionStepRequeue, err
+	}
+
+	exists, known := ops.HostNamespaceState(ctx, vc.Name, r.Cell)
+	if known && !exists {
+		setVClusterCond(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionTrue, "NamespaceGone",
+			"le namespace vcluster-"+vc.Name+" a disparu du cluster")
+		return r.deletionDone(ctx, vc, run, "")
+	}
+
+	// L'ancre du délai est la condition, dont la LastTransitionTime survit au
+	// redémarrage. Statut False dans les deux branches ci-dessous, précisément
+	// pour que l'ancre ne se remette pas à zéro quand la raison alterne entre
+	// « encore là » et « je n'arrive pas à regarder ».
+	if r.overdue(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, namespaceRemovalGiveUpAfter) {
+		// On lâche le CR malgré tout. Le laisser en Terminating pour toujours
+		// n'efface pas le namespace et ajoute un objet coincé au problème ; ce qui
+		// aide, c'est de nommer ce qui reste.
+		//
+		// Dire aussi dans quel ÉTAT on le laisse, et pas seulement qu'il est là :
+		// à ce stade la protection a été levée et les finalizers Flux retirés, donc
+		// ce namespace est à découvert. Qui lit ce message doit savoir qu'il ne
+		// tient plus à rien, pas seulement qu'il reste à faire.
+		const decouvert = " ; sa protection a été levée et ses finalizers Flux retirés — il ne tient plus à rien"
+		leftover := "le namespace vcluster-" + vc.Name + " est toujours là après " +
+			namespaceRemovalGiveUpAfter.String() + " : un finalizer tiers le retient, " +
+			"ou la Kustomization Flux du tenant le réapplique — à finir à la main" + decouvert
+		if !known {
+			leftover = "impossible de savoir si le namespace vcluster-" + vc.Name + " a disparu après " +
+				namespaceRemovalGiveUpAfter.String() + " : suppression demandée, résultat non constaté — " +
+				"à vérifier à la main" + decouvert
+		}
+		setVClusterCond(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionUnknown, "RemovalUnconfirmed", leftover)
+		return r.deletionDone(ctx, vc, run, leftover)
+	}
+
+	reason, msg := "NamespaceTerminating", "suppression du namespace vcluster-"+vc.Name+" demandée, il est encore là"
+	if !known {
+		reason, msg = "NamespaceStateUnknown", "suppression du namespace vcluster-"+vc.Name+
+			" demandée ; son état n'a pas pu être lu, on ne conclut pas"
+	}
+	setVClusterCond(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, reason, msg)
+	return false, deletionStepRequeue, nil
+}
+
+// deletionDone écrit la conclusion de la séquence, restes compris.
+//
+// Elle est appelée par la dernière étape et par elle seule : tant qu'on écrivait
+// « séquence de suppression terminée » avant la disparition du namespace, la
+// phrase était fausse pour le seul lecteur qui compte — celui qui vient voir
+// pourquoi un vcluster supprimé occupe encore de la place.
+func (r *VClusterReconciler) deletionDone(ctx context.Context, vc *v1alpha1.VCluster, run *deletionRun, leftover string) (bool, time.Duration, error) {
+	rests := run.teardownWarnings
+	if leftover != "" {
+		rests = append(append([]string(nil), rests...), leftover)
+	}
 	msg := "séquence de suppression terminée"
-	if len(warnings) > 0 {
-		msg += " — restes à reprendre à la main : " + strings.Join(warnings, " ; ")
+	if len(rests) > 0 {
+		msg += " — restes à reprendre à la main : " + strings.Join(rests, " ; ")
 	}
 	vc.Status.Deletion.Message = msg
 	setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "Deleted", msg)
+
+	// Et dans le log, parce que le status ne survit pas à la phrase qu'il porte :
+	// deux appels plus loin le finalizer est retiré et l'objet disparaît. Écrire
+	// « voilà ce qui reste à reprendre à la main » uniquement dans le status d'un
+	// objet en train d'être effacé, c'est ne l'écrire que pour un `watch` déjà
+	// ouvert. Ce log est la seule trace durable de ce que la séquence n'a pas fait.
+	if len(rests) > 0 {
+		log.FromContext(ctx).Info("suppression terminée avec des restes",
+			"vcluster", vc.Name, "cell", r.Cell, "restes", rests)
+	}
 	return true, 0, nil
 }
 

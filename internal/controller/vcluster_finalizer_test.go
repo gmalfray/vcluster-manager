@@ -43,14 +43,40 @@ type fakeDeletionOps struct {
 	// tous les tests de suppression écrits avant que la question ne se pose.
 	nsAbsent  bool
 	nsUnknown bool
+
+	// nsSurvivesDelete garde le namespace en place malgré la suppression : le
+	// namespace en Terminating qu'un finalizer tiers retient, ou que la
+	// Kustomization Flux du tenant réapplique. C'est le cas que N6 doit rapporter
+	// au lieu d'annoncer une destruction qu'il n'a pas constatée.
+	nsSurvivesDelete bool
+	deleteNSErr      error
 }
 
 func (f *fakeDeletionOps) HostNamespaceState(_ context.Context, _, _ string) (bool, bool) {
 	f.record("namespace-state")
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.nsUnknown {
 		return false, false
 	}
 	return !f.nsAbsent, true
+}
+
+// DeleteHostNamespace fait au faux cluster ce que l'appel fait au vrai : après
+// lui, le namespace n'est plus là. C'est ce changement d'état — et non un drapeau
+// « delete a été appelé » — qui permet à l'étape suivante de conclure par
+// observation, comme en production.
+func (f *fakeDeletionOps) DeleteHostNamespace(context.Context, models.Actor, string, string) error {
+	f.record("delete-namespace")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteNSErr != nil {
+		return f.deleteNSErr
+	}
+	if !f.nsSurvivesDelete {
+		f.nsAbsent = true
+	}
+	return nil
 }
 
 func (f *fakeDeletionOps) record(call string) {
@@ -151,6 +177,18 @@ func unpairedOps() *fakeDeletionOps {
 	return &fakeDeletionOps{protection: service.ProtectionState{Available: true}}
 }
 
+// readyToDestroyOps est unpairedOps avec la sauvegarde déjà terminée : la
+// séquence atteint sa DERNIÈRE étape en un seul tour.
+//
+// Sans ça, le premier reconcile lance la sauvegarde et s'arrête là — un test de
+// l'étape finale qui ne ferait qu'un tour mesurerait donc l'étape de sauvegarde,
+// et passerait au vert en n'exécutant jamais ce qu'il prétend couvrir.
+func readyToDestroyOps() *fakeDeletionOps {
+	ops := unpairedOps()
+	ops.backup = service.DeletionBackupState{Found: true, Name: "b1", Phase: "Completed", Completed: true}
+	return ops
+}
+
 // --- outillage -----------------------------------------------------------
 
 // newDeletingVCluster crée un CR avec son finalizer, le supprime, et rend
@@ -218,6 +256,24 @@ func requireVClusterCond(t *testing.T, vc *v1alpha1.VCluster, condType string, s
 	}
 	if reason != "" && c.Reason != reason {
 		t.Fatalf("condition %s: reason %s, attendu %s (message: %s)", condType, c.Reason, reason, c.Message)
+	}
+}
+
+// terminatingVCluster rend un CR en Terminating sans passer par l'API server,
+// pour les tests qui appellent la séquence directement.
+//
+// Le deletionTimestamp n'est pas décoratif : l'étape de sauvegarde s'en sert
+// comme borne (« une sauvegarde postérieure à la suppression »), et un objet
+// construit à la main sans lui la fait déréférencer nil.
+func terminatingVCluster(name string) *v1alpha1.VCluster {
+	now := metav1.Now()
+	return &v1alpha1.VCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: "default",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{VClusterFinalizer},
+		},
+		Status: v1alpha1.VClusterStatus{Deletion: &v1alpha1.DeletionStatus{}},
 	}
 }
 
@@ -655,24 +711,255 @@ func TestFailedTeardownIsRetriedWithoutRedoingTheProtectionRemoval(t *testing.T)
 //
 // L'étape est appelée directement : une fois la séquence terminée l'objet
 // n'existe plus, donc son dernier status n'est plus relisable par un Get.
+// Les restes que le teardown signale doivent arriver jusqu'à la conclusion, qui
+// s'écrit une étape plus loin depuis que le finalizer supprime le namespace.
+//
+// Le test passe par la séquence entière et pas par l'étape seule : c'est
+// justement la traversée d'une étape à l'autre qui peut les perdre.
 func TestTeardownWarningsLandInTheStatus(t *testing.T) {
 	ctx := context.Background()
-	ops := unpairedOps()
+	ops := readyToDestroyOps()
 	ops.teardownWarnings = []string{"clients OIDC Keycloak pas supprimés : 503"}
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
-	vc := &v1alpha1.VCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "restes", Namespace: "default"},
-		Status:     v1alpha1.VClusterStatus{Deletion: &v1alpha1.DeletionStatus{}},
-	}
-	done, _, err := r.reconcileFinalTeardown(ctx, ops, vc)
+	vc := terminatingVCluster("restes")
+	done, _, err := r.runDeletionSequence(ctx, ops, vc)
 	if err != nil || !done {
-		t.Fatalf("étape finale: done=%v err=%v — un avertissement ne doit pas bloquer la suppression", done, err)
+		t.Fatalf("séquence: done=%v err=%v — un avertissement ne doit pas bloquer la suppression", done, err)
 	}
 	if !strings.Contains(vc.Status.Deletion.Message, "Keycloak") {
 		t.Fatalf("les restes ne sont pas dans le status : %q", vc.Status.Deletion.Message)
 	}
 	requireVClusterCond(t, vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "Deleted")
+}
+
+// --- la protection se relit avant de détruire, pas seulement avant d'écrire --
+
+// Une protection illisible arrête la séquence AVANT toute destruction.
+//
+// Le code ne levait pas l'annotation quand la lecture échouait — bon réflexe —
+// puis continuait quand même : finalizers Flux retirés, Keycloak, Vault, et
+// depuis N6 le namespace lui-même. Le garde-fou était donc contourné par la
+// panne qu'il aurait dû faire échouer, avec une conséquence irréversible.
+//
+// Ce n'était pas dangereux avant N6 : la destruction passait par le prune Flux,
+// qu'une annotation restée posée retenait. Depuis que le finalizer supprime
+// lui-même, plus rien ne la lit sur ce chemin.
+func TestDeletionStopsWhenTheProtectionCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.protection = service.ProtectionState{Available: false, Detail: "namespaces \"vcluster-x\" is forbidden"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "protection-illisible-suppr", false, nil)
+
+	res, err := r.Reconcile(ctx, vcReq(vc))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if vclusterGone(t, ctx, vc) {
+		t.Fatal("le CR a été lâché alors qu'on ne sait pas si son namespace est protégé")
+	}
+	for _, appel := range []string{"teardown", "delete-namespace", "set-protection"} {
+		if n := ops.count(appel); n != 0 {
+			t.Fatalf("%s appelé %d fois sur une protection illisible : la séquence a détruit "+
+				"sans savoir si le garde-fou était posé (trace: %v)", appel, n, ops.trace())
+		}
+	}
+	if res.RequeueAfter != deletionStepRequeue {
+		t.Fatalf("requeue %s, attendu %s : une panne de lecture se répare toute seule, "+
+			"encore faut-il repasser", res.RequeueAfter, deletionStepRequeue)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	requireVClusterCond(t, got, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "ProtectionUnknown")
+	if c := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.CondVClusterReady); c != nil &&
+		!strings.Contains(c.Message, "forbidden") {
+		t.Fatalf("la condition ne dit pas POURQUOI la lecture a échoué : %q", c.Message)
+	}
+}
+
+// Et le status ne doit pas affirmer une levée de protection qu'il n'a pas
+// constatée : `protectionEnabled: false` sur une lecture ratée, c'est écrire
+// « ce namespace n'est plus protégé » sans avoir regardé.
+func TestUnreadableProtectionDoesNotClearTheStatusFlag(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.protection = service.ProtectionState{Available: false, Detail: "apiserver injoignable"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+
+	vc := terminatingVCluster("flag-protection")
+	vc.Status.ProtectionEnabled = true
+
+	done, _, err := r.runDeletionSequence(ctx, ops, vc)
+	if err != nil || done {
+		t.Fatalf("séquence: done=%v err=%v — elle devait s'arrêter sur la lecture ratée", done, err)
+	}
+	if !vc.Status.ProtectionEnabled {
+		t.Fatal("protectionEnabled remis à false sans avoir pu lire l'annotation")
+	}
+}
+
+// --- N6 : le finalizer supprime le namespace qu'il a créé -------------------
+
+// L'étape Destroying ne supprimait rien : elle retirait les finalizers Flux
+// « pour que le namespace puisse être supprimé », puis annonçait « séquence de
+// suppression terminée ». La suppression elle-même était le prune d'un commit que
+// le finalizer n'écrit ni ne vérifie — un CR pouvait donc disparaître en laissant
+// derrière lui le namespace, ses pods et son volume.
+func TestFinalizerDeletesTheNamespaceItCreated(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ns-supprime", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if n := ops.count("delete-namespace"); n != 1 {
+		t.Fatalf("suppression du namespace demandée %d fois, attendu 1 : "+
+			"sans elle, le CR part et le namespace reste (trace: %v)", n, ops.trace())
+	}
+	if !vclusterGone(t, ctx, vc) {
+		t.Fatal("le CR n'a pas été lâché alors que le namespace a bien disparu")
+	}
+}
+
+// La suppression du namespace vient APRÈS la sauvegarde, pas avant. C'est tout
+// l'ordre de §4.4 : détruire d'abord et sauvegarder ensuite n'aurait pas de sens,
+// et le filet ne servirait plus à rien.
+func TestNamespaceIsNotDeletedWhileTheBackupBlocks(t *testing.T) {
+	ctx := context.Background()
+	ops := unpairedOps()
+	ops.backup = service.DeletionBackupState{Found: true, Name: "b1", Phase: "PartiallyFailed", Failed: true, StartedAt: time.Now()}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ns-apres-backup", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if n := ops.count("delete-namespace"); n != 0 {
+		t.Fatalf("namespace supprimé %d fois alors que la sauvegarde a échoué : le filet ne sert plus à rien", n)
+	}
+}
+
+// Un namespace qu'on a demandé à supprimer n'est pas un namespace supprimé : il
+// passe en Terminating, et quelque chose peut l'y retenir — un finalizer tiers,
+// ou la Kustomization Flux du tenant qui le réapplique. Tant que la disparition
+// n'est pas CONSTATÉE, le CR reste.
+func TestDeletionWaitsForTheNamespaceToActuallyDisappear(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.nsSurvivesDelete = true
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ns-tenace", false, nil)
+
+	res, err := r.Reconcile(ctx, vcReq(vc))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if vclusterGone(t, ctx, vc) {
+		t.Fatal("le CR a été lâché alors que le namespace est toujours là : " +
+			"c'est exactement le « terminé » sans preuve que N6 corrige")
+	}
+	if res.RequeueAfter != deletionStepRequeue {
+		t.Fatalf("requeue %s, attendu %s : sans requeue, plus personne ne constate la disparition",
+			res.RequeueAfter, deletionStepRequeue)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	requireVClusterCond(t, got, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "NamespaceTerminating")
+	if c := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.CondVClusterReady); c != nil && c.Reason == "Deleted" {
+		t.Fatalf("Ready annonce « Deleted » alors que le namespace est encore là : %s", c.Message)
+	}
+}
+
+// Attendre, mais pas pour toujours. Un namespace qu'un finalizer tiers retient ne
+// partira pas parce qu'on insiste ; laisser le CR en Terminating indéfiniment
+// n'efface rien et ajoute un objet coincé au problème. On lâche, et on NOMME ce
+// qui reste — sinon la trace disparaît avec le CR.
+func TestNamespaceRemovalWaitIsBounded(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.nsSurvivesDelete = true
+	ops.teardownWarnings = []string{"backend d'auth Vault pas désactivé : 503"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ns-borne", false, nil)
+
+	ageCondition(t, ctx, vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse,
+		"NamespaceTerminating", namespaceRemovalGiveUpAfter+time.Minute)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !vclusterGone(t, ctx, vc) {
+		t.Fatalf("CR toujours retenu au-delà de %s : un tiers en panne ne doit pas coincer un objet pour toujours",
+			namespaceRemovalGiveUpAfter)
+	}
+}
+
+// Le message de fin doit porter le namespace resté debout ET les restes du
+// teardown. C'est la dernière chose écrite avant que l'objet disparaisse : ce qui
+// n'y est pas n'est plus lisible nulle part.
+func TestGivingUpOnTheNamespaceNamesWhatIsLeft(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.nsSurvivesDelete = true
+	ops.teardownWarnings = []string{"backend d'auth Vault pas désactivé : 503"}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+
+	vc := terminatingVCluster("restes-ns")
+	apimeta.SetStatusCondition(&vc.Status.Conditions, metav1.Condition{
+		Type: v1alpha1.CondNamespaceRemoved, Status: metav1.ConditionFalse,
+		Reason: "NamespaceTerminating", Message: "posée par le test",
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-namespaceRemovalGiveUpAfter - time.Minute)),
+	})
+
+	done, _, err := r.runDeletionSequence(ctx, ops, vc)
+	if err != nil || !done {
+		t.Fatalf("séquence: done=%v err=%v — la borne doit laisser passer", done, err)
+	}
+	requireVClusterCond(t, vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionUnknown, "RemovalUnconfirmed")
+	for _, want := range []string{"vcluster-restes-ns", "Vault"} {
+		if !strings.Contains(vc.Status.Deletion.Message, want) {
+			t.Fatalf("le message de fin ne dit pas %q : %q", want, vc.Status.Deletion.Message)
+		}
+	}
+}
+
+// Un refus de l'API server (RBAC absent, webhook) n'est pas une disparition. Il
+// remonte comme erreur, le CR reste, et la condition dit pourquoi.
+func TestNamespaceDeletionRefusalKeepsTheCR(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.deleteNSErr = errors.New("namespaces \"vcluster-ns-refus\" is forbidden")
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ns-refus", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err == nil {
+		t.Fatal("suppression refusée par le cluster mais réconciliation en succès")
+	}
+	if vclusterGone(t, ctx, vc) {
+		t.Fatal("le CR a été lâché alors que la suppression du namespace a été refusée")
+	}
+	requireVClusterCond(t, fetchVCluster(t, ctx, vc), v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "DeleteFailed")
+}
+
+// « Je n'arrive pas à regarder » n'est pas « il a disparu ». Une lecture ratée
+// après la demande ne conclut pas la séquence — même discipline que pour le filet
+// de sauvegarde, et ici elle évite d'annoncer une destruction non constatée.
+func TestUnreadableNamespaceDoesNotConcludeTheDeletion(t *testing.T) {
+	ctx := context.Background()
+	// La sauvegarde ne doit pas bloquer avant : on veut atteindre la dernière étape.
+	ops := readyToDestroyOps()
+	ops.nsUnknown = true
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ns-illisible-fin", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if vclusterGone(t, ctx, vc) {
+		t.Fatal("le CR a été lâché sur une lecture ratée : rien ne prouve que le namespace est parti")
+	}
+	requireVClusterCond(t, fetchVCluster(t, ctx, vc), v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "NamespaceStateUnknown")
 }
 
 // Un objet en Terminating sans notre finalizer ne nous appartient plus :
