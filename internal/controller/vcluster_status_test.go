@@ -47,6 +47,16 @@ func (f *fakeObserver) RenderVClusterSubstitutions(*models.CreateRequest, string
 	return nil, nil
 }
 
+// EffectiveQuotas délègue à la vraie règle, comme les autres faux.
+//
+// Un bouchon qui rendrait « pas de quota » serait plus simple et faux : le test
+// du refus de budget produit un vrai dépassement, donc il a besoin que le quota
+// demandé soit réellement résolu. Un faux qui répond toujours « rien à imputer »
+// ferait passer ce test en ne mesurant rien.
+func (f *fakeObserver) EffectiveQuotas(req *models.CreateRequest, env string) (string, string, string, bool, error) {
+	return newFakeProvisioner().EffectiveQuotas(req, env)
+}
+
 func (f *fakeObserver) setObservation(o service.VClusterObservation) {
 	f.obsMu.Lock()
 	defer f.obsMu.Unlock()
@@ -563,6 +573,10 @@ func TestSuspendedVClusterIsNotObserved(t *testing.T) {
 // provisionneur, sinon c'est le refus de provisionnement qui coupe la
 // réconciliation et le test mesure autre chose que ce qu'il annonce.
 type provisionneurSansObservateur struct{ fakeVClusterOps }
+
+func (*provisionneurSansObservateur) EffectiveQuotas(req *models.CreateRequest, env string) (string, string, string, bool, error) {
+	return newFakeProvisioner().EffectiveQuotas(req, env)
+}
 
 func (*provisionneurSansObservateur) RenderVClusterSubstitutions(*models.CreateRequest, string, string) ([]*unstructured.Unstructured, error) {
 	return nil, nil

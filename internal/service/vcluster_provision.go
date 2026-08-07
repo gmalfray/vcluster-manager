@@ -41,3 +41,26 @@ func (s *Service) RenderVClusterSubstitutions(req *models.CreateRequest, env, k8
 		s.generator.SubstitutionConfigMap(req, envOrDefault(env), k8sVersion),
 	}, nil
 }
+
+// EffectiveQuotas rend le quota qui sera RÉELLEMENT écrit pour ce vcluster.
+//
+// Elle existe pour que le contrôle de budget interroge la même source que le
+// provisionnement, au lieu de recalculer la règle de son côté. Les deux avaient
+// divergé : le provisionnement traitait un bloc `quotas` absent comme « quotas
+// actifs, valeurs par défaut du générateur » — ce que le commentaire de QuotaSpec
+// revendique — tandis que le budget le traitait comme « rien à imputer ». Un CR
+// qui omettait trois lignes obtenait donc un ResourceQuota que le plafond de la
+// cell ne comptait jamais.
+//
+// Recopier les valeurs par défaut dans le contrôleur aurait rouvert le même trou
+// par une autre porte : deux endroits à configurer, dont un qu'on peut oublier
+// sans que rien ne le dise. Ici il n'y a qu'une source, et elle est celle qui
+// rend le ConfigMap.
+func (s *Service) EffectiveQuotas(req *models.CreateRequest, env string) (cpu, mem, sto string, enabled bool, err error) {
+	if s.generator == nil {
+		return "", "", "", false, ErrGeneratorUnavailable
+	}
+	subs := s.generator.Substitutions(req, envOrDefault(env), "")
+	return subs["QUOTA_CPU"], subs["QUOTA_MEMORY"], subs["QUOTA_STORAGE"],
+		subs["QUOTAS_ENABLED"] == "true", nil
+}

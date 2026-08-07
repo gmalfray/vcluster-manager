@@ -57,6 +57,15 @@ func newFakeProvisioner() *fakeProvisioner {
 	})}
 }
 
+// EffectiveQuotas délègue au VRAI générateur, comme le rendu : c'est toute la
+// raison d'être de ce seam — le budget et le provisionnement doivent lire la même
+// règle, donc un faux qui recalculerait la sienne ne prouverait rien.
+func (f *fakeProvisioner) EffectiveQuotas(req *models.CreateRequest, env string) (string, string, string, bool, error) {
+	subs := f.gen.Substitutions(req, env, "")
+	return subs["QUOTA_CPU"], subs["QUOTA_MEMORY"], subs["QUOTA_STORAGE"],
+		subs["QUOTAS_ENABLED"] == "true", nil
+}
+
 func (f *fakeProvisioner) RenderVClusterSubstitutions(req *models.CreateRequest, env, k8sVersion string) ([]*unstructured.Unstructured, error) {
 	f.renderCall++
 	if f.renderErr != nil {

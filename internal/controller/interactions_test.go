@@ -58,7 +58,17 @@ var (
 	_ VClusterObserver    = (*fullOps)(nil)
 	_ VClusterProvisioner = (*fullOps)(nil)
 	_ VClusterDeletionOps = (*fullOps)(nil)
+	_ QuotaResolver       = (*fullOps)(nil)
 )
+
+// EffectiveQuotas délègue au VRAI générateur, comme le rendu : c'est toute la
+// raison d'être de ce seam — le budget et le provisionnement doivent lire la même
+// règle, donc un faux qui recalculerait la sienne ne prouverait rien.
+func (f *fullOps) EffectiveQuotas(req *models.CreateRequest, env string) (string, string, string, bool, error) {
+	subs := f.gen.Substitutions(req, env, "")
+	return subs["QUOTA_CPU"], subs["QUOTA_MEMORY"], subs["QUOTA_STORAGE"],
+		subs["QUOTAS_ENABLED"] == "true", nil
+}
 
 func newFullOps() *fullOps {
 	return &fullOps{
@@ -120,8 +130,9 @@ func budgetedReconciler(ops any) *VClusterReconciler {
 // qui couvre un CR admis avant que la règle n'existe.
 func TestARefusedProvisioningIsAggregatedIntoReady(t *testing.T) {
 	ctx := context.Background()
-	ops := newFullOps()
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	// budgetedReconciler : le budget passe avant le provisionnement, donc sans
+	// plafond c'est lui qui refuserait et le test mesurerait autre chose.
+	r := budgetedReconciler(newFullOps())
 
 	vc := &v1alpha1.VCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "capi-refus-tient", Namespace: "default"},
@@ -195,7 +206,7 @@ func TestAnInvalidNameIsStoppedByTheGuardBeforeProvisioning(t *testing.T) {
 	// l'effacerait toujours. Appel direct, puisque plus rien n'y mène.
 	direct := &v1alpha1.VCluster{ObjectMeta: metav1.ObjectMeta{Name: "1direct", Namespace: "default"}}
 	blind := &observerOverride{fakeProvisioner: newFakeProvisioner(), obs: service.VClusterObservation{}}
-	r2 := &VClusterReconciler{Client: k8sClient, Ops: blind, Cell: "preprod", Namespace: "default"}
+	r2 := budgetedReconciler(blind)
 	if _, err := r2.reconcileAll(ctx, direct); err != nil {
 		t.Fatalf("reconcileAll: %v", err)
 	}
@@ -256,26 +267,23 @@ func TestAMissingProvisionerStillReportsProvisioned(t *testing.T) {
 	requireVCCond(t, got, v1alpha1.CondVClusterReady, metav1.ConditionTrue, "AllChecksPassed")
 }
 
-// --- provisionnement × budget ----------------------------------------------
-
-// Les deux étapes lisent `spec.quotas` avec des conventions opposées.
+// Un bloc `quotas` absent est provisionné ET imputé au budget.
 //
-//	createRequestFromCR : bloc absent ⇒ NoQuotas=false ⇒ QUOTAS_ENABLED=true,
-//	                      avec les valeurs par défaut du générateur.
-//	checkResourceBudget : bloc absent ⇒ « aucun quota demandé, rien à imputer ».
+// C'était la contradiction : createRequestFromCR faisait
+// `NoQuotas = Quotas != nil && !Enabled` — bloc absent vaut quotas ACTIFS, aux
+// valeurs par défaut du générateur, ce que le commentaire de QuotaSpec revendique
+// explicitement — tandis que checkResourceBudget faisait
+// `Quotas == nil || !Enabled`, soit « rien à imputer ».
 //
-// Un CR sans bloc `quotas` obtient donc un ResourceQuota sur la cell — 8 CPU,
-// 32Gi, 500Gi par défaut — que le budget de la cell ne compte jamais à
-// l'admission. Il comptera en revanche dans le total lu pour les vclusters
-// SUIVANTS (SumVClusterQuotas somme les ResourceQuota des namespaces
-// vcluster-*), donc il consomme le plafond des autres sans avoir eu à passer
-// devant lui. Omettre trois lignes du CR suffit à contourner « le contrôle qui
-// compte » d'ADR-001.
+// Un CR sans bloc obtenait donc un ResourceQuota sur la cell que le plafond ne
+// comptait jamais à l'admission, et qui comptait ensuite contre les vclusters
+// SUIVANTS — SumVClusterQuotas somme les ResourceQuota des namespaces vcluster-*.
+// Omettre trois lignes suffisait à contourner « le contrôle qui compte » d'ADR-001.
 //
-// TROU CONNU. Attendu : une des deux conventions doit céder — soit un bloc
-// absent vaut quotas actifs partout (et le budget doit alors imputer les
-// valeurs par défaut du générateur), soit il vaut pas de quotas partout.
-func TestQuotasBlockAbsentIsProvisionedButNeverBilled(t *testing.T) {
+// Tranché dans le sens que le commentaire de QuotaSpec annonçait : le budget
+// impute désormais le quota EFFECTIF, celui qui sera réellement écrit, et il le
+// demande à la même source que le provisionnement.
+func TestQuotasBlockAbsentIsProvisionedAndBilled(t *testing.T) {
 	ctx := context.Background()
 	ops := newFullOps()
 	r := budgetedReconciler(ops)
@@ -286,22 +294,21 @@ func TestQuotasBlockAbsentIsProvisionedButNeverBilled(t *testing.T) {
 	}
 
 	cm := getSubstitutions(t, ctx, "quota-fantome")
-	if cm.Data["QUOTAS_ENABLED"] != "true" {
-		t.Fatalf("QUOTAS_ENABLED = %q : ce test suppose qu'un bloc quotas absent "+
-			"provisionne quand même des quotas", cm.Data["QUOTAS_ENABLED"])
-	}
-	if cm.Data["QUOTA_CPU"] == "" {
-		t.Fatal("QUOTA_CPU vide : le générateur devait poser sa valeur par défaut")
+	if cm.Data["QUOTAS_ENABLED"] != "true" || cm.Data["QUOTA_CPU"] == "" {
+		t.Fatalf("préalable : un bloc absent doit provisionner des quotas (ENABLED=%q CPU=%q)",
+			cm.Data["QUOTAS_ENABLED"], cm.Data["QUOTA_CPU"])
 	}
 
 	got := fetchVCluster(t, ctx, vc)
 	c := vcCondition(got, v1alpha1.CondBudgetOK)
-	if c.Reason != "NoQuotaRequested" {
-		t.Fatalf("BudgetOK = %s/%s, ce test fige NoQuotaRequested : si la raison a changé, "+
-			"la contradiction entre les deux étapes a peut-être été tranchée", c.Status, c.Reason)
+	if c == nil {
+		t.Fatal("BudgetOK absente")
 	}
-	t.Logf("provisionné avec QUOTA_CPU=%s / QUOTA_MEMORY=%s / QUOTA_STORAGE=%s, imputé au budget : rien",
-		cm.Data["QUOTA_CPU"], cm.Data["QUOTA_MEMORY"], cm.Data["QUOTA_STORAGE"])
+	if c.Reason == "NoQuotaRequested" {
+		t.Fatalf("BudgetOK = %s/NoQuotaRequested alors que QUOTA_CPU=%s est provisionné : "+
+			"le quota est écrit mais jamais imputé, donc il consommera le plafond des "+
+			"vclusters suivants sans être passé devant le contrôle", c.Status, cm.Data["QUOTA_CPU"])
+	}
 }
 
 // Un refus de budget ne se réveille jamais tout seul.

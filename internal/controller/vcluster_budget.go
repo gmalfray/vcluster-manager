@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -30,6 +31,18 @@ func (b BudgetLimits) configured() bool {
 	return b.CPU != "" || b.Memory != "" || b.Storage != ""
 }
 
+// QuotaResolver dit quel quota sera réellement écrit pour un vcluster. Déclarée
+// ici, où elle est consommée ; *service.Service la satisfait.
+type QuotaResolver interface {
+	EffectiveQuotas(req *models.CreateRequest, env string) (cpu, mem, sto string, enabled bool, err error)
+}
+
+var _ QuotaResolver = (*service.Service)(nil)
+
+// errNoQuotaResolver ne peut arriver qu'avec un double de test incomplet ; en
+// production l'assertion ci-dessus l'exclut.
+var errNoQuotaResolver = errors.New("l'implémentation de VClusterOps ne sait pas résoudre les quotas effectifs")
+
 // BudgetReader reads the cell's current allocation. Declared here, where it is
 // consumed; the production implementation lives in the service.
 //
@@ -51,10 +64,30 @@ var _ BudgetReader = (*service.Service)(nil)
 //
 // Renvoie true si le provisionnement peut continuer.
 func (r *VClusterReconciler) checkResourceBudget(ctx context.Context, vc *v1alpha1.VCluster) (bool, error) {
-	// Pas de quotas demandés : rien à imputer au budget de la cell.
-	if vc.Spec.Quotas == nil || !vc.Spec.Quotas.Enabled {
+	// Le contrôle est-il branché du tout ? Cette question passe en premier.
+	//
+	// Sans lecteur d'allocation il n'y a pas de contrôle de budget, donc rien ne
+	// justifie d'exiger de savoir quels quotas seront écrits ni qu'un plafond soit
+	// configuré. Mettre cette question après les autres rendait le résolveur de
+	// quotas obligatoire sur TOUS les chemins de réconciliation, y compris ceux qui
+	// n'ont rien à voir avec le budget.
+	//
+	// En production BudgetOps est toujours renseigné (cmd/operator/main.go), donc
+	// ce raccourci n'ouvre rien : il ne sert qu'aux tests qui ne portent pas sur le
+	// budget.
+	if r.BudgetOps == nil {
+		return true, nil
+	}
+
+	cpu, mem, sto, billable, err := r.effectiveQuotas(vc)
+	if err != nil {
+		// Ne pas conclure sans savoir ce qui sera écrit : « je ne peux pas
+		// calculer le quota » n'est pas « il n'y a rien à imputer ».
+		return false, err
+	}
+	if !billable {
 		setVClusterCond(vc, v1alpha1.CondBudgetOK, metav1.ConditionTrue, "NoQuotaRequested",
-			"aucun quota demandé, rien à imputer au budget de la cell")
+			"aucun quota ne sera écrit, rien à imputer au budget de la cell")
 		return true, nil
 	}
 
@@ -73,9 +106,6 @@ func (r *VClusterReconciler) checkResourceBudget(ctx context.Context, vc *v1alph
 		return false, nil
 	}
 
-	if r.BudgetOps == nil {
-		return true, nil
-	}
 	used, err := r.BudgetOps.SumVClusterQuotas(ctx, r.Cell, vc.Name)
 	if err != nil {
 		// Ne pas conclure sur une lecture ratée : « je ne sais pas » n'est pas
@@ -89,9 +119,9 @@ func (r *VClusterReconciler) checkResourceBudget(ctx context.Context, vc *v1alph
 		deja     resource.Quantity
 		plafond  string
 	}{
-		{"CPU", vc.Spec.Quotas.CPU, used.CPU, r.Budget.CPU},
-		{"mémoire", vc.Spec.Quotas.Memory, used.Memory, r.Budget.Memory},
-		{"stockage", vc.Spec.Quotas.Storage, used.Storage, r.Budget.Storage},
+		{"CPU", cpu, used.CPU, r.Budget.CPU},
+		{"mémoire", mem, used.Memory, r.Budget.Memory},
+		{"stockage", sto, used.Storage, r.Budget.Storage},
 	} {
 		depasse, msg, err := exceedsBudget(d.nom, d.demandee, d.deja, d.plafond)
 		if err != nil {
@@ -109,6 +139,50 @@ func (r *VClusterReconciler) checkResourceBudget(ctx context.Context, vc *v1alph
 	setVClusterCond(vc, v1alpha1.CondBudgetOK, metav1.ConditionTrue, "WithinBudget",
 		"les quotas demandés tiennent dans le plafond de la cell")
 	return true, nil
+}
+
+// effectiveQuotas rend le quota qui sera RÉELLEMENT écrit pour ce vcluster, et
+// s'il est imputable au budget de la cell.
+//
+// C'est le point où deux conventions opposées cohabitaient sur le même champ.
+// createRequestFromCR fait `NoQuotas = Quotas != nil && !Enabled` — bloc absent
+// vaut quotas ACTIFS, aux valeurs par défaut du générateur, ce que le commentaire
+// de QuotaSpec revendique explicitement (« forgetting the block is the safe
+// outcome »). Le budget, lui, faisait `Quotas == nil || !Enabled` : bloc absent
+// valait « rien à imputer ».
+//
+// Résultat mesuré par la recette : QUOTA_CPU=8 / QUOTA_MEMORY=32Gi /
+// QUOTA_STORAGE=500Gi provisionnés, zéro imputé. Et comme SumVClusterQuotas somme
+// les ResourceQuota des namespaces vcluster-*, ce quota comptait ensuite contre
+// les vclusters SUIVANTS — donc la cell dépassait silencieusement d'un tenant à
+// chaque CR qui omettait trois lignes. Omettre trois lignes contournait « le
+// contrôle qui compte » d'ADR-001.
+//
+// On impute donc le quota effectif, et non le fait que le bloc soit là.
+// `enabled: false` reste le seul opt-out, parce que c'est un geste explicite et lisible en revue.
+// Un quota effectif entièrement vide n'est pas imputable : aucune valeur ne sera
+// écrite, il n'y a rien à compter.
+func (r *VClusterReconciler) effectiveQuotas(vc *v1alpha1.VCluster) (cpu, mem, sto string, billable bool, err error) {
+	resolver, ok := r.Ops.(QuotaResolver)
+	if !ok {
+		// Sans résolveur on ne peut pas savoir ce qui sera écrit. On refuse plutôt
+		// que de supposer zéro : c'est la même règle que §5.3 sur le plafond
+		// absent, et pour la même raison — une mauvaise configuration doit se voir
+		// tout de suite plutôt qu'ouvrir un trou silencieux.
+		return "", "", "", false, errNoQuotaResolver
+	}
+
+	cpu, mem, sto, enabled, err := resolver.EffectiveQuotas(createRequestFromCR(vc), r.Cell)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	// `enabled: false` est le seul opt-out, et c'est un geste explicite, lisible en
+	// revue. Un quota effectif entièrement vide n'est pas imputable non plus :
+	// aucune valeur ne sera écrite, il n'y a rien à compter.
+	if !enabled {
+		return "", "", "", false, nil
+	}
+	return cpu, mem, sto, cpu != "" || mem != "" || sto != "", nil
 }
 
 // exceedsBudget compares "already handed out + requested" against the ceiling.
