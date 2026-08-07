@@ -91,6 +91,33 @@ Le namespace du CR est plat, et non `vcluster-<nom>` comme celui des marqueurs :
 est ce qui *déclare* un vcluster, donc il existe avant le namespace dont il parle. Le
 faire vivre dedans serait circulaire.
 
+## Arbitrages rendus le 2026-08-07
+
+**N6 — le finalizer supprime le namespace qu'il a créé.** L'étape `Destroying` ne
+supprimait rien : c'était le prune Flux d'un commit que le finalizer n'écrit ni ne
+vérifie, donc il annonçait « suppression terminée » sans preuve. Des deux issues
+possibles — supprimer soi-même, ou attendre de constater que Flux l'a fait — c'est
+la première qui est retenue.
+
+Raison : l'opérateur applique déjà ce namespace lui-même en Server-Side Apply, il
+en est donc propriétaire de fait. Le faire supprimer par lui rend la séquence
+auto-suffisante et vérifiable, au lieu d'introduire une attente qui peut ne jamais
+aboutir et qu'il faudrait borner. Conséquence à traiter dans le même changement :
+le commentaire de `ProvisionFieldManager` affirme que Flux n'écrit aucun des deux
+objets appliqués — c'est **faux pour le namespace**, qui vient aussi de
+`clusters/<cell>/base`. La propriété doit donc être tranchée explicitement là.
+
+**Les accès aux intégrations : après la recette preprod, pas avant.** L'opérateur
+n'a ni client Vault, ni Keycloak, ni Rancher, donc les intégrations rendent
+`Unknown/NotConfigured` et `Ready` n'atteint jamais le vert pour un vcluster
+demandant ArgoCD. Les lui donner est la bonne direction, mais l'ordre compte :
+ajouter le token GitLab, le secret client Keycloak et les creds Vault à ce pod
+élargit ce qu'une compromission emporte, et le faire sur du code qui n'a jamais
+tourné sur un vrai cluster, c'est prendre le risque avant d'avoir la preuve.
+
+Ordre retenu : **recette preprod → correction de ce qu'elle trouve → câblage des
+accès.**
+
 ## Ce qui n'est pas couvert
 
 - **Les intégrations externes** — chantier en cours. L'état de configuration Vault vit
