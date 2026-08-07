@@ -64,6 +64,13 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            runAsNonRoot: true
             capabilities:
               drop: ["ALL"]
+            # UID explicite plutôt que `runAsNonRoot: true` seul : l'image ne
+            # déclare pas de USER (le serveur y tourne en root), donc kubelet
+            # refusait de démarrer le conteneur — « image will run as root ».
+            # Le binaire est statique et ne lit que son binaire et les CA du
+            # système, tous deux lisibles par tous : n'importe quel UID convient.
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
