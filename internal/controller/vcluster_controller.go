@@ -49,6 +49,15 @@ type VClusterReconciler struct {
 	// Cell names the host cluster this operator reconciles (ADR-002).
 	Cell string
 
+	// Budget est le plafond de ressources de la cell. Vide = aucun plafond
+	// configuré, ce qui fait REFUSER les créations avec quotas (crd-vcluster.md
+	// §5.3) plutôt que les laisser passer sans contrôle.
+	Budget BudgetLimits
+
+	// BudgetOps lit ce que la cell a déjà alloué. Nil désactive la vérification
+	// — réservé aux tests qui ne portent pas sur le budget.
+	BudgetOps BudgetReader
+
 	// GracePeriod overrides DefaultGracePeriod. Zero means the default.
 	GracePeriod time.Duration
 }
@@ -82,6 +91,22 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	var requeue time.Duration
 	if vc.Status.Phase != v1alpha1.VClusterPhaseSuspended {
+		// Le budget avant le provisionnement : on ne matérialise rien qu'on
+		// refuserait ensuite.
+		ok, err := r.checkResourceBudget(ctx, &vc)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !ok {
+			// Refus explicite, pas une erreur de réconciliation : rien ne sera
+			// réessayé tant que le spec ou le plafond n'a pas changé, et la
+			// condition BudgetOK dit pourquoi.
+			if err := r.Status().Update(ctx, &vc); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+
 		if err := r.reconcileProvisioning(ctx, &vc); err != nil {
 			return ctrl.Result{}, err
 		}
