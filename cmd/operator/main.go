@@ -120,6 +120,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.VClusterReconciler{
+		Client: mgr.GetClient(),
+		Ops:    svc,
+		Cell:   cell,
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "câblage du reconciler VCluster")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		log.Error(err, "healthz")
 		os.Exit(1)

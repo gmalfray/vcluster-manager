@@ -1,0 +1,146 @@
+package controller
+
+import (
+	"context"
+	"time"
+
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
+
+	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/service"
+
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
+)
+
+// DefaultGracePeriod is how long a suspended vcluster stays recoverable before
+// the deletion may proceed. A duration, not a policy: nothing here deletes
+// anything when it expires — expiry only marks the window as closed, and the
+// third Git commit is still what triggers the real deletion
+// (crd-vcluster.md §4.2).
+const DefaultGracePeriod = 7 * 24 * time.Hour
+
+// VClusterOps is the slice of the service the vcluster reconciler needs.
+// Declared here, where it is consumed, rather than in the service: the seam
+// belongs to the caller. seam_assert below proves *service.Service satisfies it.
+type VClusterOps interface {
+	SuspendVCluster(ctx context.Context, actor models.Actor, name, env string) error
+	ResumeVCluster(ctx context.Context, actor models.Actor, name, env string) error
+}
+
+var _ VClusterOps = (*service.Service)(nil)
+
+// VClusterReconciler owns the lifecycle of a VCluster CR.
+//
+// Today it implements only the reversible half of deletion: reacting to
+// spec.suspend. The full provisioning reconcile (expanding the CR into Flux
+// resources) and the finalizer come next — deliberately in that order, because
+// suspend is what the finalizer's grace period hangs off, and it destroys
+// nothing.
+type VClusterReconciler struct {
+	client.Client
+
+	// Ops is the service seam — *service.Service in production.
+	Ops VClusterOps
+
+	// Cell names the host cluster this operator reconciles (ADR-002).
+	Cell string
+
+	// GracePeriod overrides DefaultGracePeriod. Zero means the default.
+	GracePeriod time.Duration
+}
+
+func (r *VClusterReconciler) gracePeriod() time.Duration {
+	if r.GracePeriod > 0 {
+		return r.GracePeriod
+	}
+	return DefaultGracePeriod
+}
+
+// Reconcile drives a VCluster towards its desired state.
+func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	var vc v1alpha1.VCluster
+	if err := r.Get(ctx, req.NamespacedName, &vc); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// A deletionTimestamp means the CR is already on its way out — that path is
+	// the finalizer's, not this one's, and it is not written yet. Doing nothing
+	// is the correct behaviour until it exists: the object simply goes away.
+	if !vc.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
+	vc.Status.ObservedGeneration = vc.Generation
+
+	if err := r.reconcileSuspend(ctx, &vc); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Status only, always: the spec belongs to whoever commits in Git.
+	if err := r.Status().Update(ctx, &vc); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileSuspend applies — or undoes — the reversible sleep.
+//
+// The state is derived from the phase rather than from a flag of its own: a
+// vcluster is asleep iff its phase says so. One less thing to keep in sync, and
+// a restart reads it back from the object like everything else.
+func (r *VClusterReconciler) reconcileSuspend(ctx context.Context, vc *v1alpha1.VCluster) error {
+	asleep := vc.Status.Phase == v1alpha1.VClusterPhaseSuspended
+
+	switch {
+	case vc.Spec.Suspend && !asleep:
+		if err := r.Ops.SuspendVCluster(ctx, SystemActor, vc.Name, r.Cell); err != nil {
+			setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "SuspendFailed", err.Error())
+			return err
+		}
+		endsAt := metav1.NewTime(time.Now().Add(r.gracePeriod()))
+		if vc.Status.Deletion == nil {
+			vc.Status.Deletion = &v1alpha1.DeletionStatus{}
+		}
+		vc.Status.Deletion.GracePeriodEndsAt = &endsAt
+		vc.Status.Deletion.Message = "vcluster en sommeil, rien n'a été détruit — un revert du commit qui a posé suspend le remet debout"
+		vc.Status.Phase = v1alpha1.VClusterPhaseSuspended
+		setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "Suspended",
+			"Flux suspendu et charges à zéro réplique ; fenêtre d'annulation jusqu'à "+endsAt.Format(time.RFC3339))
+
+	case !vc.Spec.Suspend && asleep:
+		if err := r.Ops.ResumeVCluster(ctx, SystemActor, vc.Name, r.Cell); err != nil {
+			setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "ResumeFailed", err.Error())
+			return err
+		}
+		// La fenêtre n'a plus d'objet : la laisser ferait croire à une suppression
+		// encore en cours.
+		vc.Status.Deletion = nil
+		vc.Status.Phase = v1alpha1.VClusterPhasePending
+		setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "Resuming",
+			"Flux repris ; il remonte les répliques")
+	}
+	return nil
+}
+
+func setVClusterCond(vc *v1alpha1.VCluster, condType string, status metav1.ConditionStatus, reason, message string) {
+	apimeta.SetStatusCondition(&vc.Status.Conditions, metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: vc.Generation,
+	})
+}
+
+// SetupWithManager wires the reconciler.
+func (r *VClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&v1alpha1.VCluster{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
+		Named("vcluster").
+		Complete(r)
+}

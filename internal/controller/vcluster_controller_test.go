@@ -1,0 +1,199 @@
+package controller
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	"github.com/gmalfray/vcluster-manager/internal/models"
+
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
+)
+
+// fakeVClusterOps remplace *service.Service pour tout ce qui touche le cluster.
+type fakeVClusterOps struct {
+	mu           sync.Mutex
+	suspendCalls int
+	resumeCalls  int
+	suspendErr   error
+	cellsSeen    []string
+}
+
+func (f *fakeVClusterOps) SuspendVCluster(_ context.Context, _ models.Actor, _, env string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.suspendCalls++
+	f.cellsSeen = append(f.cellsSeen, env)
+	return f.suspendErr
+}
+
+func (f *fakeVClusterOps) ResumeVCluster(_ context.Context, _ models.Actor, _, env string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumeCalls++
+	f.cellsSeen = append(f.cellsSeen, env)
+	return nil
+}
+
+func (f *fakeVClusterOps) counts() (suspend, resume int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.suspendCalls, f.resumeCalls
+}
+
+func createVCluster(t *testing.T, ctx context.Context, name string, suspend bool) *v1alpha1.VCluster {
+	t.Helper()
+	vc := &v1alpha1.VCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec:       v1alpha1.VClusterSpec{Owner: "greg", Suspend: suspend},
+	}
+	if err := k8sClient.Create(ctx, vc); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	return vc
+}
+
+func fetchVCluster(t *testing.T, ctx context.Context, vc *v1alpha1.VCluster) *v1alpha1.VCluster {
+	t.Helper()
+	var got v1alpha1.VCluster
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: vc.Name, Namespace: vc.Namespace}, &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	return &got
+}
+
+func vcReq(vc *v1alpha1.VCluster) ctrl.Request {
+	return ctrl.Request{NamespacedName: types.NamespacedName{Name: vc.Name, Namespace: vc.Namespace}}
+}
+
+// La mise en sommeil ne détruit rien et ouvre une fenêtre d'annulation. C'est ce
+// qui rend la suppression réversible, puisque deletionTimestamp ne peut pas
+// l'être (crd-vcluster.md §4.2).
+func TestSuspendOpensAGracePeriodAndDestroysNothing(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeVClusterOps{}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+
+	vc := createVCluster(t, ctx, "sommeil", true)
+	defer func() { _ = k8sClient.Delete(ctx, vc) }()
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if s, _ := ops.counts(); s != 1 {
+		t.Fatalf("SuspendVCluster appelé %d fois, attendu 1", s)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	if got.Status.Phase != v1alpha1.VClusterPhaseSuspended {
+		t.Fatalf("phase = %q, attendu Suspended", got.Status.Phase)
+	}
+	if got.Status.Deletion == nil || got.Status.Deletion.GracePeriodEndsAt == nil {
+		t.Fatal("aucune fenêtre d'annulation ouverte : la suppression ne serait pas réversible")
+	}
+	if d := time.Until(got.Status.Deletion.GracePeriodEndsAt.Time); d < 6*24*time.Hour {
+		t.Fatalf("fenêtre de %s seulement, attendu ~7 jours", d)
+	}
+}
+
+// Rejouer la réconciliation ne doit pas re-suspendre : l'état vient de la phase,
+// donc un opérateur redémarré ne rejoue pas ce qui est déjà fait.
+func TestSuspendIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeVClusterOps{}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+
+	vc := createVCluster(t, ctx, "sommeil-idempotent", true)
+	defer func() { _ = k8sClient.Delete(ctx, vc) }()
+
+	for i := range 3 {
+		if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+			t.Fatalf("reconcile %d: %v", i+1, err)
+		}
+	}
+	if s, _ := ops.counts(); s != 1 {
+		t.Fatalf("SuspendVCluster appelé %d fois sur 3 réconciliations, attendu 1", s)
+	}
+}
+
+// L'annulation : repasser suspend à false remet le vcluster debout et referme la
+// fenêtre. Laisser la fenêtre ouverte ferait croire à une suppression en cours.
+func TestUnsuspendResumesAndClearsTheWindow(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeVClusterOps{}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+
+	vc := createVCluster(t, ctx, "annulation", true)
+	defer func() { _ = k8sClient.Delete(ctx, vc) }()
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+
+	// Le revert du commit : suspend repasse à false.
+	got := fetchVCluster(t, ctx, vc)
+	got.Spec.Suspend = false
+	if err := k8sClient.Update(ctx, got); err != nil {
+		t.Fatalf("update spec: %v", err)
+	}
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+
+	if _, resume := ops.counts(); resume != 1 {
+		t.Fatalf("ResumeVCluster appelé %d fois, attendu 1", resume)
+	}
+	got = fetchVCluster(t, ctx, vc)
+	if got.Status.Phase == v1alpha1.VClusterPhaseSuspended {
+		t.Fatal("toujours en Suspended après annulation")
+	}
+	if got.Status.Deletion != nil && got.Status.Deletion.GracePeriodEndsAt != nil {
+		t.Fatal("fenêtre d'annulation toujours ouverte : ça se lirait comme une suppression en cours")
+	}
+}
+
+// Un échec de mise en sommeil ne doit pas laisser croire que c'est fait : la
+// phase ne bascule pas, donc la prochaine réconciliation réessaiera.
+func TestSuspendFailureDoesNotClaimSuccess(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeVClusterOps{suspendErr: errors.New("flux injoignable")}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1"}
+
+	vc := createVCluster(t, ctx, "sommeil-echec", true)
+	defer func() { _ = k8sClient.Delete(ctx, vc) }()
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err == nil {
+		t.Fatal("l'échec n'a pas été remonté, donc rien ne sera réessayé")
+	}
+	got := fetchVCluster(t, ctx, vc)
+	if got.Status.Phase == v1alpha1.VClusterPhaseSuspended {
+		t.Fatal("phase Suspended alors que la mise en sommeil a échoué")
+	}
+}
+
+// Le reconciler transmet SA cell, comme celui des marqueurs Velero : l'audit et
+// les métriques ne doivent pas annoncer une autre cell que celle où il tourne.
+func TestVClusterReconcilerPassesItsCell(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeVClusterOps{}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell2"}
+
+	vc := createVCluster(t, ctx, "cell-propagation", true)
+	defer func() { _ = k8sClient.Delete(ctx, vc) }()
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	ops.mu.Lock()
+	defer ops.mu.Unlock()
+	for _, c := range ops.cellsSeen {
+		if c != "cell2" {
+			t.Fatalf("cell transmise = %q, attendu cell2", c)
+		}
+	}
+}

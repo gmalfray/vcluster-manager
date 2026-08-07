@@ -22,6 +22,17 @@ rules:
     resources: ["vclusterveleroops/status"]
     verbs: ["get", "update", "patch"]
 
+  # La CRD VCluster. Même découpage : l'opérateur réconcilie ce que Flux applique
+  # depuis fluxprod, il ne crée pas de vcluster lui-même — donc pas de `create`.
+  # `update` sur l'objet entier viendra avec le finalizer (qui pose et retire un
+  # finalizer sur metadata) ; tant qu'il n'existe pas, la lecture suffit.
+  - apiGroups: ["vcluster.rebuild-it.fr"]
+    resources: ["vclusters"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["vcluster.rebuild-it.fr"]
+    resources: ["vclusters/status"]
+    verbs: ["get", "update", "patch"]
+
   # Velero : créer un backup/restore et suivre leur phase.
   # `delete` sur les backups sert à DeleteVeleroBackup, appelé par l'app et non
   # par l'opérateur — retiré ici volontairement.
