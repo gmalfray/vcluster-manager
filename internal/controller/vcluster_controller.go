@@ -67,24 +67,36 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// A deletionTimestamp means the CR is already on its way out — that path is
-	// the finalizer's, not this one's, and it is not written yet. Doing nothing
-	// is the correct behaviour until it exists: the object simply goes away.
+	// Un deletionTimestamp veut dire que le CR s'en va : ce chemin appartient au
+	// finalizer, pas à la réconciliation normale.
 	if !vc.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return r.reconcileDeletion(ctx, &vc)
 	}
 
 	vc.Status.ObservedGeneration = vc.Generation
 
+	// Le sommeil d'abord : inutile de provisionner ce qu'on vient d'endormir.
 	if err := r.reconcileSuspend(ctx, &vc); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	var requeue time.Duration
+	if vc.Status.Phase != v1alpha1.VClusterPhaseSuspended {
+		if err := r.reconcileProvisioning(ctx, &vc); err != nil {
+			return ctrl.Result{}, err
+		}
+		d, err := r.reconcileObservedState(ctx, &vc)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		requeue = d
 	}
 
 	// Status only, always: the spec belongs to whoever commits in Git.
 	if err := r.Status().Update(ctx, &vc); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 // reconcileSuspend applies — or undoes — the reversible sleep.
@@ -124,6 +136,36 @@ func (r *VClusterReconciler) reconcileSuspend(ctx context.Context, vc *v1alpha1.
 			"Flux repris ; il remonte les répliques")
 	}
 	return nil
+}
+
+// --- Points d'intégration ------------------------------------------------
+//
+// Trois chantiers distincts s'accrochent ici, chacun dans son propre fichier
+// pour qu'ils puissent avancer sans se marcher dessus. Les signatures sont
+// figées ; les implémentations remplacent ces stubs.
+
+// reconcileProvisioning expanse le CR en ressources (crd-vcluster.md §4.1, §3.1).
+// Implémentation attendue dans vcluster_provision.go.
+func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1alpha1.VCluster) error {
+	_, _ = ctx, vc
+	return nil
+}
+
+// reconcileObservedState remplit le status observé (versions, pods, quotas,
+// Rancher, Vault, dernier backup) et agrège la phase + la condition Ready
+// (crd-vcluster.md §2.4, §3.3). Retourne le délai de re-scrutation souhaité.
+// Implémentation attendue dans vcluster_status.go.
+func (r *VClusterReconciler) reconcileObservedState(ctx context.Context, vc *v1alpha1.VCluster) (time.Duration, error) {
+	_, _ = ctx, vc
+	return 0, nil
+}
+
+// reconcileDeletion porte le finalizer et la séquence de suppression, garde-fou
+// deletionProtection compris (crd-vcluster.md §4.3, §4.4).
+// Implémentation attendue dans vcluster_finalizer.go.
+func (r *VClusterReconciler) reconcileDeletion(ctx context.Context, vc *v1alpha1.VCluster) (ctrl.Result, error) {
+	_, _ = ctx, vc
+	return ctrl.Result{}, nil
 }
 
 func setVClusterCond(vc *v1alpha1.VCluster, condType string, status metav1.ConditionStatus, reason, message string) {
