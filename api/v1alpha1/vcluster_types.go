@@ -194,6 +194,11 @@ const (
 	CondRancherPaired           = "RancherPaired"
 	CondDeletionProtected       = "DeletionProtected"
 	CondVClusterBackupCompleted = "BackupCompleted"
+	// CondNamespaceRemoved porte la dernière étape de la suppression. Elle existe
+	// parce que la disparition d'un namespace se CONSTATE : la demander ne fait
+	// que poser un deletionTimestamp, et sans condition dédiée le finalizer
+	// n'aurait ni où écrire ce qu'il attend, ni d'ancre de délai pour renoncer.
+	CondNamespaceRemoved = "NamespaceRemoved"
 )
 
 // ResourceUsage mirrors what the dashboard already displays.

@@ -6,6 +6,35 @@ Toutes les modifications notables sont documentées ici. Le format suit
 
 ## [Unreleased]
 
+### Fixed
+- **Opérateur — la suppression supprime enfin le namespace** (arbitrage N6). L'étape
+  `Destroying` du finalizer retirait les finalizers Flux « pour que le namespace puisse être
+  supprimé », puis annonçait « séquence de suppression terminée » : la suppression réelle était
+  le prune Flux d'un commit que le finalizer n'écrit ni ne vérifie. Un CR pouvait donc disparaître
+  en laissant derrière lui le namespace, ses pods et son volume. L'opérateur le supprime désormais
+  lui-même — il en est propriétaire, il l'applique en Server-Side Apply — puis **constate** sa
+  disparition avant de lâcher le CR. L'attente est bornée à 10 minutes ; au-delà, le CR est lâché
+  et ce qui reste debout est nommé dans le message final. Nouvelle condition `NamespaceRemoved` ;
+  `delete` sur `namespaces` ajouté au ClusterRole de l'opérateur (`deploy/base/operator-rbac.yaml`
+  — **à redéployer**, sans quoi l'étape échoue en `forbidden`).
+- **Opérateur — la protection du namespace est relue avant de détruire**, et pas seulement
+  avant d'être levée. La séquence ne levait pas `protect-deletion` sur une lecture ratée —
+  bon réflexe — puis détruisait quand même : le garde-fou était contourné par la panne qu'il
+  aurait dû faire échouer. Inoffensif tant que la destruction passait par le prune Flux
+  (qu'une annotation restée posée retient), mais plus depuis N6. La séquence s'arrête
+  désormais sur `Ready=False/ProtectionUnknown` avant toute destruction, et
+  `status.protectionEnabled` n'affirme plus une levée non constatée. `ProtectionState` gagne
+  un champ `Detail` qui dit *pourquoi* la réponse est indisponible.
+- **`GetNamespaceProtection` distingue « pas d'annotation » de « namespace illisible »** : elle
+  rendait `false` dans les deux cas. Elle rend `(bool, error)`, et les trois sites d'appel
+  traitent l'inconnu comme tel — en particulier la levée de l'annotation `protect-deletion` avant
+  suppression, qui ne se fait plus que sur une lecture confirmée : un hoquet d'API ne débloque
+  plus un namespace protégé.
+- Le commentaire de `ProvisionFieldManager` affirmait que Flux n'écrit aucun des objets appliqués
+  par l'opérateur. C'était faux pour le namespace, qui vient de `clusters/<cell>/base`. La
+  propriété est tranchée explicitement : création et suppression à l'opérateur, réapplication à
+  Flux tant que l'overlay du tenant est commité.
+
 ## [1.4.0] — 2026-08-05
 
 ### Added

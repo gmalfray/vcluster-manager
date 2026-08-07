@@ -780,64 +780,20 @@ func TestASleepingVClusterCanStillBeDeleted(t *testing.T) {
 
 // --- ce que « Destroying » détruit ------------------------------------------
 
-// Le namespace que l'opérateur a créé lui-même survit à la séquence de
-// suppression.
+// Il y avait ici TestTheDeletionSequenceLeavesTheHostNamespaceBehind, qui figeait
+// le défaut que l'arbitrage N6 a corrigé : le CR partait, le namespace restait.
 //
-// reconcileProvisioning applique `vcluster-<nom>` en Server-Side Apply, sans
-// ownerReference — un objet cluster-scoped ne peut de toute façon pas être
-// possédé par un CR namespacé. L'étape Destroying, elle, retire les finalizers
-// Flux (CleanupNamespace) et nettoie les systèmes externes ; elle ne supprime
-// aucun objet Kubernetes. §4.4 point 4 supposait une cascade par
-// ownerReferences qui n'existe pas.
+// Il a été retiré parce qu'il était devenu un vert qui ne mesure rien. Le
+// finalizer supprime désormais le namespace, mais `fakeDeletionOps` le simule
+// avec un booléen en mémoire : le namespace du cluster de test n'était plus
+// touché par personne, donc le test constatait qu'il « survit » et passait —
+// pour la mauvaise raison, en continuant d'annoncer un trou refermé.
 //
-// Aujourd'hui c'est Flux qui prune le namespace, parce que l'arborescence
-// commitée le contient encore (`clusters/<cell>/vclusters/<nom>/kustomization.yaml`
-// tire `../../../../base`, qui porte le Namespace). La suppression dépend donc
-// d'un commit que le finalizer n'écrit pas et ne vérifie pas — et le jour où
-// l'arborescence disparaît au profit du seul CR, plus rien ne supprime le
-// namespace.
-//
-// TROU CONNU, et c'est le point à recetter en premier sur cluster réel.
-func TestTheDeletionSequenceLeavesTheHostNamespaceBehind(t *testing.T) {
-	ctx := context.Background()
-	ops := newFullOps()
-	ops.backup = service.DeletionBackupState{
-		Found: true, Name: "b-teardown", Phase: "Completed", Completed: true, StartedAt: time.Now(),
-	}
-	r := budgetedReconciler(ops)
-
-	vc := newProvisioningVCluster(t, ctx, "namespace-survivant", v1alpha1.VClusterSpec{})
-	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
-		t.Fatalf("provisionnement: %v", err)
-	}
-	var ns corev1.Namespace
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "vcluster-namespace-survivant"}, &ns); err != nil {
-		t.Fatalf("préalable : le namespace devait avoir été créé : %v", err)
-	}
-
-	if err := k8sClient.Delete(ctx, fetchVCluster(t, ctx, vc)); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
-		t.Fatalf("reconcile de suppression: %v", err)
-	}
-	if !vclusterGone(t, ctx, vc) {
-		t.Fatalf("la séquence n'est pas allée au bout (trace: %v)", ops.trace())
-	}
-
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: "vcluster-namespace-survivant"}, &ns)
-	if apierrors.IsNotFound(err) {
-		t.Fatal("le namespace a été supprimé : quelque chose détruit enfin, retirer ce test")
-	}
-	if err != nil {
-		t.Fatalf("get namespace: %v", err)
-	}
-	if !ns.DeletionTimestamp.IsZero() {
-		t.Fatal("le namespace est en Terminating : quelque chose l'a supprimé, retirer ce test")
-	}
-	t.Log("le CR est parti, le namespace vcluster-namespace-survivant est intact : " +
-		"la destruction réelle dépend encore du prune Flux de l'arborescence commitée")
-}
+// La propriété se vérifie maintenant contre le vrai kube-apiserver, avec un faux
+// dont les deux méthodes de namespace tapent sur le cluster :
+// TestTheOperatorDeletesTheHostNamespaceItProvisioned et
+// TestTheCRIsReleasedOnceTheNamespaceIsReallyGone, dans
+// vcluster_namespace_removal_test.go.
 
 // --- l'override de sauvegarde accepte désormais n'importe quelle valeur ------
 

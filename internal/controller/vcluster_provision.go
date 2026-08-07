@@ -19,14 +19,27 @@ import (
 // ce qu'il possède.
 //
 // Réponse à crd-vcluster.md §7, inconnue 1 (« qui gagne sur un champ que Flux et
-// nous touchons tous les deux ? ») en deux temps.
+// nous touchons tous les deux ? ») en trois temps.
 //
-// D'abord, Flux n'écrit aucun des deux objets appliqués ici : le namespace et le
-// ConfigMap de substitutions n'apparaissent dans aucun manifeste commité. Le
-// conflit structurel n'existe donc pas, ce qui est tout l'intérêt de n'appliquer
-// que ces deux-là.
+// D'abord le ConfigMap de substitutions : il n'apparaît dans aucun manifeste
+// commité, donc personne d'autre ne l'écrit. C'est tout l'intérêt de n'appliquer
+// que des objets de ce genre.
 //
-// Ensuite, il reste les écrivains occasionnels — un `kubectl edit` de dépannage,
+// Le namespace, lui, a bien deux écrivains, et il faut le dire — ce commentaire
+// a affirmé le contraire. Il vient aussi de `clusters/<cell>/base`, dont
+// l'overlay du tenant patche le `metadata.name` : Flux l'applique donc à chaque
+// réconciliation, en parallèle de nous. Ce n'est pas un contentieux pour autant.
+// L'objet est nu — un nom, rien d'autre — et un nom n'est pas un champ géré mais
+// l'identité de l'objet : les deux écrivains déclarent la même chose, il n'y a
+// pas de valeur sur laquelle diverger. La propriété tranchée est donc :
+// l'opérateur possède la CRÉATION et la SUPPRESSION de ce namespace (le
+// finalizer le supprime lui-même, arbitrage N6), Flux en possède la
+// réapplication tant que l'overlay du tenant est commité. La conséquence
+// pratique est dans reconcileNamespaceRemoval : un namespace qu'on supprime
+// alors que la Kustomization du tenant vit encore réapparaît, et l'étape le
+// rapporte au lieu de prétendre l'avoir détruit.
+//
+// Enfin, il reste les écrivains occasionnels — un `kubectl edit` de dépannage,
 // un contrôleur tiers. Sans ForceOwnership, le premier d'entre eux prend la
 // propriété d'une clé et bloque toutes les réconciliations suivantes sur un
 // conflit : l'opérateur se retrouve incapable de réparer son propre objet. On
@@ -64,7 +77,8 @@ var _ VClusterProvisioner = (*service.Service)(nil)
 // depuis le CR : les valeurs. C'est ce ConfigMap.
 //
 // Conséquence directe sur les deux inconnues du §7 : pas de contentieux de field
-// manager (inconnue 1) puisque Flux n'écrit jamais ces deux objets, et pas de
+// manager (inconnue 1) — voir ProvisionFieldManager, qui détaille pourquoi le
+// namespace échappe à la règle sans pour autant créer de conflit — et pas de
 // prune à faire (inconnue 2) puisque désactiver une option vide une clé au lieu
 // de retirer un objet. Le prune du reste appartient à Flux, qui le fait déjà.
 // Retourne (continuer, erreur). `continuer=false` sans erreur est un REFUS :

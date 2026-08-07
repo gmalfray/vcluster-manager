@@ -39,10 +39,10 @@ rules:
   # puise les valeurs dérivées du CR. Server-Side Apply passe par `patch`, mais
   # `create` reste nécessaire au premier tour, quand l'objet n'existe pas encore.
   #
-  # Pas de `delete` : ce que l'opérateur pose n'est jamais retiré ressource par
-  # ressource — désactiver une option vide une clé, elle ne supprime pas d'objet,
-  # et le prune du reste appartient à Flux. La destruction complète passera par le
-  # finalizer, qui aura sa propre règle.
+  # Les ConfigMaps, eux, ne sont jamais retirés ressource par ressource :
+  # désactiver une option vide une clé, elle ne supprime pas d'objet, et le prune
+  # du reste appartient à Flux. D'où l'absence de `delete` sur la règle suivante.
+  #
   # UNE seule règle namespaces, volontairement. Il y en avait deux, à deux
   # endroits, chacune rédigée comme si elle était le total : l'union réelle était
   # get,list,watch,create,patch,update cluster-wide, ce que ni l'une ni l'autre
@@ -52,10 +52,40 @@ rules:
   #
   # create/patch : le SSA du provisionnement (namespace du tenant).
   # update : retirer l'annotation protect-deletion juste avant la destruction.
-  # Pas de delete : la disparition du namespace appartient à Flux.
+  # delete : la dernière étape du finalizer (arbitrage N6). Elle appartenait à
+  #   Flux, c'est-à-dire au prune d'un commit que le finalizer n'écrit ni ne
+  #   vérifie : il annonçait donc « suppression terminée » sans rien avoir
+  #   supprimé. L'opérateur crée ce namespace en SSA, il le supprime désormais
+  #   lui-même — et constate sa disparition avant de lâcher le CR.
+  #
+  # Ce `delete` est cluster-wide, comme le reste de cette règle. Ce qui le borne,
+  # exactement, et pas un mot de plus :
+  #
+  #   1. le préfixe : la cible est toujours `vcluster-<nom du CR>` — aucun chemin
+  #      n'atteint la suppression avec un nom non validé (ValidName est passé par
+  #      la garde de placement PUIS par le service) ;
+  #   2. le nom réservé : la règle CEL de la CRD refuse `manager`, donc le
+  #      namespace de l'app n'est pas visable ;
+  #   3. le fait que personne, dans ce dépôt, n'a `create` sur `vclusters`.
+  #
+  # Le troisième n'est garanti par AUCUN manifeste d'ici, et c'est celui qui
+  # porte tout le reste : qui peut créer un CR dans le namespace surveillé peut
+  # le supprimer aussitôt, et donc faire détruire le namespace `vcluster-<nom>`
+  # correspondant — y compris un vcluster de la flotte historique, qui n'a pas
+  # encore de CR et dont le nom est donc libre. Déléguer `create vclusters` à une
+  # équipe ÉQUIVAUT à lui donner `delete namespaces` sur tout `vcluster-*`
+  # orphelin. À lire avant d'ouvrir la CRD en libre-service.
+  #
+  # Ce n'est PAS la garde de placement qui borne ce droit, contrairement à ce que
+  # dit — à juste titre — le ClusterRole de l'app pour les marqueurs Velero. Là-bas
+  # la règle force l'objet dans le namespace de la victime, donc viser quelqu'un
+  # exige déjà des droits chez lui. Ici le namespace des `VCluster` est plat et
+  # unique (le CR existe avant le namespace dont il parle, cf. namespace_guard.go),
+  # donc « l'objet ne parle que de là où il vit » ne discrimine plus personne.
+  # Le resserrement qui manque est une ValidatingAdmissionPolicy — voir TODO.md.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "create", "patch", "update"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "patch"]

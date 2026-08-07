@@ -390,6 +390,41 @@ func (s *Service) TeardownVCluster(ctx context.Context, actor models.Actor, name
 	return warnings, nil
 }
 
+// DeleteHostNamespace supprime le namespace hôte du vcluster. Admin only, comme
+// TeardownVCluster dont elle est la suite.
+//
+// Elle est séparée de TeardownVCluster, et non fondue dedans, parce qu'elle ne
+// se conclut pas de la même façon : TeardownVCluster agit sur des systèmes qui
+// répondent tout de suite (Keycloak, Vault, GitLab), alors qu'une suppression de
+// namespace ne fait que POSER un deletionTimestamp. Ce qui la termine est une
+// observation ultérieure — HostNamespaceState — et cette attente appartient à
+// l'appelant.
+func (s *Service) DeleteHostNamespace(ctx context.Context, actor models.Actor, name, env string) error {
+	if !actor.IsAdmin {
+		return ErrForbidden
+	}
+	if !validName(name) {
+		return ErrInvalidName
+	}
+	env = envOrDefault(env)
+	k8s := s.k8sForEnv(env)
+	if k8s == nil {
+		return ErrK8sUnavailable
+	}
+	requested, err := k8s.DeleteHostNamespace(ctx, name)
+	if err != nil {
+		return err
+	}
+	// Pas de ligne d'audit pour un namespace qui n'était pas là. Le finalizer
+	// rejoue cette étape à chaque tour, donc journaliser sans condition remplirait
+	// l'audit de suppressions qui n'ont rien supprimé — et rendrait illisible la
+	// seule qui compte.
+	if requested {
+		audit.LogActor(actor.Username, "vcluster-namespace-delete", name, env)
+	}
+	return nil
+}
+
 // HostNamespaceState dit si le namespace hôte du vcluster existe, et si on a pu
 // le savoir.
 //

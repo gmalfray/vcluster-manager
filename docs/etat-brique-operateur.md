@@ -18,7 +18,7 @@ Un opérateur controller-runtime (`cmd/operator`), deux reconcilers.
 | provisionnement | `vcluster_provision.go` | applique le namespace + le ConfigMap de substitutions |
 | intégrations | `vcluster_integrations.go` | backend d'auth Vault, client OIDC Keycloak, appairage Rancher |
 | status observé | `vcluster_status.go` | lit le cluster, agrège `Ready`, calcule la phase |
-| suppression | `vcluster_finalizer.go` | finalizer, garde-fou, sauvegarde puis destruction |
+| suppression | `vcluster_finalizer.go` | finalizer, garde-fou, sauvegarde, destruction puis retrait du namespace |
 
 L'ordre n'est pas cosmétique : le sommeil d'abord parce qu'il est inutile de
 provisionner ce qu'on vient d'endormir ; le budget avant le provisionnement pour ne
@@ -93,19 +93,69 @@ faire vivre dedans serait circulaire.
 
 ## Arbitrages rendus le 2026-08-07
 
-**N6 — le finalizer supprime le namespace qu'il a créé.** L'étape `Destroying` ne
-supprimait rien : c'était le prune Flux d'un commit que le finalizer n'écrit ni ne
-vérifie, donc il annonçait « suppression terminée » sans preuve. Des deux issues
-possibles — supprimer soi-même, ou attendre de constater que Flux l'a fait — c'est
-la première qui est retenue.
+**N6 — le finalizer supprime le namespace qu'il a créé.** ✅ **Implémenté.**
+L'étape `Destroying` ne supprimait rien : c'était le prune Flux d'un commit que le
+finalizer n'écrit ni ne vérifie, donc il annonçait « suppression terminée » sans
+preuve. Des deux issues possibles — supprimer soi-même, ou attendre de constater
+que Flux l'a fait — c'est la première qui est retenue.
 
 Raison : l'opérateur applique déjà ce namespace lui-même en Server-Side Apply, il
 en est donc propriétaire de fait. Le faire supprimer par lui rend la séquence
 auto-suffisante et vérifiable, au lieu d'introduire une attente qui peut ne jamais
-aboutir et qu'il faudrait borner. Conséquence à traiter dans le même changement :
-le commentaire de `ProvisionFieldManager` affirme que Flux n'écrit aucun des deux
-objets appliqués — c'est **faux pour le namespace**, qui vient aussi de
-`clusters/<cell>/base`. La propriété doit donc être tranchée explicitement là.
+aboutir et qu'il faudrait borner. Conséquence traitée dans le même changement :
+le commentaire de `ProvisionFieldManager` affirmait que Flux n'écrit aucun des deux
+objets appliqués — c'était **faux pour le namespace**, qui vient aussi de
+`clusters/<cell>/base` et dont l'overlay tenant patche le `metadata.name`. La
+propriété y est désormais tranchée : l'opérateur possède la **création** et la
+**suppression**, Flux la **réapplication** tant que l'overlay est commité.
+
+Ce qui a été livré avec, et qui ne va pas de soi :
+
+- **L'observation conclut, pas l'appel.** Un `delete` sur un namespace ne fait que
+  poser un `deletionTimestamp`. Rendre `true` juste après aurait reproduit le
+  défaut corrigé, à un maillon près. L'étape demande, puis relit — et ne lâche le
+  CR que sur une disparition constatée.
+- **L'attente est bornée à 10 minutes**, comme Rancher. Au-delà, ce qui retient le
+  namespace ne partira pas parce qu'on insiste : un finalizer tiers, ou la
+  Kustomization Flux du tenant qui le réapplique aussi vite qu'on le supprime. On
+  lâche alors le CR — le retenir n'efface rien et ajoute un objet coincé au
+  problème — en **nommant** dans le message final ce qui reste debout. C'est la
+  dernière chose écrite avant que l'objet disparaisse : ce qui n'y est pas n'est
+  plus lisible nulle part.
+- **La protection se relit avant de détruire, pas seulement avant d'écrire.** Le
+  code ne levait pas `protect-deletion` quand la lecture échouait — bon réflexe —
+  puis détruisait quand même. Le garde-fou était donc contourné par la panne qu'il
+  aurait dû faire échouer. Ce n'était pas dangereux tant que la destruction passait
+  par le prune Flux, qu'une annotation restée posée retient ; depuis que le
+  finalizer supprime lui-même, plus rien ne la lit sur ce chemin. La séquence
+  s'arrête maintenant sur `Ready=False/ProtectionUnknown`, avant toute destruction,
+  et `status.protectionEnabled` n'affirme plus une levée qu'il n'a pas constatée.
+- Le RBAC de l'opérateur gagne `delete` sur `namespaces`.
+
+**Ce qui borne réellement ce `delete`, et il faut être exact** : le préfixe
+`vcluster-` (aucun chemin n'atteint la suppression avec un nom non validé), le nom
+réservé `manager`, et le fait que personne n'ait `create` sur `vclusters` dans ce
+dépôt. Ce n'est **pas** la garde de placement, contrairement à ce qui vaut pour les
+marqueurs Velero : là-bas la règle force l'objet dans le namespace de la victime,
+donc viser quelqu'un exige déjà des droits chez lui ; ici le namespace des
+`VCluster` est plat et unique, donc « l'objet ne parle que de là où il vit » ne
+discrimine plus personne. Déléguer `create vclusters` équivaut à donner
+`delete namespaces` sur tout `vcluster-*` sans CR — la flotte historique comprise.
+Le resserrement qui manque est une `ValidatingAdmissionPolicy` : voir `TODO.md`.
+
+Vérifié par mutation, sur les trois couches : l'étape non jouée, conclure sans
+observer, une lecture ratée valant disparition, la borne retirée, le reste non
+nommé, un refus de suppression ignoré, l'ordre sauvegarde/destruction inversé, les
+avertissements du teardown perdus entre deux étapes, le préfixe `vcluster-` perdu,
+`name` et `env` intervertis dans le seam — chacune fait tomber son test. Rien de
+tout cela n'a encore tourné sur un vrai cluster : voir `recette-n6-namespace.md`.
+
+Deux angles morts fermés au passage, tous deux trouvés parce qu'ils étaient
+**verts** : un test affirmait que la séquence laisse le namespace derrière elle —
+il passait encore après N6, parce que le double bascule un booléen en mémoire au
+lieu de toucher le cluster ; et la branche « la lecture de la protection n'a pas
+abouti » n'était empruntée par aucun test du paquet, donc retirer le garde
+`ProtectionKnown` du status ne faisait rien tomber.
 
 **Les accès aux intégrations : après la recette preprod, pas avant.** L'opérateur
 n'a ni client Vault, ni Keycloak, ni Rancher, donc les intégrations rendent
@@ -134,13 +184,10 @@ accès.**
   alors qu'on n'a qu'une absence.
 - **Les events Kubernetes** proposés en §3.3 — `VClusterReconciler` n'a pas de
   `record.EventRecorder`.
-- **`GetNamespaceProtection`** rend `false` aussi bien pour « pas d'annotation » que
-  pour « namespace illisible ». Le correctif est de lui faire rendre `(bool, error)`.
-- **N6, décidé mais pas encore implémenté** : le finalizer doit supprimer le
-  namespace qu'il a créé. Voir les arbitrages ci-dessus.
 - **La recette réelle** — rien de tout cela n'a tourné sur un vrai cluster depuis la
   fusion des chantiers. L'infra est coupée. Verdict de recette : **No-Go prod, Go
-  recette preprod sur vclusters jetables.**
+  recette preprod sur vclusters jetables.** Le plan de la séquence de suppression
+  est écrit : `recette-n6-namespace.md`.
 
 ## Dette assumée
 

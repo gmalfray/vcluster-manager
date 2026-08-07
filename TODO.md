@@ -3,6 +3,28 @@
 Backlog des évolutions à venir. Les items terminés sont archivés dans
 [`CHANGELOG.md`](CHANGELOG.md).
 
+## Opérateur — durcissement issu de l'audit N6
+
+- [ ] 🔴 **`ValidatingAdmissionPolicy` sur les namespaces de l'opérateur** : depuis
+      N6, le ClusterRole de l'opérateur a `delete` sur `namespaces` cluster-wide,
+      et `update`/`patch` l'avaient déjà (de quoi réécrire
+      `pod-security.kubernetes.io/enforce` sur `kube-system`). RBAC ne sait pas
+      resserrer ça — `resourceNames` sur une ressource cluster-scoped exigerait de
+      réécrire le ClusterRole à chaque vcluster. Une VAP le peut (k8s ≥ 1.30, GA) :
+      restreindre DELETE/UPDATE de ce ServiceAccount aux namespaces préfixés
+      `vcluster-`, hors `vcluster-manager`, et porteurs d'un label posé par
+      l'opérateur (à ajouter dans `gitops.hostNamespace()`, qui rend aujourd'hui un
+      objet nu). ⚠️ La flotte historique n'a pas ce label : sa suppression serait
+      bloquée tant qu'elle n'est pas ré-étiquetée — c'est souhaitable, mais ça doit
+      être un choix conscient, pas une surprise en recette.
+- [ ] 🟠 **VAP sur `CREATE vclusters`** (nom contraint) : referme en amont le fait
+      que créer un CR homonyme d'un vcluster sans CR permet de le faire détruire.
+- [ ] 🟡 **Règle CEL de nom sur la CRD** : elle ne refuse aujourd'hui que `manager`.
+      Le contrôleur refait le vrai contrôle (`ValidName`) — mais la doctrine du
+      projet est d'exprimer la règle là où l'API server peut l'appliquer :
+      `self.metadata.name.matches('^[a-z][a-z0-9-]{0,53}$')` (54 = limite du
+      suffixe de namespace).
+
 ## Correctifs recette 1.4.0 → 1.4.1
 
 > Issus de la recette fonctionnelle réelle. Détail + preuves : [`docs/recette-1.4-findings.md`](docs/recette-1.4-findings.md).
