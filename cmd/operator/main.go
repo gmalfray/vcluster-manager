@@ -32,11 +32,13 @@ import (
 )
 
 func main() {
-	var metricsAddr, probeAddr, kubeconfig, cell string
+	var metricsAddr, probeAddr, cell string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "address the metric endpoint binds to")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "address the probe endpoint binds to")
-	flag.StringVar(&kubeconfig, "kubeconfig", "", "path to a kubeconfig; empty means in-cluster")
+	// Pas de flag `kubeconfig` ici : controller-runtime en enregistre déjà un sur
+	// flag.CommandLine dans son init(), et le redéfinir fait paniquer le binaire
+	// au démarrage (« flag redefined: kubeconfig »). On lit le sien après Parse.
 	// Which host cluster this operator reconciles — a "cell" in the sense of
 	// ADR-002. Not used to choose a client (there is only one), but it labels the
 	// audit trail and the Prometheus series: an operator reporting another cell's
@@ -49,6 +51,12 @@ func main() {
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// Le flag --kubeconfig appartient à controller-runtime ; vide = in-cluster.
+	kubeconfig := ""
+	if f := flag.Lookup("kubeconfig"); f != nil {
+		kubeconfig = f.Value.String()
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	log := ctrl.Log.WithName("setup")
