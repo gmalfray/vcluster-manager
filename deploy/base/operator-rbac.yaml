@@ -43,9 +43,19 @@ rules:
   # ressource — désactiver une option vide une clé, elle ne supprime pas d'objet,
   # et le prune du reste appartient à Flux. La destruction complète passera par le
   # finalizer, qui aura sa propre règle.
+  # UNE seule règle namespaces, volontairement. Il y en avait deux, à deux
+  # endroits, chacune rédigée comme si elle était le total : l'union réelle était
+  # get,list,watch,create,patch,update cluster-wide, ce que ni l'une ni l'autre
+  # ne laissait voir. `update` + `patch` sur n'importe quel namespace permet de
+  # réécrire les labels de kube-system, pod-security.kubernetes.io/enforce
+  # compris.
+  #
+  # create/patch : le SSA du provisionnement (namespace du tenant).
+  # update : retirer l'annotation protect-deletion juste avant la destruction.
+  # Pas de delete : la disparition du namespace appartient à Flux.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "create", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "patch"]
@@ -68,12 +78,6 @@ rules:
   - apiGroups: ["kustomize.toolkit.fluxcd.io"]
     resources: ["kustomizations"]
     verbs: ["get", "list", "patch", "update"]
-
-  # Le namespace hôte : lire et retirer l'annotation protect-deletion, juste
-  # avant la destruction (crd-vcluster.md §4.4 étape 3).
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["get", "list", "update"]
 
   # Parler à l'API interne d'un vcluster (déposer le job rancher-cleanup, lire
   # son état) : le kubeconfig interne vit dans un Secret du namespace hôte, et

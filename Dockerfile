@@ -31,4 +31,8 @@ RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/vcluster-manager /usr/local/bin/
 COPY --from=builder /app/web /web
 ENV TEMPLATE_DIR=/web/templates
+# Non-root, comme l'étage operator. C'est ce pod qui détient le token GitLab, le
+# secret client Keycloak et JWT_SECRET, et c'est le seul exposé par un Ingress —
+# il tournait en root avec toutes les capabilities.
+USER 65532:65532
 ENTRYPOINT ["vcluster-manager"]

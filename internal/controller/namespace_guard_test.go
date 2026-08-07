@@ -44,10 +44,13 @@ func TestMisplacedMarkerCannotDriveAnotherVClustersRestore(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	_, _, restore, _ := ops.counts()
-	if restore != 0 {
-		t.Fatalf("StartVeleroRestore appelé %d fois depuis un marqueur mal placé : "+
-			"le PVC de prod-client aurait été supprimé", restore)
+	// Le deuxième compteur : createRestoreCalls. C'est celui qui dit qu'une
+	// restauration a réellement été lancée — le troisième ne compte que les
+	// inspections, qui ne détruisent rien.
+	_, create, _, _ := ops.counts()
+	if create != 0 {
+		t.Fatalf("restauration lancée %d fois depuis un marqueur mal placé : "+
+			"le PVC de prod-client aurait été supprimé", create)
 	}
 	got := fetch(t, ctx, obj)
 	if got.Status.Restore.LastHandledRequestedAt != "" {
@@ -205,5 +208,50 @@ func TestGuardRefusesTheReservedNameOnItsOwn(t *testing.T) {
 	ops := &v1alpha1.VClusterVeleroOps{ObjectMeta: metav1.ObjectMeta{Name: nom, Namespace: service.OperatorNamespace}}
 	if reason := markerMisplaced(ops); reason == "" {
 		t.Fatal("la garde accepte un marqueur nommé d'après le namespace de l'opérateur")
+	}
+}
+
+// L'annotation de cible ne doit pas percer la garde par-dessous. Un marqueur
+// légitimement placé chez soi ne peut pas commander une restauration chez le
+// voisin — sinon on injecte le contenu d'un backup qu'on contrôle dans le
+// namespace d'un autre tenant.
+func TestRestoreTargetCannotPointOutsideTheMarker(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeOps{}
+	r := newReconciler(ops)
+
+	obj := newMarker(t, ctx, "chez-moi", map[string]string{
+		v1alpha1.AnnRestoreRequestedAt: "2026-08-07T11:00:00Z",
+		v1alpha1.AnnRestoreFromBackup:  "un-backup-que-je-controle",
+		v1alpha1.AnnRestoreTarget:      "chez-le-voisin",
+	})
+
+	if _, err := r.Reconcile(ctx, reqFor(obj)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, create, _, _ := ops.counts(); create != 0 {
+		t.Fatalf("restauration lancée %d fois vers un autre vcluster que celui du marqueur", create)
+	}
+	requireCond(t, fetch(t, ctx, obj), v1alpha1.CondAccepted, metav1.ConditionFalse, "TargetOutsideMarker")
+}
+
+// Le pendant : une restauration croisée légitime est portée par le marqueur de
+// la CIBLE, donc sa cible vaut son propre nom. Elle doit passer.
+func TestRestoreTargetEqualToTheMarkerIsAccepted(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeOps{restoreName: "r-croisee"}
+	r := newReconciler(ops)
+
+	obj := newMarker(t, ctx, "la-cible", map[string]string{
+		v1alpha1.AnnRestoreRequestedAt: "2026-08-07T11:00:00Z",
+		v1alpha1.AnnRestoreFromBackup:  "backup-de-la-source",
+		v1alpha1.AnnRestoreTarget:      "la-cible",
+	})
+
+	if _, err := r.Reconcile(ctx, reqFor(obj)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, create, _, _ := ops.counts(); create != 1 {
+		t.Fatalf("restauration lancée %d fois, attendu 1 : la garde refuse une croisée légitime", create)
 	}
 }

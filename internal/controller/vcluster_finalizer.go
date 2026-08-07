@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
 
@@ -291,10 +292,19 @@ func (r *VClusterReconciler) reconcileRancherTeardown(ctx context.Context, ops V
 func (r *VClusterReconciler) reconcileDeletionBackup(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
 	vc.Status.Deletion.Stage = stageBackupPending
 
-	if vc.Annotations[v1alpha1.AnnDeletionBackupOverride] == "true" {
+	if override := vc.Annotations[v1alpha1.AnnDeletionBackupOverride]; override != "" {
+		// Qui a désarmé le filet. L'annotation est le seul garde-fou de données
+		// qu'un `patch` suffit à lever, et sur un objet en Terminating il n'y a
+		// plus de diff Git où le lire — sans cette ligne, la destruction sans
+		// sauvegarde ne laisse aucune trace nommée.
+		par := override
+		if par == "true" {
+			par = "anonyme (annotation posée à \"true\" plutôt qu'au nom du décideur)"
+		}
+		audit.LogActor(par, "vcluster-deletion-backup-override", vc.Name, r.Cell,
+			"destruction autorisée sans sauvegarde Velero terminée")
 		setVClusterCond(vc, v1alpha1.CondVClusterBackupCompleted, metav1.ConditionFalse, "BackupOverridden",
-			"sauvegarde sautée : l'annotation "+v1alpha1.AnnDeletionBackupOverride+
-				" a été posée à la main, la destruction se fait sans filet")
+			"sauvegarde sautée sur décision de "+par+" : la destruction se fait sans filet")
 		return true, 0, nil
 	}
 

@@ -61,6 +61,8 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           securityContext:
+            seccompProfile:
+              type: RuntimeDefault
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:

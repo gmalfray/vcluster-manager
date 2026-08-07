@@ -18,6 +18,21 @@ spec:
         app: vcluster-manager
     spec:
       serviceAccountName: vcluster-manager
+      # Durcissement aligné sur celui de l'opérateur, qui l'avait déjà.
+      #
+      # ⚠️ MIGRATION : fsGroup fait chowner le volume par kubelet au montage. Le
+      # PVC existant contient des fichiers appartenant à root, écrits quand ce
+      # pod tournait en root. Sur un volume volumineux le premier démarrage est
+      # plus lent ; si le driver CSI ne gère pas fsGroup, il faut chowner à la
+      # main avant de déployer. À vérifier sur la cell avant de pousser ceci en
+      # production.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: vcluster-manager
           image: ghcr.io/gmalfray/vcluster-manager:latest
@@ -34,6 +49,15 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Le seul chemin en écriture est le PVC /app/data, plus /tmp fourni
+            # par un emptyDir : rien n'a besoin d'écrire dans l'image.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 50m
@@ -57,3 +81,5 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: vcluster-manager-data
+        - name: tmp
+          emptyDir: {}

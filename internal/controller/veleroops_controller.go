@@ -182,6 +182,29 @@ func (r *VeleroOpsReconciler) startRestore(ctx context.Context, ops *v1alpha1.VC
 
 	fromBackup := ops.Annotations[v1alpha1.AnnRestoreFromBackup]
 	target := ops.Annotations[v1alpha1.AnnRestoreTarget]
+
+	// La cible ne peut être que le vcluster du marqueur. Sinon l'annotation
+	// perce la garde de placement par-dessous : un marqueur légitimement posé
+	// dans son propre namespace commanderait une restauration DANS celui d'un
+	// autre tenant, et si l'attaquant contrôle aussi le contenu du backup source
+	// — c'est le cas pour un vcluster qu'il possède — les objets injectés sont
+	// les siens.
+	//
+	// Ça n'enlève aucune capacité réelle : une restauration croisée est déjà
+	// pilotée par le marqueur de la CIBLE (RequestVeleroRestore choisit
+	// markerVCluster = targetName), justement parce que la source peut avoir
+	// disparu. La cible est donc toujours le marqueur lui-même, et le seul
+	// moyen d'écrire autre chose est un patch direct.
+	if target != "" && target != name {
+		setCond(ops, v1alpha1.CondAccepted, metav1.ConditionFalse, "TargetOutsideMarker",
+			"cible "+target+" refusée : un marqueur ne peut piloter la restauration que du "+
+				"vcluster dont il habite le namespace. Une restauration croisée se demande sur le "+
+				"marqueur de la cible, pas sur celui de la source.")
+		// La demande est consommée pour qu'elle ne soit pas rejouée en boucle,
+		// mais rien n'est lancé.
+		st.LastHandledRequestedAt = requestedAt
+		return 0, nil
+	}
 	inPlace := target == "" || target == name
 
 	// Reserve the request before doing anything destructive.
