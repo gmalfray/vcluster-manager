@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -759,42 +760,62 @@ func TestTheDeletionSequenceLeavesTheHostNamespaceBehind(t *testing.T) {
 
 // --- l'override de sauvegarde accepte désormais n'importe quelle valeur ------
 
-// `backup-override: "false"` désarme le filet.
+// Une valeur qui veut dire non ne désarme pas le filet.
 //
-// La condition est passée de `== "true"` à `!= ""` pour que la valeur puisse
-// porter le nom du décideur — bonne idée, la trace manquait. Mais toute valeur
-// non vide passe maintenant, y compris celles qui veulent dire le contraire :
-// "false", "no", "0", "non". Quelqu'un qui pose l'annotation à "false" en
-// croyant refuser l'override obtient exactement l'inverse, et la ligne d'audit
-// enregistre « sauvegarde sautée sur décision de false ».
+// C'était une régression du correctif qui a fait porter à l'annotation le nom du
+// décideur : en passant de `== "true"` à `!= ""`, toute valeur non vide s'est mise
+// à désarmer, y compris « false », « no », « 0 », « non ». Quelqu'un qui posait
+// l'annotation à "false" en croyant refuser obtenait exactement l'inverse, et la
+// ligne d'audit enregistrait « sauvegarde sautée sur décision de false ».
 //
-// L'ancienne forme n'avait pas ce piège : tout ce qui n'était pas "true" était
-// un refus. C'est une régression du correctif, pas du code d'origine.
-//
-// TROU CONNU. Attendu : refuser explicitement les valeurs de négation, ou
-// mieux, exiger une forme reconnaissable (« nom@raison ») et refuser le reste —
-// puisque le but est justement de savoir QUI décide.
-func TestBackupOverrideAcceptsAValueThatMeansNo(t *testing.T) {
+// Un garde-fou qu'on lève en écrivant « non » est pire que pas de garde-fou : il
+// donne l'impression d'avoir refusé.
+func TestBackupOverrideRejectsValuesThatMeanNo(t *testing.T) {
+	for _, valeur := range []string{"false", "FALSE", " false ", "no", "non", "0", "off"} {
+		t.Run(valeur, func(t *testing.T) {
+			ctx := context.Background()
+			ops := unpairedOps()
+			ops.triggerErr = errors.New("velero pas installé")
+			r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+
+			vc := newDeletingVCluster(t, ctx, "override-negatif-"+strings.ToLower(strings.TrimSpace(valeur)),
+				false, map[string]string{v1alpha1.AnnDeletionBackupOverride: valeur})
+
+			if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if vclusterGone(t, ctx, vc) {
+				t.Fatalf("détruit sans sauvegarde sur backup-override=%q : une valeur de "+
+					"négation a désarmé le garde-fou", valeur)
+			}
+			if n := ops.count("trigger-backup"); n == 0 {
+				t.Fatal("l'étape de sauvegarde a été court-circuitée : l'override a été pris pour un oui")
+			}
+		})
+	}
+}
+
+// Et le pendant positif, sinon les cas ci-dessus passeraient aussi avec un
+// override qui ne fonctionne plus du tout.
+func TestBackupOverrideStillDisarmsWhenItNamesSomeone(t *testing.T) {
 	ctx := context.Background()
 	ops := unpairedOps()
 	ops.triggerErr = errors.New("velero pas installé")
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
-	vc := newDeletingVCluster(t, ctx, "override-negatif", false, map[string]string{
-		v1alpha1.AnnDeletionBackupOverride: "false",
+	vc := newDeletingVCluster(t, ctx, "override-nomme", false, map[string]string{
+		v1alpha1.AnnDeletionBackupOverride: "greg",
 	})
 
 	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if !vclusterGone(t, ctx, vc) {
-		t.Fatal("la destruction a été bloquée : les valeurs de négation sont refusées " +
-			"maintenant, retirer ce test")
+		t.Fatal("l'override nommé ne désarme plus : le geste de déblocage n'existe plus")
 	}
 	if n := ops.count("trigger-backup"); n != 0 {
-		t.Fatalf("une sauvegarde a été tentée (%d) : l'override n'a pas court-circuité l'étape", n)
+		t.Fatalf("une sauvegarde a été tentée (%d) alors que l'override devait court-circuiter", n)
 	}
-	t.Log(`annotation backup-override="false" ⇒ vcluster détruit sans sauvegarde`)
 }
 
 // Le pendant : une annotation présente mais vide ne doit pas désarmer. C'est la

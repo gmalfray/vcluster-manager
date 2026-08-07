@@ -289,10 +289,30 @@ func (r *VClusterReconciler) reconcileRancherTeardown(ctx context.Context, ops V
 // Velero : soit une sauvegarde de ce vcluster tourne encore et on l'adopte, soit
 // une sauvegarde terminée a démarré après le deletionTimestamp. Un contrôleur
 // tué juste après avoir lancé la sauvegarde n'en relance donc pas une deuxième.
+// overrideDisarms dit si la valeur de l'annotation lève réellement l'exigence de
+// sauvegarde.
+//
+// Il ne suffit PAS que l'annotation soit présente. En faisant porter au champ le
+// nom du décideur plutôt qu'un « true », on a rendu toute valeur non vide
+// désarmante — y compris celles qui veulent dire non. `backup-override: "false"`
+// détruisait donc sans sauvegarde, et la ligne d'audit annonçait « sauvegarde
+// sautée sur décision de false ». Un garde-fou qu'on lève en écrivant « non »
+// est pire que pas de garde-fou : il donne l'impression d'avoir refusé.
+//
+// La casse et les espaces sont normalisés parce que le geste se fait à la main,
+// sous pression, sur un objet déjà en Terminating.
+func overrideDisarms(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "false", "no", "non", "0", "off":
+		return false
+	}
+	return true
+}
+
 func (r *VClusterReconciler) reconcileDeletionBackup(ctx context.Context, ops VClusterDeletionOps, vc *v1alpha1.VCluster) (bool, time.Duration, error) {
 	vc.Status.Deletion.Stage = stageBackupPending
 
-	if override := vc.Annotations[v1alpha1.AnnDeletionBackupOverride]; override != "" {
+	if override := vc.Annotations[v1alpha1.AnnDeletionBackupOverride]; overrideDisarms(override) {
 		// Qui a désarmé le filet. L'annotation est le seul garde-fou de données
 		// qu'un `patch` suffit à lever, et sur un objet en Terminating il n'y a
 		// plus de diff Git où le lire — sans cette ligne, la destruction sans

@@ -1,4 +1,4 @@
-name: Build and push image
+name: Vérifier, construire et publier l'image
 
 on:
   push:
@@ -14,7 +14,58 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/vcluster-manager
 
 jobs:
+  # Rien ne vérifiait ce dépôt automatiquement : 41 fichiers de test, une
+  # discipline de mutation exigeante, un `make check` documenté — et aucun
+  # déclencheur. Ce job est ce déclencheur.
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Les CRD sont dérivés de api/v1alpha1, et le harnais envtest les charge
+      # depuis config/crd/. Un CRD périmé ferait donc passer les tests contre un
+      # schéma qui n'est pas celui déployé : on régénère et on exige zéro diff.
+      - name: Manifests à jour
+        run: |
+          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.0
+          controller-gen object paths=./api/...
+          controller-gen crd paths=./api/... output:crd:artifacts:config=config/crd
+          git diff --exit-code -- config/crd api/v1alpha1/zz_generated.deepcopy.go
+
+      - name: Vet
+        run: go vet ./...
+
+      # KUBEBUILDER_ASSETS n'est pas optionnel : internal/controller/suite_test.go
+      # fait os.Exit(0) quand la variable est vide. Sans elle, ce job serait vert
+      # en n'exécutant AUCUN des 11 fichiers de test du paquet le mieux couvert du
+      # dépôt — un vert qui ne veut rien dire est pire qu'un rouge.
+      - name: Tests (avec envtest)
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.23
+          KUBEBUILDER_ASSETS="$(setup-envtest use 1.35.0 -p path)"
+          export KUBEBUILDER_ASSETS
+          echo "envtest: $KUBEBUILDER_ASSETS"
+          test -x "$KUBEBUILDER_ASSETS/kube-apiserver"
+          go test -race -count=1 ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.6.2
+
   build:
+    # Ne pas publier une image qui ne passe pas ses propres tests.
+    needs: check
     runs-on: ubuntu-latest
     permissions:
       contents: read
