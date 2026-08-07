@@ -109,6 +109,16 @@ type Config struct {
 	VeleroS3URL         string // VELERO_S3_URL — S3 endpoint for Velero BSL, e.g. "https://s3.example.com"
 	VeleroBucketPreprod string // VELERO_BUCKET_PREPROD — S3 bucket for preprod Velero backups
 	VeleroBucketProd    string // VELERO_BUCKET_PROD — S3 bucket for prod Velero backups
+	// ResourceBudget* est le plafond de ressources de la cell, vérifié par
+	// l'opérateur avant de provisionner (crd-vcluster.md §5.2). Un plafond
+	// statique et non la somme des nœuds : le cluster hôte porte aussi autre
+	// chose que des vclusters. Laisser les trois vides FAIT REFUSER toute
+	// création avec quotas (§5.3) — c'est délibéré, une mauvaise configuration
+	// doit se voir tout de suite plutôt qu'ouvrir un trou silencieux.
+	ResourceBudgetCPU     string // RESOURCE_BUDGET_CPU — ex. "32"
+	ResourceBudgetMemory  string // RESOURCE_BUDGET_MEMORY — ex. "128Gi"
+	ResourceBudgetStorage string // RESOURCE_BUDGET_STORAGE — ex. "2Ti"
+
 	VClusterPodSecurity string // VCLUSTER_POD_SECURITY — podSecurityStandard, e.g. "privileged"
 	ArgoCDDefaultPolicy string // ARGOCD_DEFAULT_POLICY — default RBAC policy, e.g. "role:readonly"
 
@@ -178,6 +188,9 @@ func load(forServer bool) (*Config, error) {
 		VeleroS3URL:            os.Getenv("VELERO_S3_URL"),
 		VeleroBucketPreprod:    os.Getenv("VELERO_BUCKET_PREPROD"),
 		VeleroBucketProd:       os.Getenv("VELERO_BUCKET_PROD"),
+		ResourceBudgetCPU:      os.Getenv("RESOURCE_BUDGET_CPU"),
+		ResourceBudgetMemory:   os.Getenv("RESOURCE_BUDGET_MEMORY"),
+		ResourceBudgetStorage:  os.Getenv("RESOURCE_BUDGET_STORAGE"),
 		VClusterPodSecurity:    os.Getenv("VCLUSTER_POD_SECURITY"),
 		ArgoCDDefaultPolicy:    os.Getenv("ARGOCD_DEFAULT_POLICY"),
 		WebhookURL:             os.Getenv("WEBHOOK_URL"),

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -195,5 +196,101 @@ func TestVClusterReconcilerPassesItsCell(t *testing.T) {
 		if c != "cell2" {
 			t.Fatalf("cell transmise = %q, attendu cell2", c)
 		}
+	}
+}
+
+// Rejouer une mise en sommeil ne doit pas repousser la fenêtre d'annulation.
+//
+// Le cas réel : SuspendVCluster réussit, l'écriture du status échoue, et le
+// reconcile suivant repasse par ce chemin. Recalculer la date la ferait glisser
+// de sept jours à chaque tentative — une écriture qui échoue en boucle donnerait
+// une fenêtre qui n'expire jamais, donc une suppression jamais autorisée.
+func TestSuspendRetryDoesNotSlideTheGracePeriod(t *testing.T) {
+	ops := &fakeVClusterOps{}
+	r := &VClusterReconciler{Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newVCluster("rejeu", nil)
+	vc.Spec.Suspend = true
+
+	if err := r.reconcileSuspend(context.Background(), vc); err != nil {
+		t.Fatalf("premier endormissement : %v", err)
+	}
+	premiere := vc.Status.Deletion.GracePeriodEndsAt.Time
+
+	// Le status n'a pas pu être écrit : la phase retombe telle qu'elle est en
+	// etcd, et le reconcile suivant retente.
+	vc.Status.Phase = ""
+	if err := r.reconcileSuspend(context.Background(), vc); err != nil {
+		t.Fatalf("rejeu : %v", err)
+	}
+
+	if got := vc.Status.Deletion.GracePeriodEndsAt.Time; !got.Equal(premiere) {
+		t.Fatalf("la fenêtre a glissé de %s au rejeu : elle ne fermerait jamais si l'écriture "+
+			"du status échouait en boucle", got.Sub(premiere))
+	}
+}
+
+// Le pendant : un réveil puis un nouvel endormissement ouvrent bien une
+// fenêtre neuve, sinon le correctif ci-dessus figerait une date périmée.
+func TestResumeThenSuspendOpensAFreshWindow(t *testing.T) {
+	ops := &fakeVClusterOps{}
+	r := &VClusterReconciler{Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newVCluster("reveil-rendormi", nil)
+
+	vc.Spec.Suspend = true
+	if err := r.reconcileSuspend(context.Background(), vc); err != nil {
+		t.Fatalf("endormissement : %v", err)
+	}
+	ancienne := vc.Status.Deletion.GracePeriodEndsAt.Time
+
+	vc.Spec.Suspend = false
+	if err := r.reconcileSuspend(context.Background(), vc); err != nil {
+		t.Fatalf("réveil : %v", err)
+	}
+	if vc.Status.Deletion != nil {
+		t.Fatal("la fenêtre survit au réveil : ça se lirait comme une suppression en cours")
+	}
+
+	vc.Spec.Suspend = true
+	if err := r.reconcileSuspend(context.Background(), vc); err != nil {
+		t.Fatalf("second endormissement : %v", err)
+	}
+	if got := vc.Status.Deletion.GracePeriodEndsAt.Time; got.Equal(ancienne) {
+		t.Fatal("la fenêtre du premier sommeil a été réutilisée : elle pourrait être déjà expirée")
+	}
+}
+
+// Une condition posée sur un chemin d'échec doit atteindre l'API.
+//
+// C'est l'échec silencieux contre lequel ADR-001 met en garde : si Reconcile
+// retourne l'erreur avant d'écrire le status, `kubectl describe` ne montre
+// jamais SuspendFailed. L'exploitant voit un reconcile qui boucle et n'a aucun
+// moyen de savoir pourquoi — l'objet ment par omission.
+func TestAFailurePathStillPublishesItsCondition(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeVClusterOps{suspendErr: errors.New("flux injoignable")}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+
+	vc := createVCluster(t, ctx, "condition-sur-echec", true)
+	defer func() { _ = k8sClient.Delete(ctx, vc) }()
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err == nil {
+		t.Fatal("l'échec n'a pas été remonté")
+	}
+
+	got := fetchVCluster(t, ctx, vc)
+	var ready *metav1.Condition
+	for i := range got.Status.Conditions {
+		if got.Status.Conditions[i].Type == v1alpha1.CondVClusterReady {
+			ready = &got.Status.Conditions[i]
+		}
+	}
+	if ready == nil {
+		t.Fatal("aucune condition publiée après l'échec : kubectl describe ne dirait rien")
+	}
+	if ready.Reason != "SuspendFailed" {
+		t.Fatalf("reason = %q, attendu SuspendFailed", ready.Reason)
+	}
+	if !strings.Contains(ready.Message, "flux injoignable") {
+		t.Fatalf("le message ne porte pas la cause réelle : %q", ready.Message)
 	}
 }

@@ -173,11 +173,22 @@ func (r *VClusterReconciler) reconcileSuspend(ctx context.Context, vc *v1alpha1.
 			setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "SuspendFailed", err.Error())
 			return err
 		}
-		endsAt := metav1.NewTime(time.Now().Add(r.gracePeriod()))
 		if vc.Status.Deletion == nil {
 			vc.Status.Deletion = &v1alpha1.DeletionStatus{}
 		}
-		vc.Status.Deletion.GracePeriodEndsAt = &endsAt
+		// La fenêtre ne redémarre pas à chaque passage.
+		//
+		// Une mise en sommeil réussie dont l'écriture du status échoue est
+		// rejouée au reconcile suivant : recalculer la date la ferait glisser de
+		// sept jours à chaque tentative, et une écriture qui échoue en boucle
+		// donnerait une fenêtre qui n'expire jamais. Elle est posée une fois, au
+		// premier endormissement, et un réveil la remet à nil — c'est là, et
+		// seulement là, qu'une nouvelle fenêtre a un sens.
+		if vc.Status.Deletion.GracePeriodEndsAt == nil {
+			endsAt := metav1.NewTime(time.Now().Add(r.gracePeriod()))
+			vc.Status.Deletion.GracePeriodEndsAt = &endsAt
+		}
+		endsAt := *vc.Status.Deletion.GracePeriodEndsAt
 		vc.Status.Deletion.Message = "vcluster en sommeil, rien n'a été détruit — un revert du commit qui a posé suspend le remet debout"
 		vc.Status.Phase = v1alpha1.VClusterPhaseSuspended
 		setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "Suspended",

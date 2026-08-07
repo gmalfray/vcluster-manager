@@ -125,6 +125,12 @@ func main() {
 	if err := (&controller.VClusterReconciler{
 		Client:    mgr.GetClient(),
 		Ops:       svc,
+		BudgetOps: svc,
+		Budget: controller.BudgetLimits{
+			CPU:     cfg.ResourceBudgetCPU,
+			Memory:  cfg.ResourceBudgetMemory,
+			Storage: cfg.ResourceBudgetStorage,
+		},
 		Cell:      cell,
 		Namespace: vclustersNamespace,
 	}).SetupWithManager(mgr); err != nil {

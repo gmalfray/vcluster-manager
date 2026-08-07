@@ -8,6 +8,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
+	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 )
 
 // BudgetLimits est le plafond de ressources de la cell, configuré à la main par
@@ -28,19 +30,16 @@ func (b BudgetLimits) configured() bool {
 	return b.CPU != "" || b.Memory != "" || b.Storage != ""
 }
 
-// BudgetUsage is what the cell already hands out — the sum of the ResourceQuota
-// hard limits across every vcluster-* namespace.
-type BudgetUsage struct {
-	CPU     resource.Quantity
-	Memory  resource.Quantity
-	Storage resource.Quantity
-}
-
 // BudgetReader reads the cell's current allocation. Declared here, where it is
 // consumed; the production implementation lives in the service.
+//
+// The second argument is the vcluster to leave out of the total — the one being
+// reconciled, whose own quota the caller is about to add back.
 type BudgetReader interface {
-	SumVClusterQuotas(ctx context.Context, env string) (BudgetUsage, error)
+	SumVClusterQuotas(ctx context.Context, env, excluding string) (models.BudgetUsage, error)
 }
+
+var _ BudgetReader = (*service.Service)(nil)
 
 // checkResourceBudget refuses to provision a vcluster whose quotas would push
 // the cell past its ceiling.
@@ -77,7 +76,7 @@ func (r *VClusterReconciler) checkResourceBudget(ctx context.Context, vc *v1alph
 	if r.BudgetOps == nil {
 		return true, nil
 	}
-	used, err := r.BudgetOps.SumVClusterQuotas(ctx, r.Cell)
+	used, err := r.BudgetOps.SumVClusterQuotas(ctx, r.Cell, vc.Name)
 	if err != nil {
 		// Ne pas conclure sur une lecture ratée : « je ne sais pas » n'est pas
 		// « ça dépasse ». On remonte l'erreur, la réconciliation réessaiera.

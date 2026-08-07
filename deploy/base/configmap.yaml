@@ -42,6 +42,18 @@ data:
   # l'opérateur en charge. Basculer sur preprod avant la prod.
   VELERO_TRIGGER_MODE: "direct"
   VCLUSTER_POD_SECURITY: "privileged"
+
+  # Plafond de ressources de la cell, vérifié par l'opérateur avant tout
+  # provisionnement (crd-vcluster.md §5.2). Une marge délibérée, pas la capacité
+  # des nœuds : le cluster hôte porte aussi la plateforme.
+  #
+  # Ces trois valeurs NE SONT PAS optionnelles en pratique : les laisser vides
+  # fait refuser toute création de vcluster avec quotas (§5.3). Un opérateur mal
+  # configuré est le moment où le contrôle devrait le plus s'appliquer, pas celui
+  # où on l'abandonne. À ajuster par overlay selon la taille réelle de la cell.
+  RESOURCE_BUDGET_CPU: "32"
+  RESOURCE_BUDGET_MEMORY: "128Gi"
+  RESOURCE_BUDGET_STORAGE: "2Ti"
   ARGOCD_DEFAULT_POLICY: "role:readonly"
 
   # Cluster labels

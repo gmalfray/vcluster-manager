@@ -9,14 +9,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
+	"github.com/gmalfray/vcluster-manager/internal/models"
 )
 
 type fakeBudgetReader struct {
-	used BudgetUsage
-	err  error
+	used      models.BudgetUsage
+	err       error
+	excluding string
 }
 
-func (f *fakeBudgetReader) SumVClusterQuotas(context.Context, string) (BudgetUsage, error) {
+func (f *fakeBudgetReader) SumVClusterQuotas(_ context.Context, _, excluding string) (models.BudgetUsage, error) {
+	f.excluding = excluding
 	return f.used, f.err
 }
 
@@ -79,35 +82,35 @@ func TestBudgetIgnoresVClustersWithoutQuotas(t *testing.T) {
 func TestBudgetComparesAgainstWhatTheCellAlreadyHandedOut(t *testing.T) {
 	tests := []struct {
 		nom      string
-		deja     BudgetUsage
+		deja     models.BudgetUsage
 		demande  [3]string
 		plafond  BudgetLimits
 		autorise bool
 	}{
 		{
 			nom:      "tient dans le plafond",
-			deja:     BudgetUsage{CPU: qty("10"), Memory: qty("40Gi"), Storage: qty("500Gi")},
+			deja:     models.BudgetUsage{CPU: qty("10"), Memory: qty("40Gi"), Storage: qty("500Gi")},
 			demande:  [3]string{"8", "32Gi", "200Gi"},
 			plafond:  BudgetLimits{CPU: "32", Memory: "128Gi", Storage: "2Ti"},
 			autorise: true,
 		},
 		{
 			nom:      "dépasse sur le CPU seulement",
-			deja:     BudgetUsage{CPU: qty("30"), Memory: qty("10Gi"), Storage: qty("100Gi")},
+			deja:     models.BudgetUsage{CPU: qty("30"), Memory: qty("10Gi"), Storage: qty("100Gi")},
 			demande:  [3]string{"8", "8Gi", "100Gi"},
 			plafond:  BudgetLimits{CPU: "32", Memory: "128Gi", Storage: "2Ti"},
 			autorise: false,
 		},
 		{
 			nom:      "pile au plafond passe",
-			deja:     BudgetUsage{CPU: qty("24")},
+			deja:     models.BudgetUsage{CPU: qty("24")},
 			demande:  [3]string{"8", "", ""},
 			plafond:  BudgetLimits{CPU: "32"},
 			autorise: true,
 		},
 		{
 			nom:      "une dimension non plafonnée n'est pas contrainte",
-			deja:     BudgetUsage{Storage: qty("10Ti")},
+			deja:     models.BudgetUsage{Storage: qty("10Ti")},
 			demande:  [3]string{"1", "", "5Ti"},
 			plafond:  BudgetLimits{CPU: "32"}, // pas de plafond stockage
 			autorise: true,
@@ -177,5 +180,22 @@ func TestBudgetRejectsUnparseableQuantities(t *testing.T) {
 	c := budgetCond(vc)
 	if c == nil || c.Reason != "InvalidQuantity" {
 		t.Fatalf("condition = %+v", c)
+	}
+}
+
+// Le vcluster réconcilié doit être RETIRÉ du total déjà alloué : sinon son
+// propre quota est compté deux fois — une fois lu depuis la cell, une fois
+// ajouté comme demande — et il se met à échouer sa propre vérification dès
+// qu'il est provisionné, sur un reconcile qui ne change rien.
+func TestBudgetExcludesTheVClusterBeingReconciled(t *testing.T) {
+	reader := &fakeBudgetReader{used: models.BudgetUsage{CPU: qty("10")}}
+	r := &VClusterReconciler{Cell: "cell1", Budget: BudgetLimits{CPU: "32"}, BudgetOps: reader}
+	vc := newVCluster("deja-provisionne", withQuotas("8", "", ""))
+
+	if _, err := r.checkResourceBudget(context.Background(), vc); err != nil {
+		t.Fatalf("erreur inattendue : %v", err)
+	}
+	if reader.excluding != "deja-provisionne" {
+		t.Fatalf("exclusion demandée = %q, attendu \"deja-provisionne\" : son quota est compté deux fois", reader.excluding)
 	}
 }
