@@ -8,5 +8,12 @@ FORK.md
 /coverage.out
 /coverage.html
 
-# Outillage local Claude Code (équipe d'agents, ops internes, réglages locaux) — jamais versionné
-.claude/
+# Outillage Claude Code. Les fiches d'agents, les hooks et les réglages partagés
+# SONT versionnés : ce sont des règles de contribution, pas des préférences
+# personnelles — et en scope utilisateur elles étaient à la fois invisibles pour
+# l'équipe et actives sur tous les projets de la machine.
+# Reste ignoré : ce qui est propre à un poste ou à un contexte.
+.claude/*
+!.claude/agents/
+!.claude/hooks/
+!.claude/settings.json

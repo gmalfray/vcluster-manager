@@ -5,7 +5,9 @@
 //
 // Two thin adapters consume it:
 //   - internal/handlers (web): parses forms, calls the service, renders HTML/HTMX
-//   - internal/api (REST):     decodes JSON, calls the service, encodes JSON
+//   - internal/handlers/api*.go: the REST-ish surface — despite the name it
+//     renders HTMX fragments, not JSON. A real internal/api (JSON) is planned
+//     in docs/refactor-api.md but does NOT exist yet; do not code against it.
 //
 // This is the seam that makes the future operator/API split possible: the
 // adapters change, the logic does not.

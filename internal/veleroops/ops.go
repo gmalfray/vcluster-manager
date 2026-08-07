@@ -1,6 +1,6 @@
 // Package veleroops declares the narrow seam between the reconciler and
 // internal/service. The reconciler is a third adapter of the service (design
-// §7), next to internal/handlers (web) and internal/api (REST) — so this
+// §7), next to internal/handlers (the web and REST-ish surface) — so this
 // interface is written in the *service's own types*, not in a parallel set of
 // DTOs, and every method matches a real service method signature for signature.
 //

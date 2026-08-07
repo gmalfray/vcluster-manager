@@ -93,20 +93,57 @@ discussion).
 
 ## Points de vigilance
 
-- **Fichiers monstres** : `internal/kubernetes/status.go` (~1400 LOC) et
-  `internal/handlers/api.go` (~1300 LOC) sont des hot-spots. Éviter d'y ajouter
-  sans nécessité ; un découpage est dans le backlog.
+- **Fichiers monstres** : `internal/service/velero.go` (38 Ko) et
+  `internal/service/vcluster.go` (29 Ko) sont les deux plus gros du dépôt. Éviter
+  d'y ajouter sans nécessité ; un découpage est dans le backlog. (Les chiffres
+  précédents — `status.go` ~1400 LOC, `api.go` ~1300 LOC — étaient périmés :
+  `status.go` fait ~480 lignes aujourd'hui.)
 - **Cache GitLab** : TTL 30s. `gl.Commit()` invalide tout. Si tu modifies l'état
   GitLab par un autre chemin, appeler `gl.InvalidateCache()` ou les lecteurs
   resteront sur du contenu périmé jusqu'à 30s.
 - **CSRF** : header `X-CSRF-Token` injecté automatiquement sur les requêtes HTMX
   par le hook dans `layout.html`. Toute nouvelle page **non-HTMX** doit ajouter
   un `<input type="hidden" name="_csrf" value="{{.CSRFToken}}">` manuellement.
-- **RBAC** : opérations d'écriture protégées par `requireAdmin(w, r)` ; les
-  templates masquent les boutons d'écriture avec `{{if .User.IsAdmin}}`. Quand
-  tu ajoutes une nouvelle route mutante, ne pas oublier les deux côtés.
-- **Audit** : toute opération d'écriture doit appeler `audit.Log(r, action,
-  name, env, extra...)` avant le commit GitOps.
+- **RBAC** : l'autorité est `if !actor.IsAdmin { return ErrForbidden }`, en
+  **première instruction de la méthode de service** — 21 sites, jamais dans
+  l'adaptateur. `requireAdmin(w, r)` existe encore côté handlers mais ne couvre
+  plus que 4 routes ; il ne fait pas foi. Les templates masquent les boutons
+  d'écriture avec `{{if .User.IsAdmin}}` : côté confort, pas côté sécurité.
+- **Audit** : `audit.LogActor(actor.Username, action, name, env, extra...)`
+  **après** que la mutation a réussi, jamais avant. `audit.Log(r, …)` est la forme
+  transport-couplée, dépréciée — il en reste 3 appels dans
+  `internal/handlers/api_chart.go`, à migrer.
+- **Fail-closed délibéré, à ne pas « simplifier »** : sans plafond de ressources
+  configuré, la création avec quotas est **refusée** (`internal/config/config.go`) ;
+  un groupe RBAC ArgoCD non conforme est **refusé** et non assaini
+  (`internal/service/vcluster_validation.go`) — un groupe discrètement écarté est
+  un droit d'accès silencieusement cassé.
+- **⚠️ `internal/gitops/branches.go`** : `preprod` y est un nom de **branche Git**,
+  pas d'environnement. « Paramétrer proprement » ces constantes par environnement
+  enverrait les changements prod sur la branche que Flux prod surveille.
+- **Pas de Go local sur cette machine.** Aucune cible du Makefile n'est
+  exécutable en l'état : tout passe par Docker. Voir le hook
+  `.claude/hooks/go-fmt-vet.sh` pour l'invocation exacte et les caches partagés.
+
+## L'opérateur
+
+La brique opérateur (`internal/controller`, `api/v1alpha1`, `cmd/operator`) suit
+trois règles non négociables, apprises à la dure :
+
+- **Reprise par observation, jamais par registre écrit.** Ne jamais relire un
+  champ de status qu'on a écrit soi-même pour savoir où on en est : redemander au
+  monde. Le finalizer a explicitement refusé le `status.deletion.stage` que le
+  design demandait, parce que sur quatre étapes persistées une seule discriminait
+  — et elle se trompait dans le cas qu'elle devait couvrir.
+- **Inconnu n'est pas faux.** `True` = lu et bon, `False` = lu et pas prêt,
+  `Unknown` = pas lu. Un tiers injoignable ne vaut jamais « cassé », et une
+  absence de client ne vaut jamais « rien à faire ».
+- **Vérification par mutation.** Un test qui ne tue aucun mutant ne compte pas.
+  Piège vérifié : une mutation qui rend un import ou une variable inutilisés **ne
+  compile pas**, et `go test` échoue alors pour la mauvaise raison — vérifier que
+  chaque mutant passe `go vet` avant de le compter tué.
+
+État détaillé et ce qui reste : [`docs/etat-brique-operateur.md`](docs/etat-brique-operateur.md).
 
 ## Pour aller plus loin
 
