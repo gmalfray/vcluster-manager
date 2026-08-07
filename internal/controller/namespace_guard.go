@@ -4,6 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 )
 
 // DefaultVClustersNamespace is where the cell's Flux applies its VCluster CRs.
@@ -14,7 +15,7 @@ import (
 // circular. Bounding it to a single namespace instead means "only the cell's
 // GitOps repo may declare a vcluster", which is exactly the ADR-001 rule
 // expressed as an RBAC boundary.
-const DefaultVClustersNamespace = "vcluster-manager"
+const DefaultVClustersNamespace = service.OperatorNamespace
 
 // vclusterNamespace is the host namespace of a vcluster. The single place this
 // concatenation is allowed to happen outside the service.
@@ -37,6 +38,11 @@ func vclusterNamespace(name string) string { return "vcluster-" + name }
 //
 // Returns the reason to refuse, or "" when the object is legitimately placed.
 func markerMisplaced(ops *v1alpha1.VClusterVeleroOps) string {
+	if !service.ValidName(ops.Name) {
+		return "nom de vcluster refusé : " + ops.Name + " — soit il n'a pas la forme attendue, " +
+			"soit son namespace dérivé retombe sur celui de l'opérateur, ce qui ferait de ce " +
+			"marqueur un ordre sur l'app elle-même"
+	}
 	want := vclusterNamespace(ops.Name)
 	if ops.Namespace == want {
 		return ""
@@ -49,6 +55,13 @@ func markerMisplaced(ops *v1alpha1.VClusterVeleroOps) string {
 // vclusterMisplaced is the same rule for the VCluster CR, with the flat
 // namespace explained above.
 func vclusterMisplaced(vc *v1alpha1.VCluster, want string) string {
+	// Le nom d'abord : un nom réservé est accepté par la règle de namespace
+	// puisque `vcluster-manager` est justement le namespace attendu. Sans ce
+	// contrôle, les deux règles coïncident sur le nom `manager`.
+	if !service.ValidName(vc.Name) {
+		return "nom de vcluster refusé : " + vc.Name + " — soit il n'a pas la forme attendue, " +
+			"soit son namespace dérivé retombe sur celui de l'opérateur"
+	}
 	if vc.Namespace == want {
 		return ""
 	}

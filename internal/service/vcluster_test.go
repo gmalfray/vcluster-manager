@@ -222,3 +222,31 @@ func TestValidateVeleroHour(t *testing.T) {
 		})
 	}
 }
+
+// Create doit passer par validName et non par nameRegex seul : la forme du nom
+// ne suffit pas, il faut aussi écarter celui dont le namespace dérivé retombe
+// sur celui de l'opérateur. C'est le chemin qu'emprunte l'UI, qui ne passe pas
+// par l'admission de l'API server et ne bénéficie donc pas de la règle CEL.
+func TestCreate_RejectsTheNameThatResolvesToTheOperatorNamespace(t *testing.T) {
+	s := newTestService()
+	nom := strings.TrimPrefix(OperatorNamespace, "vcluster-")
+
+	_, err := s.Create(context.Background(), adminActor(), &models.CreateRequest{Name: nom}, "both")
+	if !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("err = %v, attendu ErrInvalidName : un vcluster nommé %q ferait de %q sa cible, "+
+			"c'est-à-dire le namespace de l'app", err, nom, OperatorNamespace)
+	}
+}
+
+// Un groupe RBAC hostile doit être refusé à la création, pas rendu.
+func TestCreate_RejectsAnUnrenderableRBACGroup(t *testing.T) {
+	s := newTestService()
+
+	_, err := s.Create(context.Background(), adminActor(), &models.CreateRequest{
+		Name:       "injection",
+		RBACGroups: []string{"team\n    p, role:x, applications, *, */*, allow"},
+	}, "both")
+	if !errors.Is(err, ErrInvalidRBACGroup) {
+		t.Fatalf("err = %v, attendu ErrInvalidRBACGroup", err)
+	}
+}

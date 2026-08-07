@@ -117,6 +117,9 @@ func (s *Service) UpdateSettings(ctx context.Context, actor models.Actor, name, 
 	if err := validateVeleroHour("velero_hour", in.VeleroHour); err != nil {
 		return UpdateSettingsResult{}, err
 	}
+	if err := ValidateRBACGroups(in.RBACGroups); err != nil {
+		return UpdateSettingsResult{}, err
+	}
 
 	env = envOrDefault(env)
 	isPending := env == "prod" && s.isPendingProd(ctx, name)

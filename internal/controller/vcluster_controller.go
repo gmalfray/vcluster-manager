@@ -9,6 +9,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
@@ -91,6 +92,15 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Avant tout le reste, y compris la suppression : un CR mal placé ne doit
 	// ni piloter le vcluster homonyme, ni se voir poser un finalizer.
 	if reason := vclusterMisplaced(&vc, r.vclustersNamespace()); reason != "" {
+		// Un objet refusé qui s'en va et qui porte quand même notre finalizer doit
+		// pouvoir partir. Sinon le refus le coince en Terminating pour toujours et
+		// il faut retirer le finalizer à la main — un garde-fou ne doit pas créer
+		// l'objet inamovible qu'il est censé éviter. Le cas existe pour de vrai :
+		// un CR provisionné avant que cette garde n'existe.
+		if !vc.DeletionTimestamp.IsZero() && controllerutil.ContainsFinalizer(&vc, VClusterFinalizer) {
+			controllerutil.RemoveFinalizer(&vc, VClusterFinalizer)
+			return ctrl.Result{}, r.Update(ctx, &vc)
+		}
 		setVClusterCond(&vc, v1alpha1.CondAccepted, metav1.ConditionFalse, "NamespaceMismatch", reason)
 		return ctrl.Result{}, r.Status().Update(ctx, &vc)
 	}

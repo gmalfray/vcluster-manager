@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -141,6 +142,19 @@ func (g *Generator) render(templatePath string, data TemplateData) string {
 	return buf.String()
 }
 
+// rbacGroupRegex borne ce qu'un nom de groupe OIDC peut contenir. Volontairement
+// plus étroit que ce que Keycloak accepte : tout ce qui n'est pas là-dedans n'a
+// rien à faire dans une ligne de policy.csv.
+var rbacGroupRegex = regexp.MustCompile(`^[A-Za-z0-9_.:@/-]+$`)
+
+// ValidRBACGroup reports whether a group name is safe to render into policy.csv.
+//
+// Exportée parce que le service doit refuser à l'entrée ce que le générateur
+// refuserait au rendu, et qu'une deuxième copie de la règle dériverait. Le
+// service importe gitops, l'inverse ferait un cycle — donc la règle vit ici,
+// près de ce qu'elle protège.
+func ValidRBACGroup(g string) bool { return rbacGroupRegex.MatchString(g) }
+
 // buildData prepares the TemplateData for a given vcluster configuration.
 func (g *Generator) buildData(name, env string, req *models.CreateRequest, k8sVersion string) TemplateData {
 	var baseDomain string
@@ -197,9 +211,30 @@ func (g *Generator) buildData(name, env string, req *models.CreateRequest, k8sVe
 	var policyLines strings.Builder
 	for _, group := range req.RBACGroups {
 		group = strings.TrimSpace(group)
-		if group != "" {
-			fmt.Fprintf(&policyLines, "    g, %s, role:admin\n", group)
+		if group == "" {
+			continue
 		}
+		// Dernier filet, pas le contrôle principal. Le refus a lieu à
+		// l'admission — pattern CEL sur la CRD, ValidateRBACGroups côté service —
+		// parce qu'un groupe écarté ici est un droit d'accès silencieusement
+		// cassé : quelqu'un croit avoir donné l'accès, personne ne l'a. Si on
+		// arrive jusqu'ici avec un groupe invalide, c'est qu'un chemin d'entrée a
+		// été ajouté sans validation, et mieux vaut alors ne rien rendre que
+		// rendre l'injection.
+		//
+		// TrimSpace ne coupe qu'aux extrémités : un saut de ligne au milieu
+		// survit. Ces lignes atterrissent dans un scalaire bloc `policy.csv: |`,
+		// donc un "\n" suivi d'une indentation inférieure TERMINE le bloc et
+		// injecte des clés arbitraires dans le ConfigMap. Sans même en sortir,
+		// une ligne "p, role:x, applications, *, */*, allow" est une élévation
+		// de privilège ArgoCD. Et la même valeur part en ARGOCD_RBAC_POLICY dans
+		// le ConfigMap de substitutions, que Flux substitue textuellement AVANT
+		// de parser le manifeste : à la bascule de l'overlay ArgoCD vers ./lib,
+		// ce serait du YAML arbitraire appliqué par le ServiceAccount de Flux.
+		if !ValidRBACGroup(group) {
+			continue
+		}
+		fmt.Fprintf(&policyLines, "    g, %s, role:admin\n", group)
 	}
 
 	gitlabSSHBase := g.cfg.GitLabSSHURL + "/" + g.cfg.GitLabArgoCDPath

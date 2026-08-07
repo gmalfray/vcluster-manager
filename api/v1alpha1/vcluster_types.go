@@ -26,10 +26,23 @@ type ArgoCDSpec struct {
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 	// Version overrides the platform-wide ArgoCD version for this vcluster only.
+	// Bornée pour la même raison que RBACGroups : elle est publiée telle quelle
+	// en variable de substitution.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.+-]*$`
+	// +kubebuilder:validation:MaxLength=128
 	// +optional
 	Version string `json:"version,omitempty"`
 	// RBACGroups are the OIDC groups granted access, rendered into ArgoCD's
 	// policy.csv by the controller.
+	//
+	// Le pattern borne ce qui peut entrer dans une ligne de policy.csv. Il est
+	// plus étroit que ce que Keycloak accepte, délibérément : ces valeurs sont
+	// rendues dans un scalaire bloc YAML et publiées en variable de substitution
+	// que Flux remplace textuellement avant de parser. Un saut de ligne au
+	// milieu d'un nom de groupe suffit à terminer le bloc et à injecter des clés
+	// arbitraires dans le manifeste appliqué.
+	// +kubebuilder:validation:items:Pattern=`^[A-Za-z0-9_.:@/-]+$`
+	// +kubebuilder:validation:items:MaxLength=253
 	// +optional
 	RBACGroups []string `json:"rbacGroups,omitempty"`
 }
@@ -73,10 +86,19 @@ type QuotaSpec struct {
 
 // FluxCDSpec bootstraps a Flux inside the tenant, pointed at its own repo.
 type FluxCDSpec struct {
+	// RepoURL est publiée en variable de substitution, donc bornée : ni saut de
+	// ligne, ni espace, ni guillemet ne doivent pouvoir atteindre un manifeste
+	// que Flux applique avec son propre ServiceAccount.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern=`^(https://|ssh://|git@)[A-Za-z0-9_.:@/~-]+$`
 	RepoURL string `json:"repoURL"`
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._/-]*$`
 	// +optional
 	Branch string `json:"branch,omitempty"`
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._/-]*$`
 	// +optional
 	Path string `json:"path,omitempty"`
 }
@@ -265,6 +287,14 @@ type VClusterStatus struct {
 // VCluster is the source of truth for one vcluster: a small object, versioned in
 // fluxprod, applied by Flux, expanded by the operator (ADR-001).
 //
+// Le nom « manager » est refusé à l'admission : tout ce qui est dérivé d'un nom
+// de vcluster vaut "vcluster-" + nom, donc ce nom-là désigne le namespace de
+// l'app et de l'opérateur. La règle est écrite en dur parce que CEL ne peut pas
+// lire une constante Go — elle doit rester d'accord avec service.OperatorNamespace,
+// et le test TestNameThatResolvesToTheOperatorNamespaceIsRefused garde l'autre
+// moitié de la paire.
+//
+// +kubebuilder:validation:XValidation:rule="self.metadata.name != 'manager'",message="nom réservé : « vcluster-manager » est le namespace de l'application, un vcluster portant ce nom ferait de l'opérateur la cible de ses propres sauvegardes et suppressions"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=vc

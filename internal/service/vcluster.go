@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 
 	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/gitops"
@@ -20,8 +21,36 @@ import (
 // single copy instead of each keeping its own.
 var nameRegex = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
-// validName reports whether name matches nameRegex.
+// OperatorNamespace is where the app and the operator run. Everything derived
+// from a vcluster name is `"vcluster-" + name`, so this namespace is reachable
+// by naming a vcluster after its suffix.
+const OperatorNamespace = "vcluster-manager"
+
+// reservedNames are the names whose derived namespace lands on something that
+// is not a tenant.
+//
+// « manager » n'est pas un nom interdit par prudence, c'est une collision
+// arithmétique : "vcluster-" + "manager" == le namespace de l'app et de
+// l'opérateur. Sans cette liste, la garde de placement accepte un marqueur
+// nommé `manager` déposé dans `vcluster-manager` — les deux règles coïncident —
+// et un backup Velero de ce « vcluster » exporte les Secrets de l'app (token
+// GitLab, secret client Keycloak, JWT_SECRET) vers le bucket S3. Le chemin
+// destructeur, lui, ne s'arrête aujourd'hui que sur une chance de nommage :
+// l'app est un Deployment là où le code cherche un StatefulSet. Une chance
+// n'est pas un contrôle.
+//
+// Le refus vit ici plutôt que dans la garde parce que les 22 appelants de
+// validName en bénéficient d'un coup, y compris les routes HTTP qui
+// construisent un marqueur à la volée.
+var reservedNames = map[string]bool{
+	strings.TrimPrefix(OperatorNamespace, "vcluster-"): true,
+}
+
+// validName reports whether name is a usable vcluster name.
 func validName(name string) bool {
+	if reservedNames[name] {
+		return false
+	}
 	return nameRegex.MatchString(name)
 }
 
@@ -335,8 +364,14 @@ func (s *Service) Create(ctx context.Context, actor models.Actor, req *models.Cr
 		scope = "both"
 	}
 
-	if !nameRegex.MatchString(req.Name) {
+	// validName et pas nameRegex directement : la forme ne suffit pas, il faut
+	// aussi écarter les noms dont le namespace dérivé retombe sur celui de
+	// l'opérateur. Court-circuiter validName rouvrirait le trou pour ce chemin.
+	if !validName(req.Name) {
 		return CreateResult{}, ErrInvalidName
+	}
+	if err := ValidateRBACGroups(req.RBACGroups); err != nil {
+		return CreateResult{}, err
 	}
 	// These fields land in fluxprod YAML through an unescaped text/template, so
 	// they're checked before the vcluster is declared to exist anywhere.
