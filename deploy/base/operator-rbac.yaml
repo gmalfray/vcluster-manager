@@ -24,11 +24,12 @@ rules:
 
   # La CRD VCluster. Même découpage : l'opérateur réconcilie ce que Flux applique
   # depuis fluxprod, il ne crée pas de vcluster lui-même — donc pas de `create`.
-  # `update` sur l'objet entier viendra avec le finalizer (qui pose et retire un
-  # finalizer sur metadata) ; tant qu'il n'existe pas, la lecture suffit.
+  # `update` est là pour le finalizer, et pour lui seul : le poser et le retirer
+  # sont des écritures dans metadata, hors sous-ressource status. Tout le reste
+  # de ce que l'opérateur écrit passe par vclusters/status.
   - apiGroups: ["vcluster.rebuild-it.fr"]
     resources: ["vclusters"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update"]
   - apiGroups: ["vcluster.rebuild-it.fr"]
     resources: ["vclusters/status"]
     verbs: ["get", "update", "patch"]
@@ -58,12 +59,32 @@ rules:
 
   # Suspendre/reprendre Flux pendant une restauration in-place
   # (SetFluxSuspend patche le HelmRelease et la Kustomization du tenant).
+  # `update` en plus pour la fin de la séquence de suppression : CleanupNamespace
+  # retire les finalizers Flux, sans quoi le namespace reste en Terminating et le
+  # CR avec lui.
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
-    verbs: ["get", "list", "patch"]
+    verbs: ["get", "list", "patch", "update"]
   - apiGroups: ["kustomize.toolkit.fluxcd.io"]
     resources: ["kustomizations"]
-    verbs: ["get", "list", "patch"]
+    verbs: ["get", "list", "patch", "update"]
+
+  # Le namespace hôte : lire et retirer l'annotation protect-deletion, juste
+  # avant la destruction (crd-vcluster.md §4.4 étape 3).
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "update"]
+
+  # Parler à l'API interne d'un vcluster (déposer le job rancher-cleanup, lire
+  # son état) : le kubeconfig interne vit dans un Secret du namespace hôte, et
+  # l'accès passe par un port-forward SPDY vers le pod du plan de contrôle —
+  # jamais par un kubeconfig brut.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
 
   # Descendre le vcluster à zéro réplique, puis constater que ses pods sont
   # bien partis (detectVClusterTopology lit les deux formes de plan de contrôle,

@@ -240,12 +240,19 @@ différents, l'un basé sur `spec` (réversible), l'autre sur `deletionTimestamp
 ### 4.3 Contrôle de garde : `deletionProtection` encore actif à la suppression réelle
 
 Si le commit 3 arrive alors que `spec.deletionProtection` est resté `true` (quelqu'un a sauté le
-commit 1, ou l'a réappliqué entretemps), le finalizer doit refuser de continuer : poser
-`DeletionProtectionBlocked`, rester en `Deleting` sans avancer au-delà, et attendre soit un commit
-qui recrée le CR (annule la suppression côté Git — possible tant que le finalizer n'a pas encore
-libéré l'objet), soit un commit explicite qui lève la protection pendant que l'objet est déjà en
-`Terminating`. Ce garde-fou est ce qui rend le retrait de la MR acceptable : la protection est
-vérifiée au moment le plus tardif possible, pas seulement à la lecture du diff.
+commit 1, ou l'a réappliqué entretemps), le finalizer refuse de continuer : il pose
+`DeletionProtectionBlocked`, reste en `Deleting` sans avancer au-delà, et n'a **rien détruit**. Ce
+garde-fou est ce qui rend le retrait de la MR acceptable : la protection est vérifiée au moment le
+plus tardif possible, pas seulement à la lecture du diff.
+
+*Précision apportée à l'implémentation* : « annuler la suppression côté Git » n'existe pas.
+Recommiter le fichier du CR ne retire pas le `deletionTimestamp` — un `apply` sur un objet en
+`Terminating` est une mise à jour, pas une création. Le blocage n'est donc pas une annulation, c'est
+un arrêt : l'objet reste retenu indéfiniment, et la seule chose que le finalizer garantit est
+qu'aucune destruction n'a lieu tant que la protection tient. Pour vraiment récupérer le vcluster, il
+faut remettre son CR dans fluxprod **avant** de lever la protection, pour que Flux le recrée dès que
+l'objet aura été libéré — rien n'ayant été détruit entretemps, les ressources tenant sont encore là.
+Cette manœuvre n'est pas encore vérifiée sur un cluster réel ; à confirmer en recette.
 
 ### 4.4 Le finalizer — séquence et survie au redémarrage
 
@@ -257,28 +264,45 @@ bloquée par §4.3), le finalizer exécute, dans l'ordre :
    étape doit précéder la destruction : le cleanup tourne à l'intérieur du vcluster qu'on est en
    train de supprimer).
 2. **`BackupPending`** — déclenchement d'une sauvegarde Velero et attente de la phase
-   `Completed`. Si Velero n'est pas configuré ou que la sauvegarde échoue,
-   `spec` doit porter un champ d'override explicite (pas encore dans le schéma ci-dessus — à
-   ajouter au moment du contrôleur, par exemple `status.deletion.backupOverride`, déjà présent
-   dans le type Go, actionné par un geste humain distinct) avant que le finalizer n'accepte de
-   passer à l'étape suivante.
+   `Completed`. Si Velero n'est pas configuré ou que la sauvegarde échoue, il faut un geste humain
+   explicite avant que le finalizer accepte de passer à l'étape suivante.
+   *Tranché à l'implémentation* : ce geste est **l'annotation
+   `deletion.vcluster.rebuild-it.fr/backup-override: "true"`**, et non un champ de `spec` ou de
+   `status`. Un champ de `spec` n'aurait aucun chemin pour arriver jusque-là — le fichier du CR
+   n'existe plus dans fluxprod, c'est sa disparition qui a déclenché la suppression, donc Flux n'a
+   plus rien à appliquer. Un `kubectl annotate` en a un. Et l'annotation reste lisible dans le diff
+   Git tant que le CR existe, donc le geste peut aussi être pris d'avance, en revue.
 3. **`ProtectionRemoval`** — si `status.protectionEnabled`, retrait de l'annotation
    `protect-deletion`.
 4. **`Destroying`** — retrait des finalizers K8s internes si nécessaire, laisser Kubernetes
    effectivement supprimer l'objet (les ressources kro et les leurs, via leurs
    `ownerReferences`, disparaissent en cascade).
 
-**Survie au redémarrage** : chaque étape écrit `status.deletion.stage` avant de passer à la
-suivante. Au redémarrage, le contrôleur relit le CR (toujours en `Terminating` dans etcd tant que
-le finalizer n'a pas terminé), regarde `status.deletion.stage`, et reprend exactement où il s'est
-arrêté — pas de retraitement d'une étape déjà faite (un dépairage Rancher déjà effectué ne
-redéclenche pas un deuxième `DeleteCluster`, le contrôleur vérifie l'état réel avant d'agir, comme
-`runCleanupAndDelete` le fait déjà aujourd'hui de façon manuelle). C'est très exactement ce que
-`data/deleting.json` et `cfg.ListCleaning()`/`AddCleaning()`/`RemoveCleaning()` font à la main
-aujourd'hui via `StartReconcilers()` — le CR et son `status` remplacent ce fichier d'état ad hoc,
-avec un avantage : l'état vit sur l'objet lui-même, pas dans un fichier ou une ConfigMap à tenir
-synchronisée séparément, donc pas de risque de désynchronisation entre « ce que Kubernetes sait »
-et « ce que le fichier d'état dit ».
+**Survie au redémarrage** — *révisé à l'implémentation, ce paragraphe demandait au départ que
+chaque étape écrive `status.deletion.stage` avant de passer à la suivante, et que la reprise relise
+ce champ.* C'est le breadcrumb que le contrôleur backup/restore a essayé puis retiré, parce qu'un
+registre écrit peut mentir : le process qui l'écrit peut mourir juste après, ou juste avant
+(`docs/poc-operator-tech-decision.md` §5bis, bugs 1 et 2). **Le finalizer ne relit donc aucune
+étape : il redemande au cluster.** Chaque étape est conditionnée à un fait observable —
+
+| Étape | Ce qu'on observe pour savoir si elle est faite |
+|---|---|
+| `RancherUnpairing` | Rancher connaît-il encore ce cluster (`FindClusterByName`), des agents tournent-ils encore dans le namespace hôte (`HasRancherAgents`), et où en est le Job `rancher-cleanup` *dans* le vcluster |
+| `BackupPending` | Velero a-t-il une sauvegarde de ce vcluster encore en cours (on l'adopte), ou une sauvegarde terminée démarrée **après** le `deletionTimestamp` (elle couvre cette suppression) |
+| `ProtectionRemoval` | L'annotation `protect-deletion` est-elle encore sur le namespace |
+| `Destroying` | Idempotent par construction : retirer des finalizers déjà absents ne fait rien |
+
+`status.deletion.stage` existe toujours et est toujours écrit, mais **uniquement pour être lu par un
+humain** : un `kubectl get vc -o yaml` sur un objet coincé doit dire où il est coincé. Aucune
+décision du contrôleur n'en dépend, et en faire dépendre une réintroduirait le bug.
+
+Les délais (dix minutes pour le dépairage, deux heures pour la sauvegarde) s'ancrent sur la
+`lastTransitionTime` de la condition correspondante, un horodatage que Kubernetes tient déjà dans le
+`status` — donc la borne survit à un redémarrage sans champ supplémentaire.
+
+Tout ça remplace `data/deleting.json` et `cfg.ListCleaning()`/`AddCleaning()`/`RemoveCleaning()`
+rejoués par `StartReconcilers()` : l'état ne vit plus dans un fichier à tenir synchronisé, il est
+relu là où il se passe.
 
 ## 5. Budget de ressources par cluster hôte
 
