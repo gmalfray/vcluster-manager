@@ -254,18 +254,8 @@ func (r *VClusterReconciler) reconcileSuspend(ctx context.Context, vc *v1alpha1.
 
 // reconcileIntegrations configure ce qui vit hors du cluster hôte et que le CR
 // doit piloter : le backend d'authentification Vault, le client OIDC Keycloak,
-// l'appairage Rancher. Retourne le délai de re-scrutation souhaité.
-//
-// C'est le remplacement de la map mémoire `vaultStates` des handlers et de sa
-// goroutine : un état de configuration qui vit dans le processus disparaît à
-// chaque redémarrage, d'où le rattrapage au démarrage qui rescanne tout. Sur le
-// status du CR, il survit comme le reste.
-//
-// Implémentation attendue dans vcluster_integrations.go.
-func (r *VClusterReconciler) reconcileIntegrations(ctx context.Context, vc *v1alpha1.VCluster) (time.Duration, error) {
-	_, _ = ctx, vc
-	return 0, nil
-}
+// l'appairage Rancher.
+// → implémenté dans vcluster_integrations.go.
 
 // reconcileDeletion porte le finalizer et la séquence de suppression, garde-fou
 // deletionProtection compris (crd-vcluster.md §4.3, §4.4).
