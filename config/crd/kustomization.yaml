@@ -5,3 +5,4 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - vcluster.rebuild-it.fr_vclusterveleroops.yaml
+  - vcluster.rebuild-it.fr_vclusters.yaml
