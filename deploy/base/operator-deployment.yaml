@@ -25,8 +25,7 @@ spec:
       serviceAccountName: vcluster-manager-operator
       containers:
         - name: operator
-          image: ghcr.io/gmalfray/vcluster-manager:latest
-          command: ["vcluster-manager-operator"]
+          image: ghcr.io/gmalfray/vcluster-manager-operator:latest
           # Explicite, jamais implicite : cette valeur étiquette l'audit et les
           # métriques. Chaque cell doit la remplacer par son propre nom (ADR-002).
           args: ["--cell=preprod"]
