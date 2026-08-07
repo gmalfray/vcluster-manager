@@ -33,6 +33,22 @@ rules:
     resources: ["vclusters/status"]
     verbs: ["get", "update", "patch"]
 
+  # Le provisionnement. L'opérateur applique exactement deux objets par vcluster :
+  # son namespace, et le ConfigMap vcluster-<nom>-substitutions dans lequel Flux
+  # puise les valeurs dérivées du CR. Server-Side Apply passe par `patch`, mais
+  # `create` reste nécessaire au premier tour, quand l'objet n'existe pas encore.
+  #
+  # Pas de `delete` : ce que l'opérateur pose n'est jamais retiré ressource par
+  # ressource — désactiver une option vide une clé, elle ne supprime pas d'objet,
+  # et le prune du reste appartient à Flux. La destruction complète passera par le
+  # finalizer, qui aura sa propre règle.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+
   # Velero : créer un backup/restore et suivre leur phase.
   # `delete` sur les backups sert à DeleteVeleroBackup, appelé par l'app et non
   # par l'opérateur — retiré ici volontairement.

@@ -238,44 +238,7 @@ func (g *Generator) buildData(name, env string, req *models.CreateRequest, k8sVe
 	}
 }
 
-// GenerateVCluster produces all files for a vcluster in a given env.
-func (g *Generator) GenerateVCluster(req *models.CreateRequest, env string) []GeneratedFile {
-	name := req.Name
-	base := fmt.Sprintf("clusters/%s/vclusters/%s", env, name)
-	data := g.buildData(name, env, req, "")
-
-	files := []GeneratedFile{
-		{Path: base + "/kustomization.yaml", Content: g.render("kustomization.yaml.tmpl", data)},
-		{Path: base + "/values.yaml", Content: g.render("values.yaml.tmpl", data)},
-		{Path: base + "/tenant_flux.yaml", Content: g.render("tenant_flux.yaml.tmpl", data)},
-		{Path: base + "/tenant/kustomization.yaml", Content: g.render("tenant/kustomization.yaml.tmpl", data)},
-		{Path: base + "/tenant/cert-manager_kustomization.yaml", Content: g.render("tenant/cert-manager_kustomization.yaml.tmpl", data)},
-		{Path: base + "/tenant/cert-manager-config_kustomization.yaml", Content: g.render("tenant/cert-manager-config_kustomization.yaml.tmpl", data)},
-		{Path: base + "/tenant/vault-webhook_kustomization.yaml", Content: g.render("tenant/vault-webhook_kustomization.yaml.tmpl", data)},
-		{Path: base + "/tenant/cert-manager/kustomization.yaml", Content: g.render("tenant/cert-manager/kustomization.yaml.tmpl", data)},
-		{Path: base + "/tenant/vault-webhook/kustomization.yaml", Content: g.render("tenant/vault-webhook/kustomization.yaml.tmpl", data)},
-	}
-
-	if req.ArgoCD {
-		files = append(files,
-			GeneratedFile{Path: base + "/tenant/argocd_kustomization.yaml", Content: g.render("tenant/argocd_kustomization.yaml.tmpl", data)},
-			GeneratedFile{Path: base + "/tenant/argocd/kustomization.yaml", Content: g.render("tenant/argocd/kustomization.yaml.tmpl", data)},
-			GeneratedFile{Path: base + "/tenant/argocd/argo-cd-cm.yaml", Content: g.render("tenant/argocd/argo-cd-cm.yaml.tmpl", data)},
-			GeneratedFile{Path: base + "/tenant/argocd/argocd-rbac-cm.yaml", Content: g.render("tenant/argocd/argocd-rbac-cm.yaml.tmpl", data)},
-			GeneratedFile{Path: base + "/tenant/navlink_kustomization.yaml", Content: g.render("tenant/navlink_kustomization.yaml.tmpl", data)},
-			GeneratedFile{Path: base + "/tenant/navlink/kustomization.yaml", Content: g.render("tenant/navlink/kustomization.yaml.tmpl", data)},
-		)
-	}
-
-	if req.FluxCDEnabled {
-		files = append(files,
-			GeneratedFile{Path: base + "/tenant/flux-bootstrap_kustomization.yaml", Content: g.render("tenant/flux-bootstrap_kustomization.yaml.tmpl", data)},
-			GeneratedFile{Path: base + "/tenant/flux-bootstrap/kustomization.yaml", Content: g.render("tenant/flux-bootstrap/kustomization.yaml.tmpl", data)},
-		)
-	}
-
-	return files
-}
+// GenerateVCluster lives in objects.go, next to the document table it walks.
 
 // GenerateUpdatedFluxBootstrapOverlay produces the flux-bootstrap overlay for an update.
 func (g *Generator) GenerateUpdatedFluxBootstrapOverlay(name, env, repoURL, branch, path string) GeneratedFile {

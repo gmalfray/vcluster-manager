@@ -26,6 +26,7 @@ import (
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 	"github.com/gmalfray/vcluster-manager/internal/config"
 	"github.com/gmalfray/vcluster-manager/internal/controller"
+	"github.com/gmalfray/vcluster-manager/internal/gitops"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/service"
 	"github.com/gmalfray/vcluster-manager/internal/version"
@@ -90,7 +91,26 @@ func main() {
 		os.Exit(1)
 	}
 	svc := service.New(service.Deps{
-		Cfg:          cfg,
+		Cfg: cfg,
+		// Le générateur ne parle à personne : il dérive des valeurs depuis le nom,
+		// la cell et la configuration. C'est ce qui rend le ConfigMap de
+		// substitutions que le reconcile applique.
+		Generator: gitops.NewGenerator(gitops.GeneratorConfig{
+			BaseDomainPreprod:   cfg.BaseDomainPreprod,
+			BaseDomainProd:      cfg.BaseDomainProd,
+			TLSSecretPreprod:    cfg.TLSSecretPreprod,
+			TLSSecretProd:       cfg.TLSSecretProd,
+			OIDCIssuer:          cfg.KeycloakURL + "/auth/realms/" + cfg.KeycloakRealm,
+			GitLabSSHURL:        cfg.GitLabSSHURL,
+			GitLabArgoCDPath:    cfg.GitLabArgoCDPath,
+			DefaultCPU:          cfg.DefaultCPU,
+			DefaultMemory:       cfg.DefaultMemory,
+			DefaultStorage:      cfg.DefaultStorage,
+			VeleroTimezone:      cfg.VeleroTimezone,
+			VeleroDefaultTTL:    cfg.VeleroDefaultTTL,
+			VClusterPodSecurity: cfg.VClusterPodSecurity,
+			ArgoCDDefaultPolicy: cfg.ArgoCDDefaultPolicy,
+		}),
 		K8sClients:   map[string]*kubernetes.StatusClient{cell: k8sClient},
 		K8sClientsMu: &sync.RWMutex{},
 	})

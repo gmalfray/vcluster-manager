@@ -1,0 +1,182 @@
+package controller
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
+	"github.com/gmalfray/vcluster-manager/internal/gitops"
+	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/service"
+)
+
+// ProvisionFieldManager est le field manager sous lequel l'opérateur applique
+// ce qu'il possède.
+//
+// Réponse à crd-vcluster.md §7, inconnue 1 (« qui gagne sur un champ que Flux et
+// nous touchons tous les deux ? ») en deux temps.
+//
+// D'abord, Flux n'écrit aucun des deux objets appliqués ici : le namespace et le
+// ConfigMap de substitutions n'apparaissent dans aucun manifeste commité. Le
+// conflit structurel n'existe donc pas, ce qui est tout l'intérêt de n'appliquer
+// que ces deux-là.
+//
+// Ensuite, il reste les écrivains occasionnels — un `kubectl edit` de dépannage,
+// un contrôleur tiers. Sans ForceOwnership, le premier d'entre eux prend la
+// propriété d'une clé et bloque toutes les réconciliations suivantes sur un
+// conflit : l'opérateur se retrouve incapable de réparer son propre objet. On
+// force donc, ce qui reprend la propriété des clés que l'opérateur DÉCLARE, et
+// uniquement celles-là — Server-Side Apply fusionne, il ne remplace pas, donc
+// une clé ajoutée à côté survit. C'est vérifié par
+// TestProvisioningOnlyOwnsWhatItDeclares.
+const ProvisionFieldManager = "vcluster-manager-operator"
+
+// VClusterProvisioner rend les objets que l'opérateur applique lui-même.
+//
+// Déclaré ici, là où il est consommé, comme VClusterOps et BudgetReader.
+// L'implémentation de production est *service.Service ; l'assertion ci-dessous
+// le prouve à la compilation.
+type VClusterProvisioner interface {
+	RenderVClusterSubstitutions(req *models.CreateRequest, env, k8sVersion string) ([]*unstructured.Unstructured, error)
+}
+
+var _ VClusterProvisioner = (*service.Service)(nil)
+
+// reconcileProvisioning matérialise ce que le CR dérive, et rien d'autre
+// (crd-vcluster.md §4.1 étape 3).
+//
+// Deux objets : le namespace du vcluster, et le ConfigMap
+// vcluster-<nom>-substitutions que Flux injecte dans les templates tenant
+// partagés via postBuild.substituteFrom. Pas l'arborescence entière.
+//
+// Le raisonnement, parce qu'il n'est pas évident : sur les 17 documents que
+// produit le générateur, 7 sont des objets Kubernetes — mais 5 de ces 7 sont des
+// Kustomization Flux dont le `path` pointe vers un répertoire d'overlay par
+// vcluster, qui doit rester commité. Les appliquer depuis l'opérateur donnerait
+// deux propriétaires (l'opérateur pour l'objet, Git pour son contenu) sans
+// supprimer un seul fichier. En basculant ces Kustomization vers ./lib partagé
+// + substitution, l'overlay disparaît et il ne reste qu'une chose à rendre
+// depuis le CR : les valeurs. C'est ce ConfigMap.
+//
+// Conséquence directe sur les deux inconnues du §7 : pas de contentieux de field
+// manager (inconnue 1) puisque Flux n'écrit jamais ces deux objets, et pas de
+// prune à faire (inconnue 2) puisque désactiver une option vide une clé au lieu
+// de retirer un objet. Le prune du reste appartient à Flux, qui le fait déjà.
+func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1alpha1.VCluster) error {
+	// §4.1 étape 1. La règle CEL de la CRD refuse déjà `capi` à l'admission ;
+	// cette branche couvre un CR admis avant que la règle n'existe.
+	if vc.Spec.Type == v1alpha1.VClusterTypeCAPI {
+		vc.Status.Phase = v1alpha1.VClusterPhaseFailed
+		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "TypeNotImplemented",
+			"type: capi est réservé, Cluster API n'est pas implémenté (docs/etude-cluster-api.md) — rien n'a été provisionné")
+		return nil
+	}
+
+	// Le nom sert de suffixe de namespace juste après. Un namespace est la seule
+	// frontière entre deux tenants, donc on le valide avant la concaténation.
+	// Le service revalide de son côté ; ici c'est pour en faire une condition
+	// lisible plutôt qu'une erreur de réconciliation qu'on réessaierait en
+	// boucle, puisque relire le même nom donnera le même refus.
+	if !service.ValidName(vc.Name) {
+		vc.Status.Phase = v1alpha1.VClusterPhaseFailed
+		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "InvalidName",
+			fmt.Sprintf("nom de vcluster refusé (%q) : attendu [a-z][a-z0-9-]*", vc.Name))
+		return nil
+	}
+
+	provisioner, ok := r.Ops.(VClusterProvisioner)
+	if !ok {
+		// En production c'est impossible : l'assertion de compilation ci-dessus
+		// garantit que *service.Service satisfait l'interface. Le cas n'existe que
+		// pour un double de test qui ne couvre pas le provisionnement, d'où une
+		// condition plutôt qu'une erreur — mais une condition visible, pas un
+		// silence.
+		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "RendererUnavailable",
+			"cet opérateur n'a pas de générateur : rien n'est provisionné")
+		return nil
+	}
+
+	objects, err := provisioner.RenderVClusterSubstitutions(createRequestFromCR(vc), r.Cell, vc.Spec.K8sVersion)
+	if err != nil {
+		return r.provisionFailed(ctx, vc, "RenderFailed", err)
+	}
+
+	for _, obj := range objects {
+		if err := r.Patch(ctx, obj, client.Apply,
+			client.FieldOwner(ProvisionFieldManager), client.ForceOwnership); err != nil {
+			return r.provisionFailed(ctx, vc, "ApplyFailed",
+				fmt.Errorf("application de %s %s/%s : %w", obj.GetKind(), obj.GetNamespace(), obj.GetName(), err))
+		}
+	}
+
+	if vc.Status.Phase == "" || vc.Status.Phase == v1alpha1.VClusterPhaseFailed {
+		vc.Status.Phase = v1alpha1.VClusterPhaseProvisioning
+	}
+	setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionTrue, "Applied",
+		fmt.Sprintf("namespace et substitutions appliqués ; Flux rend les ressources tenant depuis ./lib avec ces valeurs (%d objets)", len(objects)))
+	return nil
+}
+
+// provisionFailed enregistre pourquoi le provisionnement s'est arrêté, puis rend
+// l'erreur.
+//
+// Il écrit le status lui-même parce que Reconcile rend la main dès que cette
+// fonction échoue : son propre Status().Update ne tourne pas, et la condition
+// serait perdue. Un échec que personne ne voit dans `kubectl describe` est
+// exactement l'échec silencieux dont ADR-001 se méfie. À retirer le jour où
+// Reconcile écrira le status sur tous les chemins.
+func (r *VClusterReconciler) provisionFailed(ctx context.Context, vc *v1alpha1.VCluster, reason string, cause error) error {
+	setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, reason, cause.Error())
+	if err := r.Status().Update(ctx, vc); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
+}
+
+// createRequestFromCR projette le CR sur la forme que le générateur parle déjà.
+//
+// Une projection et rien d'autre : tout ce qui se dérive — host API, domaine,
+// secret TLS, client ID ArgoCD, révision cible, pod security — reste l'affaire
+// du générateur, recalculée à chaque reconcile depuis le nom et la cell
+// (crd-vcluster.md §2.2). Les figer dans le CR casserait la promotion
+// preprod→prod.
+func createRequestFromCR(vc *v1alpha1.VCluster) *models.CreateRequest {
+	req := &models.CreateRequest{Name: vc.Name}
+
+	if a := vc.Spec.ArgoCD; a != nil && a.Enabled {
+		req.ArgoCD = true
+		req.ArgoCDVersion = a.Version
+		req.RBACGroups = a.RBACGroups
+	}
+
+	if v := vc.Spec.Velero; v != nil && v.Enabled {
+		req.VeleroEnabled = true
+		req.VeleroHour = v.Hour
+		// Le CR porte la forme courte ("30j"), lisible dans un diff de vingt
+		// lignes ; Velero veut "720h0m0s". La conversion est au contrôleur, pas
+		// au relecteur.
+		req.VeleroTTL = gitops.VeleroTTLFromShort(v.TTL)
+	}
+
+	// Le CR dit les quotas au positif, le générateur au négatif. Un bloc absent
+	// vaut quotas ACTIFS : oublier le bloc doit donner le cas sûr, pas un tenant
+	// sans plafond.
+	req.NoQuotas = vc.Spec.Quotas != nil && !vc.Spec.Quotas.Enabled
+	if q := vc.Spec.Quotas; q != nil {
+		req.CPU, req.Memory, req.Storage = q.CPU, q.Memory, q.Storage
+	}
+
+	if f := vc.Spec.FluxCD; f != nil && f.RepoURL != "" {
+		req.FluxCDEnabled = true
+		req.FluxCDRepoURL = f.RepoURL
+		req.FluxCDBranch = f.Branch
+		req.FluxCDPath = f.Path
+	}
+
+	return req
+}

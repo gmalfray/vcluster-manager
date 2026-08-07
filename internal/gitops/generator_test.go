@@ -142,8 +142,9 @@ func TestGenerateVCluster_FileCountWithArgoCD(t *testing.T) {
 	}
 	files := g.GenerateVCluster(req, "preprod")
 	// Base 9 + argocd_kustomization, argocd/kustomization, argocd/argo-cd-cm,
-	//          argocd/argocd-rbac-cm, navlink_kustomization, navlink/kustomization
-	const wantCount = 15
+	//          argocd/argocd-rbac-cm, navlink_kustomization.
+	// Pas d'overlay navlink/ : il est passé sur ./lib partagé + substitution.
+	const wantCount = 14
 	if len(files) != wantCount {
 		t.Errorf("expected %d files with ArgoCD, got %d", wantCount, len(files))
 	}
@@ -177,8 +178,8 @@ func TestGenerateVCluster_FileCountWithArgoCDAndFluxCD(t *testing.T) {
 		FluxCDPath:    "clusters/pra2",
 	}
 	files := g.GenerateVCluster(req, "preprod")
-	// Base 9 + 6 ArgoCD + 2 FluxCD
-	const wantCount = 17
+	// Base 9 + 5 ArgoCD + 2 FluxCD
+	const wantCount = 16
 	if len(files) != wantCount {
 		t.Errorf("expected %d files with ArgoCD+FluxCD, got %d", wantCount, len(files))
 	}
@@ -206,7 +207,6 @@ func TestGenerateVCluster_FilePaths(t *testing.T) {
 		"clusters/preprod/vclusters/myvc/tenant/argocd/argo-cd-cm.yaml",
 		"clusters/preprod/vclusters/myvc/tenant/argocd/argocd-rbac-cm.yaml",
 		"clusters/preprod/vclusters/myvc/tenant/navlink_kustomization.yaml",
-		"clusters/preprod/vclusters/myvc/tenant/navlink/kustomization.yaml",
 	}
 
 	byPath := make(map[string]string, len(files))
