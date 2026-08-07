@@ -150,6 +150,13 @@ func (r *VClusterReconciler) reconcileAll(ctx context.Context, vc *v1alpha1.VClu
 		// Refus explicite, pas une erreur de réconciliation : rien ne sera
 		// réessayé tant que le spec ou le plafond n'a pas changé, et la
 		// condition BudgetOK dit pourquoi.
+		//
+		// L'agrégation tourne quand même. Sans elle, le refus resterait enfermé
+		// dans BudgetOK : Ready garderait sa valeur du passage précédent, donc
+		// le health check de la Kustomization Flux verrait un vcluster sain
+		// alors que rien n'a été provisionné. Un refus qui ne se voit pas dans
+		// l'agrégat n'est pas un refus.
+		aggregateVClusterStatus(vc)
 		return 0, nil
 	}
 
@@ -222,14 +229,9 @@ func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1al
 	return nil
 }
 
-// reconcileObservedState remplit le status observé (versions, pods, quotas,
-// Rancher, Vault, dernier backup) et agrège la phase + la condition Ready
-// (crd-vcluster.md §2.4, §3.3). Retourne le délai de re-scrutation souhaité.
-// Implémentation attendue dans vcluster_status.go.
-func (r *VClusterReconciler) reconcileObservedState(ctx context.Context, vc *v1alpha1.VCluster) (time.Duration, error) {
-	_, _ = ctx, vc
-	return 0, nil
-}
+// reconcileObservedState est implémenté dans vcluster_status.go : il remplit le
+// status observé (versions, quotas, Rancher, protection, dernier backup) et
+// agrège la phase + la condition Ready (crd-vcluster.md §2.4, §3.3).
 
 // reconcileDeletion porte le finalizer et la séquence de suppression, garde-fou
 // deletionProtection compris (crd-vcluster.md §4.3, §4.4).
