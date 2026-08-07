@@ -73,6 +73,12 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.reconcileDeletion(ctx, &vc)
 	}
 
+	// Le finalizer se pose ici, sur le chemin vivant : l'API server refuse d'en
+	// ajouter un à un objet qui porte déjà un deletionTimestamp.
+	if err := r.ensureFinalizer(ctx, &vc); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	vc.Status.ObservedGeneration = vc.Generation
 
 	// Le sommeil d'abord : inutile de provisionner ce qu'on vient d'endormir.
@@ -162,11 +168,7 @@ func (r *VClusterReconciler) reconcileObservedState(ctx context.Context, vc *v1a
 
 // reconcileDeletion porte le finalizer et la séquence de suppression, garde-fou
 // deletionProtection compris (crd-vcluster.md §4.3, §4.4).
-// Implémentation attendue dans vcluster_finalizer.go.
-func (r *VClusterReconciler) reconcileDeletion(ctx context.Context, vc *v1alpha1.VCluster) (ctrl.Result, error) {
-	_, _ = ctx, vc
-	return ctrl.Result{}, nil
-}
+// → implémenté dans vcluster_finalizer.go, avec ensureFinalizer.
 
 func setVClusterCond(vc *v1alpha1.VCluster, condType string, status metav1.ConditionStatus, reason, message string) {
 	apimeta.SetStatusCondition(&vc.Status.Conditions, metav1.Condition{

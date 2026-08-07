@@ -42,10 +42,9 @@ type Ops interface {
 	AbortInPlaceRestore(ctx context.Context, actor models.Actor, name, env string) error
 }
 
-// IsTerminalBackupPhase reports whether a Velero backup phase is settled. The
-// restore counterpart lives in the service (service.IsTerminalRestorePhase) and
-// is used directly rather than copied.
+// IsTerminalBackupPhase reports whether a Velero backup phase is settled. It
+// lives in the service now, next to its restore counterpart, because the
+// deletion sequence needs the same answer — one list of phases, not two.
 func IsTerminalBackupPhase(phase string) bool {
-	return phase == "Completed" || phase == "Failed" || phase == "PartiallyFailed" ||
-		phase == "FailedValidation" || phase == "Deleting"
+	return service.IsTerminalBackupPhase(phase)
 }
