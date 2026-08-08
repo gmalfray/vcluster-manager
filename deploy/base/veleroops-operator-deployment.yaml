@@ -1,0 +1,86 @@
+# L'opérateur VeleroOps est un déploiement distinct de l'opérateur VCluster
+# (operator-deployment.yaml) et du serveur : il ne sert pas d'humains, n'a pas
+# d'ingress et ne monte pas le PVC de données. Il réconcilie les marqueurs
+# VClusterVeleroOps — sauvegarde et restauration Velero à la demande — dans le
+# cluster où il tourne.
+#
+# Zéro secretKeyRef ici, volontairement : contrairement à operator-deployment.yaml,
+# ce pod n'a besoin d'aucun des trois identifiants Vault/Keycloak/Rancher —
+# VeleroOpsReconciler ne les appelle jamais (voir cmd/veleroops-operator/main.go).
+# C'est tout le point de le déployer à part : la compromission de ce pod
+# n'emporte aucun des trois.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vcluster-manager-veleroops-operator
+  namespace: vcluster-manager
+  labels:
+    app: vcluster-manager-veleroops-operator
+spec:
+  # Une seule réplique suffit, mais l'élection de leader est quand même active
+  # dans le binaire : pendant un rolling update, l'ancien et le nouveau pod se
+  # chevauchent quelques secondes, et deux pilotes pour une restauration
+  # destructrice est exactement ce qu'on veut éviter.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vcluster-manager-veleroops-operator
+  template:
+    metadata:
+      labels:
+        app: vcluster-manager-veleroops-operator
+    spec:
+      serviceAccountName: vcluster-manager-veleroops-operator
+      containers:
+        - name: veleroops-operator
+          image: ghcr.io/gmalfray/vcluster-manager-veleroops-operator:latest
+          # Explicite, jamais implicite : cette valeur étiquette l'audit et les
+          # métriques. Chaque cell doit la remplacer par son propre nom (ADR-002).
+          args: ["--cell=preprod"]
+          ports:
+            - containerPort: 8080
+              name: metrics
+            - containerPort: 8081
+              name: probes
+          # Même ConfigMap que les deux autres pods : l'opérateur n'a besoin que
+          # de VELERO_NAMESPACE et VELERO_DEFAULT_TTL, mais partager la source
+          # évite deux endroits où régler la même chose. Rien de secret n'y vit —
+          # voir configmap.yaml.
+          envFrom:
+            - configMapRef:
+                name: vcluster-manager-config
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            # UID explicite plutôt que `runAsNonRoot: true` seul, comme
+            # operator-deployment.yaml : l'image ne déclare pas de USER via
+            # Dockerfile HEALTHCHECK, donc kubelet refuserait de démarrer le
+            # conteneur sans ça. Le binaire est statique et ne lit que son
+            # binaire et les CA du système, tous deux lisibles par tous :
+            # n'importe quel UID convient.
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532

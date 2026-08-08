@@ -1,7 +1,12 @@
 package controller
 
 // Le harnais qui fait tourner du vrai code d'opérateur derrière le VRAI
-// ClusterRole commité.
+// ClusterRole commité — pour LES DEUX binaires opérateur (cmd/operator et
+// cmd/veleroops-operator), chacun avec le sien. rbac_operator_test.go porte
+// les scénarios du premier, rbac_veleroops_test.go ceux du second — y compris
+// la preuve croisée que ni l'un ni l'autre ne peut faire le travail de
+// l'autre, qui est le vrai livrable de sécurité de leur séparation en deux
+// pods.
 //
 // Pourquoi il existe : envtest démarre un kube-apiserver avec
 // `--authorization-mode=RBAC`, mais le client qu'il rend appartient au groupe
@@ -78,11 +83,19 @@ import (
 )
 
 // operatorServiceAccount est le sujet impersonné : exactement celui que
-// deploy/base/operator-rbac.yaml déclare, et que le Deployment de l'opérateur
+// deploy/base/operator-rbac.yaml déclare, et que le Deployment cmd/operator
 // utilise en production.
 const operatorServiceAccount = "system:serviceaccount:vcluster-manager:vcluster-manager-operator"
 
-// appServiceAccount est celui de cmd/server. Les deux binaires n'ont ni les
+// veleroopsServiceAccount est le sujet du second binaire, cmd/veleroops-operator
+// — un pod distinct, un ClusterRole distinct
+// (deploy/base/veleroops-operator-rbac.yaml). Les deux tournaient dans le même
+// manager avant ce découpage ; le prouver par impersonation, et pas seulement
+// par lecture des deux fichiers, est le seul moyen de garantir qu'aucun des
+// deux ne peut plus faire ce que l'autre fait.
+const veleroopsServiceAccount = "system:serviceaccount:vcluster-manager:vcluster-manager-veleroops-operator"
+
+// appServiceAccount est celui de cmd/server. Les trois binaires n'ont ni les
 // mêmes droits ni les mêmes chemins de code, et c'est précisément en dérivant
 // l'un de l'autre qu'un verbe s'est perdu.
 const appServiceAccount = "system:serviceaccount:vcluster-manager:vcluster-manager"
@@ -90,8 +103,9 @@ const appServiceAccount = "system:serviceaccount:vcluster-manager:vcluster-manag
 // Les fichiers commités, pas des copies. C'est le point : le test lit les
 // manifestes qui partent en production.
 var (
-	operatorRBACFile = filepath.Join("..", "..", "deploy", "base", "operator-rbac.yaml")
-	appRBACFile      = filepath.Join("..", "..", "deploy", "base", "rbac.yaml")
+	operatorRBACFile  = filepath.Join("..", "..", "deploy", "base", "operator-rbac.yaml")
+	veleroopsRBACFile = filepath.Join("..", "..", "deploy", "base", "veleroops-operator-rbac.yaml")
+	appRBACFile       = filepath.Join("..", "..", "deploy", "base", "rbac.yaml")
 )
 
 // --- ce que le proxy voit --------------------------------------------------
@@ -242,6 +256,12 @@ func operatorAPIProxy(t *testing.T) (proxyURL string, rec *apiRecorder) {
 	return apiProxyAs(t, operatorServiceAccount)
 }
 
+// veleroopsAPIProxy est le même montage pour cmd/veleroops-operator.
+func veleroopsAPIProxy(t *testing.T) (proxyURL string, rec *apiRecorder) {
+	t.Helper()
+	return apiProxyAs(t, veleroopsServiceAccount)
+}
+
 // apiProxyAs est le même montage pour n'importe quel sujet — l'opérateur ou
 // l'app.
 func apiProxyAs(t *testing.T, subject string) (proxyURL string, rec *apiRecorder) {
@@ -312,6 +332,18 @@ func applyOperatorRBAC(t *testing.T, ctx context.Context, admin ctrlclient.Clien
 	// S'il en manque un — la liaison, typiquement — tout le reste de ce fichier
 	// mesurerait un opérateur sans droits, et échouerait pour la mauvaise raison.
 	applyRBACFile(t, ctx, admin, operatorRBACFile, 3)
+}
+
+// applyVeleroOpsRBAC fait la même chose pour le second binaire,
+// deploy/base/veleroops-operator-rbac.yaml. Les deux ClusterRoles sont posés
+// indépendamment — un test qui veut prouver l'un ne peut pas faire le travail
+// de l'autre pose les DEUX (voir TestOperatorRBACCannotDoVeleroOpsWork et
+// TestVeleroOpsRBACCannotDoOperatorWork) : sans le second, un refus
+// n'établirait rien, faute d'un ClusterRole en face qui aurait pu accorder le
+// droit.
+func applyVeleroOpsRBAC(t *testing.T, ctx context.Context, admin ctrlclient.Client) {
+	t.Helper()
+	applyRBACFile(t, ctx, admin, veleroopsRBACFile, 3)
 }
 
 // applyAppRBAC fait la même chose pour le ClusterRole de l'app (cmd/server).
@@ -406,9 +438,8 @@ func operatorClient(t *testing.T, proxyURL string) ctrlclient.Client {
 
 // --- le câblage de production, mais sous RBAC ------------------------------
 
-// rbacOps est fullOps — le faux qui couvre les six seams — avec les quatre
-// méthodes qui parlent RÉELLEMENT au cluster hôte rebranchées sur le vrai
-// service.
+// rbacOps est fullOps — le faux qui couvre les six seams — avec les méthodes
+// qui parlent RÉELLEMENT au cluster hôte rebranchées sur le vrai service.
 //
 // C'est le compromis assumé de ce fichier : ce qui sort du cluster (Rancher,
 // Keycloak, Vault, GitLab, Velero pendant le reconcile) reste faux, parce qu'un
@@ -433,6 +464,22 @@ func (o *rbacOps) GetProtection(ctx context.Context, name, env string) service.P
 
 func (o *rbacOps) SetProtection(ctx context.Context, actor models.Actor, name, env string, enabled bool) (service.ProtectionState, error) {
 	return o.svc.SetProtection(ctx, actor, name, env, enabled)
+}
+
+// SuspendVCluster/ResumeVCluster rebranchés aussi : `spec.suspend` suspend
+// Flux et scale le vcluster à zéro réplique (internal/service/
+// vcluster_lifecycle.go), donc c'est ici, pas sur le chemin de suppression,
+// que `patch helmreleases`/`patch kustomizations`/`patch statefulsets` sont
+// exercés pour de vrai. Les laisser sur le faux aurait fait le même trou que
+// celui déjà refermé sur InspectDeletionBackup/TriggerVeleroBackup : un test
+// qui prétend couvrir le reconcile complet sans jamais toucher l'apiserver
+// sur cette étape.
+func (o *rbacOps) SuspendVCluster(ctx context.Context, actor models.Actor, name, env string) error {
+	return o.svc.SuspendVCluster(ctx, actor, name, env)
+}
+
+func (o *rbacOps) ResumeVCluster(ctx context.Context, actor models.Actor, name, env string) error {
+	return o.svc.ResumeVCluster(ctx, actor, name, env)
 }
 
 var _ VClusterServiceOps = (*rbacOps)(nil)
@@ -489,6 +536,23 @@ func operatorReconcilerUnderRBAC(t *testing.T, proxyURL string) (*VClusterReconc
 		Cell:      "preprod",
 		Namespace: DefaultVClustersNamespace,
 	}, svc
+}
+
+// veleroopsReconcilerUnderRBAC câble VeleroOpsReconciler comme
+// cmd/veleroops-operator/main.go le fait : le VRAI service, une Deps aussi
+// maigre que celle du binaire (ni générateur, ni Keycloak, ni Rancher, ni
+// Vault — operatorService en construit déjà exactement la forme), et un
+// client controller-runtime qui n'a que les droits du ClusterRole visé par
+// proxyURL. C'est proxyURL, pas le nom de cette fonction, qui décide de
+// l'identité : appelée avec un proxy monté sur veleroopsServiceAccount, elle
+// donne le reconciler tel qu'il tourne vraiment en production.
+func veleroopsReconcilerUnderRBAC(t *testing.T, proxyURL string) *VeleroOpsReconciler {
+	t.Helper()
+	return &VeleroOpsReconciler{
+		Client: operatorClient(t, proxyURL),
+		Ops:    operatorService(t, proxyURL),
+		Cell:   "preprod",
+	}
 }
 
 // requireExercised est le garde-fou contre le vert vide : « aucun 403 » ne veut
@@ -667,6 +731,19 @@ func pvcObject(ns, name string) *unstructured.Unstructured {
 		"accessModes": []any{"ReadWriteOnce"},
 		"resources":   map[string]any{"requests": map[string]any{"storage": "1Gi"}},
 	})
+}
+
+// veleroBackupObject plante un Backup Velero déjà en phase donnée. Les CRD
+// squelettes de probeCRDs ne déclarent pas de sous-ressource status, donc
+// `status` posé à la création est bien lu — c'est ce qui permet de faire
+// passer le précheck d'une restauration in-place (createVeleroRestore exige
+// phase=="Completed") sans faire tourner Velero.
+func veleroBackupObject(ns, name, phase string) *unstructured.Unstructured {
+	obj := unstructuredObject("velero.io/v1", "Backup", ns, name, map[string]any{
+		"includedNamespaces": []any{ns},
+	})
+	obj.Object["status"] = map[string]any{"phase": phase}
+	return obj
 }
 
 // --- lecture d'un chemin d'API ---------------------------------------------

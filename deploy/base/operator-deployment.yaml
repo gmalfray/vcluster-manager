@@ -1,6 +1,13 @@
-# L'opérateur est un déploiement distinct du serveur : il ne sert pas d'humains,
-# n'a pas d'ingress et ne monte pas le PVC de données. Il réconcilie les marqueurs
-# VClusterVeleroOps dans le cluster où il tourne.
+# L'opérateur VCluster est un déploiement distinct du serveur : il ne sert pas
+# d'humains, n'a pas d'ingress et ne monte pas le PVC de données. Il réconcilie
+# la CRD VCluster dans le cluster où il tourne — sommeil, budget,
+# provisionnement, intégrations, status, suppression.
+#
+# La sauvegarde/restauration Velero à la demande (VClusterVeleroOps) est un
+# AUTRE déploiement, veleroops-operator-deployment.yaml : les deux tournaient
+# ici, dans le même pod, sous le même ServiceAccount — celui qui a `delete
+# namespaces` cluster-wide et les identifiants Vault/Keycloak/Rancher. Voir
+# cmd/operator/main.go pour le détail de la séparation.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

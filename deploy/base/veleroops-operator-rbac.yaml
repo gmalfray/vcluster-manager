@@ -1,0 +1,115 @@
+# RBAC de l'opérateur VeleroOps, dérivé de ce que VeleroOpsReconciler touche
+# réellement (internal/controller/veleroops_controller.go et l'interface
+# internal/veleroops.Ops qu'il consomme).
+#
+# Ce qu'il n'a PAS, et c'est le point du découpage (voir cmd/veleroops-operator/
+# main.go) : pas de `delete` sur les namespaces, pas de `create`/`patch` sur
+# les configmaps, pas de `vclusters`, pas de `resourcequotas`, pas de secrets
+# Vault/Keycloak/Rancher. Ce binaire ne provisionne rien, ne détruit aucun
+# namespace, ne parle à aucun système externe — il suspend Flux, scale des
+# workloads et pilote des Backup/Restore Velero DANS un namespace vcluster-*
+# qui existe déjà.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vcluster-manager-veleroops-operator
+rules:
+  # Le marqueur lui-même. Pas de `create` : l'opérateur ne fabrique pas de
+  # marqueur, il réconcilie ceux que l'app pose (séparation des rôles du
+  # design §6). Pas de `patch` sur l'objet entier non plus — le status a sa
+  # propre règle ci-dessous.
+  - apiGroups: ["vcluster.rebuild-it.fr"]
+    resources: ["vclusterveleroops"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["vcluster.rebuild-it.fr"]
+    resources: ["vclusterveleroops/status"]
+    verbs: ["get", "update", "patch"]
+
+  # Velero. Les deux ressources n'ont pas les mêmes verbes, et ça vaut la peine
+  # de le dire : TriggerVeleroBackup CRÉE un backup et GetVeleroBackupPhase en
+  # LIT un par son nom (précheck avant un restore in-place) — jamais de
+  # listage, la sauvegarde qui compte est toujours déjà nommée. Les restores,
+  # eux, se retrouvent aussi par listage (InspectInterruptedRestore, après une
+  # interruption) — `delete` sur les backups sert à DeleteVeleroBackup, appelé
+  # par l'app et non par l'opérateur — absent ici volontairement.
+  - apiGroups: ["velero.io"]
+    resources: ["backups"]
+    verbs: ["get", "create"]
+  - apiGroups: ["velero.io"]
+    resources: ["restores"]
+    verbs: ["get", "list", "create"]
+
+  # Suspendre/reprendre Flux pendant une restauration in-place (SetFluxSuspend
+  # patche le HelmRelease et la Kustomization du tenant). `patch` seulement :
+  # ce reconciler ne lit jamais ces objets pour son propre compte (le status
+  # affiché vient de cmd/operator) et ne retire pas leurs finalizers — ça,
+  # c'est CleanupNamespace, appelé depuis le teardown du CR VCluster, pas
+  # d'ici.
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["patch"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["patch"]
+
+  # Descendre le vcluster à zéro réplique avant un restore in-place, puis
+  # constater que ses pods sont bien partis (detectVClusterTopology lit les
+  # deux formes de plan de contrôle, StatefulSet en etcd embarqué ou
+  # Deployment en etcd externe). Pas de `list` : la topologie et le scale se
+  # lisent et s'écrivent toujours par un nom connu d'avance
+  # (`vcluster-<nom>`, `vcluster-<nom>-etcd`).
+  #
+  # `delete` en plus de `patch`, et c'est le correctif de la restauration
+  # in-place qui l'exige. Mettre le workload à zéro réplique ne suffisait pas :
+  # l'objet restait vivant, Velero le restaurait avec
+  # `existingResourcePolicy: update` — donc remontait les replicas — et le
+  # contrôleur Kubernetes recréait le pod LUI-MÊME, sous un nom que le
+  # `PodVolumeRestore` ne suit pas. La restauration restait alors `InProgress`
+  # indéfiniment, gelait le contrôleur Velero pour toute la plateforme, et le
+  # volume revenait VIDE faute d'init container `restore-wait`.
+  #
+  # Ce droit a été ajouté parce qu'un test l'a exigé, pas l'inverse :
+  # `TestVeleroOpsRBACLetsARestoreReconcileRun` échouait sur un 403 réel dès que
+  # le correctif est passé de `patch` à `delete`. C'est exactement ce que le
+  # dispositif de vérification RBAC existe pour attraper — ici entre deux
+  # chantiers menés en parallèle, qui ne se seraient pas vus autrement.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+
+  # Le volume : lire son état pour savoir de quel côté du point de non-retour on
+  # se trouve à la reprise (GetVClusterPVCState), et le supprimer pendant la
+  # séquence pour que Velero puisse le recréer depuis le backup. Pas de `list` :
+  # le nom du PVC se déduit de la topologie détectée, jamais listé.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "delete"]
+
+  # Élection de leader : deux pods qui se chevauchent pendant un rolling update
+  # ne doivent pas piloter la même restauration destructrice — c'est même le
+  # scénario que ce binaire existe pour éviter.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vcluster-manager-veleroops-operator
+  namespace: vcluster-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vcluster-manager-veleroops-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vcluster-manager-veleroops-operator
+subjects:
+  - kind: ServiceAccount
+    name: vcluster-manager-veleroops-operator
+    namespace: vcluster-manager

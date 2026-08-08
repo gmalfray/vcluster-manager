@@ -121,6 +121,51 @@ func TestOperatorRBACLetsAFullVClusterReconcileRun(t *testing.T) {
 	})
 }
 
+// La mise en sommeil, `spec.suspend`, avec les seuls droits du ClusterRole
+// commité.
+//
+// C'est l'étape qui a fait ajouter `patch` sur helmreleases/kustomizations/
+// statefulsets/deployments à ce ClusterRole : SuspendVCluster
+// (internal/service/vcluster_lifecycle.go) suspend Flux ET scale le vcluster
+// à zéro réplique — EXACTEMENT les deux appels que fait aussi une
+// restauration in-place, pour une raison différente. Avant ce test, ces
+// droits n'étaient exercés sous RBAC que côté cmd/veleroops-operator ; rien
+// ne prouvait que cmd/operator en avait besoin lui aussi.
+func TestOperatorRBACLetsSuspendReconcileRun(t *testing.T) {
+	ctx := context.Background()
+	admin := adminClient(t)
+	applyOperatorRBAC(t, ctx, admin)
+	installProbeCRDs(t, ctx, admin)
+
+	proxyURL, rec := operatorAPIProxy(t)
+	r, _ := operatorReconcilerUnderRBAC(t, proxyURL)
+
+	const nom = "rbac-suspend"
+	seedVClusterWorkloads(t, ctx, admin, nom)
+
+	vc := &v1alpha1.VCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: nom, Namespace: DefaultVClustersNamespace},
+		Spec:       v1alpha1.VClusterSpec{Owner: "greg", Suspend: true},
+	}
+	if err := admin.Create(ctx, vc); err != nil {
+		t.Fatalf("création du CR : %v", err)
+	}
+	t.Cleanup(func() { cleanupVCluster(t, admin, nom) })
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile de mise en sommeil refusé sous le ClusterRole de l'opérateur : %v", err)
+	}
+
+	requireNoForbidden(t, rec, operatorRBACFile)
+	requireExercised(t, rec, map[string]string{
+		"patch helmreleases":   "SuspendVCluster suspend Flux avant de descendre les répliques",
+		"patch kustomizations": "même chose, sur la Kustomization du tenant",
+		"get statefulsets":     "détection de topologie (etcd embarqué ou externe)",
+		"patch deployments":    "descente à zéro réplique du plan de contrôle (etcd externe)",
+		"patch statefulsets":   "descente à zéro réplique de l'etcd",
+	})
+}
+
 // La séquence de suppression, sous les mêmes droits.
 //
 // Elle touche ce que le chemin vivant ne touche pas : lire et retirer
@@ -244,18 +289,27 @@ func TestAppRBACCoversTheClusterCallsTheServerMakes(t *testing.T) {
 	requireNoForbidden(t, rec, appRBACFile)
 
 	requireExercised(t, rec, map[string]string{
-		"delete backups":          "la suppression d'une sauvegarde depuis l'UI",
-		"create downloadrequests": "le contenu d'un backup",
-		"patch vclusterveleroops": "l'ordre de backup/restore que l'opérateur réconcilie",
-		"update namespaces":       "le bouton de protection de namespace",
-		"update kustomizations":   "le retrait des finalizers Flux au nettoyage",
-		"get secrets":             "le kubeconfig qu'on télécharge depuis l'UI",
-		"list resourcequotas":     "l'usage des quotas affiché sur le dashboard",
+		// `velero backup delete` ne supprime pas l'objet : il crée un
+		// DeleteBackupRequest, que Velero traite pour purger le bucket PUIS
+		// retirer le Backup. Un `delete` direct laissait les données dans le
+		// bucket et l'objet revenait par la synchronisation.
+		"create deletebackuprequests": "la suppression d'une sauvegarde depuis l'UI",
+		"create downloadrequests":     "le contenu d'un backup",
+		"patch vclusterveleroops":     "l'ordre de backup/restore que l'opérateur réconcilie",
+		"update namespaces":           "le bouton de protection de namespace",
+		"update kustomizations":       "le retrait des finalizers Flux au nettoyage",
+		"get secrets":                 "le kubeconfig qu'on télécharge depuis l'UI",
+		"list resourcequotas":         "l'usage des quotas affiché sur le dashboard",
 	})
 }
 
-// Les appels que le service émet HORS du reconcile — Velero, Flux, les charges,
-// le volume, le secret de kubeconfig.
+// Les appels que le service émet HORS du reconcile — Velero, Flux, le
+// comptage de pods, le secret de kubeconfig — pour ce que cmd/operator
+// (VCluster) touche RÉELLEMENT. Avant la séparation en deux binaires, ce test
+// couvrait aussi Velero restores, le scale des workloads et la suppression de
+// volume : ces trois-là ont migré vers rbac_veleroops_test.go, avec le
+// ClusterRole qui va avec — VClusterServiceOps ne les appelle jamais (voir
+// vcluster_finalizer.go, vcluster_status.go).
 //
 // Ils ne passent pas par le client controller-runtime mais par le client
 // dynamique de internal/kubernetes, et le reconcile ne les déclenche pas sur le
@@ -289,54 +343,44 @@ func TestOperatorRBACCoversTheCallsTheServiceMakesOutsideTheReconcile(t *testing
 	// retour HTTP, via le proxy — c'est ce qui permet de couvrir aussi les
 	// fonctions qui avalent leur erreur (HostNamespaceState, CountVClusterPods)
 	// et dont un refus deviendrait un simple « je ne sais pas ».
-	_, _ = k8s.ListVeleroBackups(ctx, nom, "velero-system")
-	_, _ = k8s.CreateVeleroBackup(ctx, nom, "velero-system", "720h0m0s", "")
-	_, _ = k8s.GetVeleroBackupPhase(ctx, nom+"-manual", "velero-system")
-	_, _ = k8s.CreateVeleroRestore(ctx, nom+"-manual", "vcluster-"+nom, "vcluster-"+nom, "velero-system")
-	_, _ = k8s.GetRestoreStatus(ctx, nom+"-restore", "velero-system")
-	_, _ = k8s.ListActiveVeleroRestores(ctx, nom, "velero-system")
-	_ = k8s.SetFluxSuspend(ctx, nom, true)
-	_ = k8s.HelmReleaseExists(ctx, nom)
-	_ = k8s.ScaleVClusterWorkloads(ctx, nom, 0)
-	_, _, _ = k8s.GetVClusterPVCState(ctx, nom)
-	_ = k8s.DeleteVClusterPVC(ctx, nom)
+	_, _ = k8s.ListVeleroBackups(ctx, nom, "velero-system")                  // InspectDeletionBackup
+	_, _ = k8s.CreateVeleroBackup(ctx, nom, "velero-system", "720h0m0s", "") // TriggerVeleroBackup
+	_, _ = k8s.GetVClusterStatus(ctx, nom)                                   // status affiché : HelmRelease + Kustomization du tenant
+	_ = k8s.CleanupNamespace(ctx, nom)                                       // TeardownVCluster, retrait des finalizers Flux
 	_, _ = k8s.CountVClusterPods(ctx, nom)
 	_, _ = k8s.HostNamespaceState(ctx, nom)
 	_, _ = k8s.GetNamespaceProtection(ctx, nom)
-	_ = k8s.CleanupNamespace(ctx, nom)
 	_, _ = k8s.SumVClusterQuotaHardLimits(ctx, "")
-	_, _ = k8s.GetVeleroOpsRestoreState(ctx, nom)
 	// Le kubeconfig du vcluster vit dans un Secret du namespace hôte. C'est la
 	// PORTE d'entrée vers l'API interne — ce qui vient après (le port-forward
 	// SPDY vers le pod du plan de contrôle) n'est pas joignable hors ligne, et
 	// reste donc non couvert : voir le commentaire de tête de rbac_probe_test.go.
 	_, _ = k8s.GetKubeconfig(ctx, nom)
 
-	// Volontairement ABSENT de cette liste : RequestVeleroOps, qui patche le
-	// marqueur VClusterVeleroOps. C'est l'app qui pose l'ordre, l'opérateur qui le
-	// réconcilie — deploy/base/operator-rbac.yaml le dit et ne lui accorde donc
-	// que get/list/watch sur cette ressource. L'y avoir mis pendant l'écriture de
-	// ce test a produit un 403 immédiat : le dispositif fonctionne dans les deux
-	// sens, il attrape aussi une liste d'opérations trop large. Le refus
-	// lui-même est vérifié plus bas, par TestOperatorRBACStopsAtWhatTheDesignRefuses.
+	// Volontairement ABSENTS de cette liste, et c'est le point du découpage :
+	// GetVeleroBackupPhase, CreateVeleroRestore, GetRestoreStatus,
+	// ListActiveVeleroRestores, SetFluxSuspend, ScaleVClusterWorkloads,
+	// GetVClusterPVCState, DeleteVClusterPVC — aucun de ces appels n'est
+	// atteignable depuis VClusterServiceOps ; ils sont couverts, avec le
+	// ClusterRole de cmd/veleroops-operator, par rbac_veleroops_test.go.
+	// GetVeleroOpsRestoreState aussi : c'est cmd/server qui lit le status que
+	// l'opérateur écrit, pas l'opérateur lui-même.
 
-	requireNoForbidden(t, rec, appRBACFile)
+	requireNoForbidden(t, rec, operatorRBACFile)
 
 	requireExercised(t, rec, map[string]string{
-		"list backups":                  "la recherche de la sauvegarde qui couvre une suppression",
-		"create backups":                "la sauvegarde d'avant destruction",
-		"create restores":               "la restauration",
-		"patch helmreleases":            "la suspension de Flux pendant une restauration in-place",
-		"patch kustomizations":          "la suspension de la Kustomization du tenant",
-		"update helmreleases":           "le retrait des finalizers Flux, sans quoi le namespace reste en Terminating",
-		"get statefulsets":              "la détection de topologie (etcd embarqué ou externe)",
-		"patch statefulsets":            "la descente à zéro réplique",
-		"get persistentvolumeclaims":    "l'état du volume avant le point de non-retour",
-		"delete persistentvolumeclaims": "la suppression du volume pour que Velero le recrée",
-		"list pods":                     "le comptage des pods du vcluster",
-		"get namespaces":                "l'état du namespace hôte",
-		"get secrets":                   "le kubeconfig interne du vcluster",
-		"list resourcequotas":           "l'addition des quotas de la cell",
+		"list backups":          "InspectDeletionBackup, la recherche de la sauvegarde qui couvre une suppression",
+		"create backups":        "TriggerVeleroBackup, la sauvegarde d'avant destruction",
+		"get helmreleases":      "le status affiché (GetVClusterStatus)",
+		"get kustomizations":    "même chose, sur la Kustomization du tenant",
+		"list helmreleases":     "CleanupNamespace, avant de retirer les finalizers Flux",
+		"list kustomizations":   "même chose",
+		"update helmreleases":   "le retrait des finalizers Flux, sans quoi le namespace reste en Terminating",
+		"update kustomizations": "même chose, sur la Kustomization <nom>-apps du tenant",
+		"list pods":             "le comptage des pods du vcluster",
+		"get namespaces":        "l'état du namespace hôte",
+		"get secrets":           "le kubeconfig interne du vcluster",
+		"list resourcequotas":   "l'addition des quotas de la cell",
 	})
 }
 
@@ -376,7 +420,7 @@ func TestOperatorRBACStopsAtWhatTheDesignRefuses(t *testing.T) {
 			"rien dans le chemin de l'opérateur ne regarde les nœuds"},
 	} {
 		t.Run(cas.verbe+" "+cas.ressource, func(t *testing.T) {
-			if allowed, raison := operatorMayDo(t, ctx, admin, cas.verbe, cas.groupe, cas.ressource); allowed {
+			if allowed, raison := subjectMayDo(t, ctx, admin, operatorServiceAccount, cas.verbe, cas.groupe, cas.ressource); allowed {
 				t.Fatalf("le ClusterRole accorde `%s %s` au ServiceAccount de l'opérateur (%s).\n"+
 					"Ce droit est censé lui être refusé : %s", cas.verbe, cas.ressource, raison, cas.pourquoi)
 			}
@@ -384,12 +428,57 @@ func TestOperatorRBACStopsAtWhatTheDesignRefuses(t *testing.T) {
 	}
 }
 
-// operatorMayDo demande à l'apiserver ce qu'il répondrait, sans rien tenter.
-func operatorMayDo(t *testing.T, ctx context.Context, admin ctrlclient.Client, verbe, groupe, ressource string) (bool, string) {
+// Le vrai livrable de sécurité de ce découpage : prouver que le ServiceAccount
+// de cmd/operator ne peut PLUS faire ce que cmd/veleroops-operator fait de
+// PROPRE à lui — piloter un Restore Velero, supprimer un volume. Avant la
+// séparation, les deux tournaient dans le même pod sous le même ClusterRole,
+// donc chacun de ces refus aurait échoué.
+//
+// Ce que ce test ne dit PAS refusé, et c'est volontaire : `patch` sur
+// helmreleases/kustomizations/statefulsets/deployments. `spec.suspend`
+// (TestOperatorRBACLetsSuspendReconcileRun) suspend Flux et scale le vcluster
+// exactement comme le fait une restauration in-place — les deux binaires ont
+// chacun leur propre raison d'y toucher, et prétendre le contraire ici serait
+// un test qui ment. Ce qui reste réellement exclusif à cmd/veleroops-operator,
+// c'est le pilotage des Restore eux-mêmes et la suppression du volume.
+//
+// Les deux ClusterRoles sont posés : sans veleroops-operator-rbac.yaml, un
+// refus ne prouverait rien — il pourrait venir d'un droit qu'AUCUN des deux
+// ClusterRoles n'accorde à personne, pas d'une frontière entre eux.
+func TestOperatorRBACCannotDoVeleroOpsWork(t *testing.T) {
+	ctx := context.Background()
+	admin := adminClient(t)
+	applyOperatorRBAC(t, ctx, admin)
+	applyVeleroOpsRBAC(t, ctx, admin)
+
+	for _, cas := range []struct {
+		verbe, groupe, ressource, pourquoi string
+	}{
+		{"create", "velero.io", "restores",
+			"cet opérateur ne crée jamais de Restore — c'est le domaine de cmd/veleroops-operator"},
+		{"list", "velero.io", "restores",
+			"il ne les liste pas non plus (InspectInterruptedRestore n'est jamais appelé ici)"},
+		{"get", "velero.io", "backups",
+			"il ne lit jamais un backup par son nom — GetVeleroBackupPhase est un appel de cmd/veleroops-operator, cet opérateur ne fait que lister et créer"},
+		{"delete", "", "persistentvolumeclaims",
+			"supprimer le volume d'un vcluster pour que Velero le recrée est un geste de cmd/veleroops-operator"},
+	} {
+		t.Run(cas.verbe+" "+cas.ressource, func(t *testing.T) {
+			if allowed, raison := subjectMayDo(t, ctx, admin, operatorServiceAccount, cas.verbe, cas.groupe, cas.ressource); allowed {
+				t.Fatalf("le ClusterRole de cmd/operator accorde `%s %s` (%s).\n"+
+					"Ce droit appartient à cmd/veleroops-operator : %s", cas.verbe, cas.ressource, raison, cas.pourquoi)
+			}
+		})
+	}
+}
+
+// subjectMayDo demande à l'apiserver ce qu'il répondrait pour `subject`, sans
+// rien tenter.
+func subjectMayDo(t *testing.T, ctx context.Context, admin ctrlclient.Client, subject, verbe, groupe, ressource string) (bool, string) {
 	t.Helper()
 	sar := &authzv1.SubjectAccessReview{
 		Spec: authzv1.SubjectAccessReviewSpec{
-			User: operatorServiceAccount,
+			User: subject,
 			// Les groupes que l'apiserver ajoute lui-même à un ServiceAccount. Les
 			// omettre rendrait le test plus permissif qu'il ne doit l'être : un droit
 			// accordé via `system:serviceaccounts` passerait inaperçu.
@@ -404,7 +493,7 @@ func operatorMayDo(t *testing.T, ctx context.Context, admin ctrlclient.Client, v
 		},
 	}
 	if err := admin.Create(ctx, sar); err != nil {
-		t.Fatalf("SubjectAccessReview %s %s : %v", verbe, ressource, err)
+		t.Fatalf("SubjectAccessReview %s %s pour %s : %v", verbe, ressource, subject, err)
 	}
 	return sar.Status.Allowed, sar.Status.Reason
 }

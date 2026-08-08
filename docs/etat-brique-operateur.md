@@ -6,9 +6,23 @@
 
 ## Ce qui tourne
 
-Un opérateur controller-runtime (`cmd/operator`), deux reconcilers.
+Deux binaires controller-runtime, chacun un seul reconciler, chacun son
+ClusterRole (`deploy/base/operator-rbac.yaml` et
+`deploy/base/veleroops-operator-rbac.yaml`).
 
-`VClusterReconciler` enchaîne, dans cet ordre et pour une raison à chaque fois :
+Jusqu'ici les deux reconcilers tournaient dans le même manager, donc le même
+pod, donc le même ServiceAccount — celui qui porte `delete namespaces`
+cluster-wide (arbitrage N6, plus bas) ET les identifiants Vault, Keycloak et
+Rancher. Un pod qui exécute une restauration Velero — suspend Flux, scale un
+workload à zéro, supprime un PVC — n'a besoin d'aucun des deux. Les séparer
+resserre chaque ClusterRole à ce que son propre reconciler touche
+réellement ; `internal/controller/rbac_operator_test.go` et
+`rbac_veleroops_test.go` le prouvent par impersonation dans les deux sens,
+et pas seulement pour le premier binaire (voir plus bas, « Le RBAC ne se
+relit plus »).
+
+`cmd/operator` porte `VClusterReconciler`, qui enchaîne, dans cet ordre et
+pour une raison à chaque fois :
 
 | Étape | Fichier | Ce qu'elle fait |
 |---|---|---|
@@ -26,9 +40,23 @@ rien matérialiser qu'on refuserait ensuite ; les intégrations avant l'observat
 parce que c'est elle qui en constate le résultat, et constater avant d'agir ferait
 toujours voir l'état du passage précédent.
 
-`VeleroOpsReconciler` (`veleroops_controller.go`) porte la sauvegarde et la
-restauration à la demande, déclenchées par annotation sur la CRD marqueur
-`VClusterVeleroOps`.
+`cmd/veleroops-operator` porte `VeleroOpsReconciler`
+(`veleroops_controller.go`), qui réconcilie la sauvegarde et la restauration à
+la demande, déclenchées par annotation sur la CRD marqueur
+`VClusterVeleroOps`. Son `Deps` est délibérément plus maigre que celui de
+`cmd/operator` : ni générateur GitOps, ni client Vault/Keycloak/Rancher — ce
+reconciler ne les appelle jamais (voir l'interface `internal/veleroops.Ops`).
+
+Un recoupement réel entre les deux, découvert en écrivant les tests RBAC
+plutôt que supposé : `spec.suspend` (`SuspendVCluster`/`ResumeVCluster`,
+`internal/service/vcluster_lifecycle.go`) suspend Flux et scale le vcluster à
+zéro réplique — EXACTEMENT les deux appels que fait aussi une restauration
+in-place, pour une raison différente. Les deux ClusterRoles portent donc tous
+les deux `patch` sur `helmreleases`/`kustomizations`/`statefulsets`/
+`deployments`, chacun pour son propre motif ; ce qui reste exclusif à
+`cmd/veleroops-operator` est le pilotage des `Restore` Velero eux-mêmes et la
+suppression du volume (`create`/`list restores`, `delete
+persistentvolumeclaims`) — `TestOperatorRBACCannotDoVeleroOpsWork` le vérifie.
 
 ## Les trois règles qui gouvernent tout le code
 

@@ -75,13 +75,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Deux images depuis le même Dockerfile et le même commit : mêmes tags,
+          # Trois images depuis le même Dockerfile et le même commit : mêmes tags,
           # au même moment. La parité de version est ainsi tenue par le build, pas
           # par la discipline.
           - target: server
             image: vcluster-manager
           - target: operator
             image: vcluster-manager-operator
+          - target: veleroops-operator
+            image: vcluster-manager-veleroops-operator
 
     steps:
       - name: Checkout
