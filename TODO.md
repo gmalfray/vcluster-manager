@@ -3,6 +3,48 @@
 Backlog des évolutions à venir. Les items terminés sont archivés dans
 [`CHANGELOG.md`](CHANGELOG.md).
 
+## ArgoCD ne démarre pas dans un vcluster avec quota — hypothèse à trancher
+
+- [ ] 🔴 **À vérifier en priorité dès qu'un cluster est de nouveau disponible.**
+  Le 2026-08-08, l'activation d'ArgoCD sur `recette-restore-a` n'a rien produit :
+  les fichiers étaient bien générés dans le dépôt GitOps (22:22), mais aucune
+  Kustomization `argocd-*` n'est apparue côté hôte avant que le cluster ne
+  disparaisse. Diagnostic interrompu.
+
+  **Hypothèse, non confirmée** : le template `argocd/base` du dépôt GitOps
+  déploie le manifeste upstream d'ArgoCD, qui ne déclare **aucune `resources.requests`**.
+  Or `values.yaml.tmpl` pose un `resourceQuota` portant sur `requests.cpu`,
+  `requests.memory` et `requests.storage`. Un quota portant sur `requests.X` rend
+  la déclaration de X **obligatoire** : tout pod qui n'en déclare pas est refusé à
+  l'admission, quelle que soit la place restante. ArgoCD serait donc refusé sur
+  tout vcluster ayant un quota — pas seulement sur celui-ci.
+
+  **Ce qui la confirmerait ou l'infirmerait, et c'est le point décisif** : le
+  chart vcluster pose-t-il un `LimitRange` par défaut ? `values.yaml.tmpl` ne
+  désactive explicitement `policies.limitRange` que dans la branche `NoQuotas` ;
+  dans le cas normal, c'est le défaut du chart qui s'applique. Si ce défaut pose
+  un `LimitRange` avec des `defaultRequest`, les pods sans requests héritent de
+  valeurs et passent — l'hypothèse tombe, et la cause est ailleurs.
+
+  Vérification : créer un vcluster avec quota et ArgoCD, puis
+  `kubectl get limitrange -n vcluster-<nom>` et lire les events du namespace
+  `argocd` dans le vcluster (`must specify requests.memory` serait la preuve).
+
+  **Piste distincte, à ne pas confondre** : le dépôt GitOps de production
+  (gitlab.kosmos.fr) impose, lui, `requests.memory: 6Gi` ET `limits.memory: 6Gi`
+  au seul `argocd-application-controller` (total ArgoCD ≈ 7,2 Gi). Une `request`
+  est une réservation ferme, pas un plafond : cette valeur rend ArgoCD
+  incompatible avec tout quota inférieur à 8 Gi. Ce réglage n'existe PAS dans le
+  dépôt de recette — les deux environnements ont donc des causes d'échec
+  différentes, et il faut traiter les deux.
+
+  **Décision déjà prise** (2026-08-08) sur les deux volets, reste à implémenter :
+  descendre les requests du controller vers ~1 Gi après mesure réelle, et poser
+  un contrôle **bloquant à la création** qui refuse une combinaison
+  quota/options que le produit sait impossible, avec le minimum requis dans le
+  message. Aujourd'hui on propose une case « ArgoCD » sans jamais confronter son
+  coût au quota demandé, et l'échec qui s'ensuit est muet.
+
 ## Certificats des tenants — le solveur DNS-01 ne correspond pas à la plateforme
 
 - [ ] 🔴 **Aucun vcluster ne peut émettre de certificat sur la plateforme de
