@@ -15,6 +15,24 @@ patches:
       - op: replace
         path: /metadata/namespace
         value: vcluster-{{.Name}}
+      # Le HelmRepository jetstack est déplacé, juste en dessous, de
+      # `cert-manager` vers ce namespace. Sans réécrire aussi la référence, le
+      # HelmRelease continue de le chercher dans `cert-manager`, où il n'est
+      # plus : « HelmRepository "jetstack" not found », et cert-manager n'est
+      # jamais installé dans le vcluster — donc aucun certificat pour les
+      # ingress du tenant.
+      #
+      # Le défaut ne se voit pas à la création : le vcluster démarre, la
+      # Kustomization s'applique, seul un HelmRelease reste en échec dans un
+      # namespace que personne ne regarde. Trouvé en inspectant les
+      # réconciliations du cluster, pas par un test.
+      #
+      # Le HelmRelease cert-manager-webhook-gandi plus bas n'a pas besoin du
+      # même traitement : son sourceRef ne porte pas de namespace, il résout
+      # donc dans celui du HelmRelease, qui est déjà réécrit.
+      - op: replace
+        path: /spec/chart/spec/sourceRef/namespace
+        value: vcluster-{{.Name}}
       - op: add
         path: /spec/kubeConfig
         value:

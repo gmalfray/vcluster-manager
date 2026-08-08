@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
+	"gopkg.in/yaml.v3"
 )
 
 // testConfig returns a GeneratorConfig with realistic but fake values for tests.
@@ -569,5 +570,80 @@ func TestGenerateUpdatedValues_WithK8sVersion(t *testing.T) {
 
 	if !strings.Contains(f.Content, "version: \"1.31.0\"") {
 		t.Errorf("updated values should contain k8s version, got:\n%s", f.Content)
+	}
+}
+
+// --- cert-manager: les références suivent les objets déplacés ---
+
+// TestGenerateVCluster_CertManagerSourceRefFollowsTheMovedRepository verrouille
+// un défaut trouvé en observant les réconciliations d'un cluster, pas en lisant
+// le code : cert-manager n'était installé dans AUCUN vcluster.
+//
+// L'overlay déplace le HelmRepository « jetstack » du namespace `cert-manager`
+// vers celui du vcluster. Le HelmRelease, lui, gardait un sourceRef pointant sur
+// `cert-manager` — il cherchait donc son dépôt là où il n'était plus, échouait
+// sur « HelmRepository "jetstack" not found », et le tenant se retrouvait sans
+// cert-manager, donc sans certificat pour ses ingress.
+//
+// Rien ne le signalait à la création : le vcluster démarre, la Kustomization
+// s'applique, seul un HelmRelease reste en échec dans un namespace que personne
+// ne regarde.
+//
+// Le test porte sur l'invariant, pas sur la ligne : un objet déplacé et les
+// références qui le désignent doivent atterrir dans le même namespace.
+func TestGenerateVCluster_CertManagerSourceRefFollowsTheMovedRepository(t *testing.T) {
+	g := NewGenerator(testConfig())
+	files := g.GenerateVCluster(&models.CreateRequest{Name: "myvc"}, "preprod")
+
+	var content string
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, "tenant/cert-manager/kustomization.yaml") {
+			content = f.Content
+			break
+		}
+	}
+	if content == "" {
+		t.Fatal("tenant/cert-manager/kustomization.yaml not generated")
+	}
+
+	var k struct {
+		Patches []struct {
+			Target struct {
+				Kind      string `yaml:"kind"`
+				Name      string `yaml:"name"`
+				Namespace string `yaml:"namespace"`
+			} `yaml:"target"`
+			Patch string `yaml:"patch"`
+		} `yaml:"patches"`
+	}
+	if err := yaml.Unmarshal([]byte(content), &k); err != nil {
+		t.Fatalf("parsing generated kustomization: %v", err)
+	}
+
+	const wantNS = "vcluster-myvc"
+
+	// Où atterrit le HelmRepository jetstack.
+	repoMoved := false
+	for _, p := range k.Patches {
+		if p.Target.Kind == "HelmRepository" && p.Target.Name == "jetstack" &&
+			strings.Contains(p.Patch, "/metadata/namespace") && strings.Contains(p.Patch, wantNS) {
+			repoMoved = true
+		}
+	}
+	if !repoMoved {
+		t.Fatalf("the jetstack HelmRepository is no longer moved to %s — this test's premise is gone, re-read it", wantNS)
+	}
+
+	// La référence qui le désigne doit suivre.
+	refFollows := false
+	for _, p := range k.Patches {
+		if p.Target.Kind == "HelmRelease" && p.Target.Name == "cert-manager" &&
+			strings.Contains(p.Patch, "/spec/chart/spec/sourceRef/namespace") && strings.Contains(p.Patch, wantNS) {
+			refFollows = true
+		}
+	}
+	if !refFollows {
+		t.Errorf("the jetstack HelmRepository is moved to %s but the cert-manager HelmRelease still looks for it elsewhere: "+
+			"the release fails with 'HelmRepository \"jetstack\" not found' and the tenant gets no cert-manager", wantNS)
 	}
 }
