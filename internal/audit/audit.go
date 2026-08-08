@@ -16,9 +16,7 @@ import (
 // in the service layer should use LogActor instead, passing an already-resolved
 // username so it does not depend on *http.Request.
 func Log(r *http.Request, action, name, env string, extra ...string) {
-	user := auth.UserFromRequest(r)
-	username, _ := user["name"].(string)
-	LogActor(username, action, name, env, extra...)
+	LogActor(auth.ActorUsername(r), action, name, env, extra...)
 }
 
 // LogActor is the transport-agnostic audit entry point: the caller supplies

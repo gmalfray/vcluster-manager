@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 )
 
@@ -85,6 +86,13 @@ func (h *Handlers) UpdateClusterConfig(w http.ResponseWriter, r *http.Request) {
 
 	// Persist config (always, even if client init fails later)
 	h.cfg.SetClusterConfig(env, kubeconfigPath, currentSSHTunnel, sshKeyPath)
+
+	// Changing which cluster the app talks to is one of the most sensitive
+	// things it can do — log it regardless of whether the client connects
+	// afterwards. No file contents here, only what changed.
+	audit.Log(r, "update-cluster-config", "", env,
+		fmt.Sprintf("kubeconfig_uploaded=%v ssh_key_uploaded=%v ssh_target=%q cluster_label=%q",
+			kubeconfigPath != currentKubeconfig, sshKeyPath != currentSSHKey, sshTarget, clusterLabel))
 
 	// Try to initialize K8s client (non-blocking: save succeeds even if connection fails)
 	if kubeconfigPath != "" {

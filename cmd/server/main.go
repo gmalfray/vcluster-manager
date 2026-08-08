@@ -295,7 +295,16 @@ func run() error {
 	if cfg.AdminPassword != "" && cfg.JWTSecret != "" {
 		localAuth = auth.NewLocalAuth(cfg.AdminPassword, cfg.JWTSecret, templateDir, oidcAuth != nil)
 		http.HandleFunc("GET /auth/login", localAuth.LoginPageHandler())
-		http.HandleFunc("POST /auth/local/login", localAuth.LoginHandler())
+		// POST /auth/local/login is the only place in the app where a secret gets
+		// guessed, so it gets its own, much tighter bucket than the 20 req/s
+		// global limit — that limit is sized for normal UI traffic, not for
+		// slowing down a password-guessing loop. 1 req/s with a burst of 5 still
+		// lets a real user mistype their password a few times in a row, but caps
+		// sustained guessing at roughly what the /metrics limiter caps scraping.
+		// It also gets the CSRF check the default mux skips (see LoginPageHandler,
+		// which now poses the csrf_token cookie and hands it to the form).
+		loginLimiter := auth.NewRateLimiter(rate.Limit(1), 5)
+		http.Handle("POST /auth/local/login", loginLimiter.Middleware(auth.CSRFMiddleware(localAuth.LoginHandler())))
 		slog.Info("local admin authentication enabled")
 	} else if oidcAuth != nil {
 		// OIDC only: login redirects to SSO directly

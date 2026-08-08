@@ -35,9 +35,7 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 			// Ensure the cookie exists so HTMX can read it after the first page load.
-			if csrfCookieValue(r) == "" {
-				http.SetCookie(w, newCSRFCookie(generateCSRFToken()))
-			}
+			EnsureCSRFCookie(w, r)
 			next.ServeHTTP(w, r)
 
 		default:
@@ -64,6 +62,20 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		}
 	})
+}
+
+// EnsureCSRFCookie makes sure the csrf_token cookie is set on the response,
+// creating one if the request doesn't already carry it, and returns its
+// value. Shared by CSRFMiddleware (every GET) and the local login page,
+// which renders outside the protected mux and needs to hand the token to its
+// form.
+func EnsureCSRFCookie(w http.ResponseWriter, r *http.Request) string {
+	if token := csrfCookieValue(r); token != "" {
+		return token
+	}
+	token := generateCSRFToken()
+	http.SetCookie(w, newCSRFCookie(token))
+	return token
 }
 
 func csrfCookieValue(r *http.Request) string {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/service"
 	"gopkg.in/yaml.v3"
 )
@@ -37,6 +38,7 @@ func (h *Handlers) RetryVaultSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	audit.Log(r, "vault-setup-retry", name, env)
 	go h.setupVaultAuthWhenReady(name, env)
 	h.renderToast(w, "success", fmt.Sprintf("Setup Vault relance pour %s (%s)", name, env))
 }
@@ -214,6 +216,7 @@ func (h *Handlers) CreateProdMR(w http.ResponseWriter, r *http.Request) {
 		h.renderToast(w, "error", fmt.Sprintf("Erreur création MR : %v", err))
 		return
 	}
+	audit.Log(r, "create-prod-mr", name, "prod", "mr_url="+mrURL)
 	h.redirectWithFlash(w, fmt.Sprintf("/vclusters/%s?env=prod", name), "success", fmt.Sprintf("MR créée : %s", mrURL))
 }
 

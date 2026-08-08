@@ -41,6 +41,7 @@
             {{end}}
 
             <form action="/auth/local/login" method="POST" class="space-y-4">
+                <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
                 <div>
                     <label for="username" class="wf-form-label">Utilisateur</label>
                     <input type="text" name="username" id="username" required autofocus
