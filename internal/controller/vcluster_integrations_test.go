@@ -101,6 +101,12 @@ func (f *fakeIntegrationOps) counts() (vaultAuth, vaultWebhook, configure, keycl
 
 var _ VClusterIntegrationOps = (*fakeIntegrationOps)(nil)
 
+// Observation, provisionnement, quotas et suppression sont hérités de
+// fakeVClusterOps sans être redéfinis : ces tests appellent reconcileIntegrations
+// directement, jamais Reconcile(), donc aucun des quatre autres seams n'est
+// atteint — ils n'existent que pour que ce faux compile contre VClusterServiceOps.
+var _ VClusterServiceOps = (*fakeIntegrationOps)(nil)
+
 func condOf(vc *v1alpha1.VCluster, condType string) *metav1.Condition {
 	for i := range vc.Status.Conditions {
 		if vc.Status.Conditions[i].Type == condType {
@@ -528,28 +534,12 @@ func TestReconcileIntegrations_KeepsTheShortestRequeue(t *testing.T) {
 	}
 }
 
-// Un faux de test qui n'implémente pas VClusterIntegrationOps ne doit ni
-// planter le reconcile, ni écrire de condition : une condition absente est
-// déjà traitée comme « cette étape n'a pas encore tourné » par
-// aggregateVClusterStatus (même principe que ArgoCDReady), donc inventer un
-// Unknown ici bloquerait Ready pour tous les faux voisins qui ne portent pas
-// ce seam.
-func TestReconcileIntegrations_DegradesSilentlyWhenSeamMissing(t *testing.T) {
-	ops := &fakeVClusterOps{} // n'implémente que Suspend/Resume
-	r := &VClusterReconciler{Ops: ops, Cell: "prod"}
-	vc := newVCluster("sans-seam", nil)
-
-	requeue, err := r.reconcileIntegrations(context.Background(), vc)
-	if err != nil {
-		t.Fatalf("erreur inattendue : %v", err)
-	}
-	if requeue != 0 {
-		t.Fatalf("requeue = %v, attendu 0", requeue)
-	}
-	if len(vc.Status.Conditions) != 0 {
-		t.Fatalf("conditions écrites alors que le seam est absent : %+v", vc.Status.Conditions)
-	}
-}
+// Il y avait ici TestReconcileIntegrations_DegradesSilentlyWhenSeamMissing, qui
+// posait un faux n'implémentant pas VClusterIntegrationOps comme `r.Ops` et
+// vérifiait que reconcileIntegrations dégradait sans rien écrire. r.Ops est
+// maintenant VClusterServiceOps (vcluster_controller.go), l'union des six seams :
+// un tel faux ne compile plus contre ce champ, le scénario n'est plus
+// atteignable. Voir le commentaire équivalent dans interactions_test.go.
 
 // --- Bout-en-bout : le câblage dans reconcileAll (vcluster_controller.go) --
 //
@@ -595,6 +585,13 @@ var (
 	_ VClusterProvisioner    = (*fakeEndToEndOps)(nil)
 	_ VClusterObserver       = (*fakeEndToEndOps)(nil)
 	_ VClusterIntegrationOps = (*fakeEndToEndOps)(nil)
+
+	// QuotaResolver et VClusterDeletionOps viennent de fakeVClusterOps sans être
+	// redéfinis : aucun test bout-en-bout ci-dessous ne configure BudgetOps ni ne
+	// supprime le CR, donc EffectiveQuotas et les neuf méthodes de suppression ne
+	// sont jamais atteintes — elles n'existent que pour que ce faux compile
+	// contre VClusterServiceOps.
+	_ VClusterServiceOps = (*fakeEndToEndOps)(nil)
 )
 
 // Vault qui attend son webhook (requeue 10s) doit imposer son rythme au

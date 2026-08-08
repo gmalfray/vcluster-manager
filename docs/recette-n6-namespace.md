@@ -494,3 +494,110 @@ No-Go si l'un de ceux-ci se produit :
   non déterministe : s'il n'est pas obtenu, l'écrire comme non vérifié plutôt que comme
   vérifié.
 - **La prod.** Rien ici ne s'y transpose tel quel.
+
+## VAP namespaces — durcissement N6, à recetter séparément
+
+> Ajouté après le passage ci-dessus. Périmètre :
+> `deploy/base/operator-admission-policy.yaml`, deux
+> `ValidatingAdmissionPolicy` + leur binding, qui referment ce que
+> `operator-rbac.yaml` documente comme non borné (voir son commentaire sur la
+> règle `namespaces`). Rien de cette section n'a tourné contre un vrai
+> apiserver : `kustomize build` passe sur `deploy/base` et chaque overlay,
+> les expressions CEL sont relues à la main contre la doc de la bibliothèque
+> CEL Kubernetes (`has`, `startsWith`, `matches`, `oldObject`, `request.userInfo` —
+> tous documentés, aucun compilé ici faute d'apiserver 1.35 accessible). Ce qui
+> suit est donc à vérifier, pas à supposer acquis.
+
+### Ce que la recette doit confirmer
+
+1. **La policy 1 (namespaces) compile et se lie.** `kubectl get
+   validatingadmissionpolicy vcluster-manager-operator-namespace-scope -o
+   yaml` doit montrer un statut sans erreur de type CEL (`status.conditions`
+   côté policy, disponible depuis que le compilateur CEL rapporte les
+   policies mal formées à l'admission plutôt qu'au premier appel).
+2. **Un DELETE de namespace `vcluster-*` non labellisé par l'opérateur, tenté
+   sous son identité, est journalisé mais pas bloqué** (validationActions
+   actuel : `Warn, Audit` — voir le commentaire du fichier pour le
+   raisonnement). Reproduire depuis un pod qui usurpe le ServiceAccount de
+   l'opérateur, ou en relisant les logs du pod opérateur pendant un cycle de
+   reconcile normal sur un vcluster fraîchement créé (son namespace naît sans
+   label le temps d'un très court instant selon l'ordre exact SSA vs. CRD
+   admission — à observer, pas supposé).
+3. **Le passage à `Deny`, une fois fait, bloque réellement** : reproduire la
+   séquence N6 (cas A du plan ci-dessus) après le switch, vérifier que rien
+   ne casse pour un vcluster créé après le switch, et tenter — dans un
+   environnement jetable, jamais en prod — de supprimer un namespace
+   `vcluster-*` non labellisé sous l'identité de l'opérateur : la requête doit
+   être refusée avec le message de la policy, pas un 500 générique.
+4. **La policy 2 (nom des `VCluster`) refuse à la création**, pas seulement
+   en CEL sur la CRD : `kubectl create -f` un CR avec un nom de 60 caractères,
+   un nom commençant par un chiffre, et `manager` — chacun doit être rejeté,
+   idéalement avec les deux messages (CRD *et* VAP) si l'ordre d'évaluation
+   les fait apparaître tous les deux dans la réponse de l'apiserver.
+
+### Procédure de ré-étiquetage de la flotte historique
+
+Un vcluster de la flotte historique n'a jamais été appliqué par
+`gitops.hostNamespace()` : son namespace n'a jamais porté le label
+`vcluster.rebuild-it.fr/managed-namespace`, et rien ne le relabellise tout
+seul puisqu'aucun CR ne le fait reconcilier. **Ne pas relabelliser
+en masse par réflexe** — l'absence du label est précisément ce qui protège ces
+namespaces tant qu'on n'a pas décidé, vcluster par vcluster, qu'ils sont
+légitimement sous la garde de l'opérateur (typiquement : au moment où on leur
+crée enfin un CR pour les adopter, ce qui les relabellise tout seul au
+premier reconcile — pas besoin de la commande manuelle dans ce cas précis).
+
+La commande manuelle ne sert que si on veut autoriser l'opérateur à agir
+*avant* qu'un CR existe — par exemple un script de nettoyage exécuté sous
+l'identité de son ServiceAccount :
+
+```bash
+kubectl label namespace vcluster-<nom> \
+  vcluster.rebuild-it.fr/managed-namespace=true --overwrite
+```
+
+Pour toute la flotte, préfixe par préfixe (à ne lancer qu'après avoir listé
+et fait valider la liste des noms par quelqu'un qui connaît la flotte —
+ce n'est pas un geste à automatiser en aveugle) :
+
+```bash
+for ns in $(kubectl get ns -o name | grep '^namespace/vcluster-' \
+    | sed 's#namespace/##' | grep -v '^vcluster-manager$'); do
+  echo "à relabelliser : $ns"   # vérifier la liste avant de retirer l'echo
+  # kubectl label ns "$ns" vcluster.rebuild-it.fr/managed-namespace=true --overwrite
+done
+```
+
+**Sans ce geste, une fois la policy passée en `Deny` :** l'opérateur ne peut
+plus ni mettre à jour ni supprimer le namespace d'un vcluster historique.
+Concrètement, s'il n'a pas de CR, ça ne change rien à son fonctionnement
+(rien ne l'a jamais fait reconcilier). Le risque est ailleurs : si quelqu'un
+crée *plus tard* un CR portant ce nom pour l'adopter, `reconcileProvisioning`
+pourra toujours appliquer son namespace (SSA sur un objet dont l'oldObject
+n'a pas le label — refusé en `Deny`), donc l'adoption échouera en
+`ApplyFailed` jusqu'à ce que quelqu'un le relabellise à la main *avant* de
+créer le CR. Ce n'est pas un piège caché : c'est le comportement voulu, mais
+il faut le savoir avant de tenter une adoption en prod.
+
+### Le déploiement en deux temps, et pourquoi il n'est pas optionnel
+
+Constat qui a changé le fichier livré : la validation lit `oldObject` aussi
+bien sur `UPDATE` que sur `DELETE` (raison expliquée dans le commentaire du
+fichier — sinon un `UPDATE` qui pose le label ET agit dessus dans le même
+appel s'auto-validerait, ce qui rouvrirait le trou). Conséquence non prévue
+au départ : **le tout premier reconcile de chaque vcluster VIVANT après le
+déploiement de cette VAP est, lui aussi, un `UPDATE` dont l'`oldObject` ne
+porte pas encore le label** — puisque personne ne l'a jamais posé avant ce
+changement. En `Deny` d'entrée de jeu, ce premier passage échouerait
+`ApplyFailed` pour **toute la flotte gérée**, pas seulement les orphelins.
+
+D'où le choix livré : `validationActions: ["Warn", "Audit"]` au premier
+déploiement. Cette action ne bloque rien — le label se pose lors du même
+reconcile qui aurait échoué en `Deny`, et la flotte vivante se relabellise
+seule, sans commande manuelle. Le passage à `Deny` est documenté dans le
+fichier (patch du binding, ou commit GitOps) et doit attendre d'avoir
+confirmé, sur un cycle de reconcile complet, qu'aucun vcluster attendu ne
+déclenche plus l'avertissement. **Ce mécanisme d'observation
+(logs du pod opérateur, ou audit apiserver) n'a pas été vérifié ici** — à
+faire au point 2 ci-dessus avant de faire confiance à la procédure de switch
+décrite dans le fichier.

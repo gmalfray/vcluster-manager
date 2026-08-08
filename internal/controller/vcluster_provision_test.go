@@ -26,6 +26,7 @@ type fakeProvisioner struct {
 	gen        *gitops.Generator
 	renderErr  error
 	renderCall int
+	quotaErr   error
 }
 
 // ObserveVCluster fait de ce faux un observateur en plus d'un provisionneur.
@@ -60,7 +61,14 @@ func newFakeProvisioner() *fakeProvisioner {
 // EffectiveQuotas délègue au VRAI générateur, comme le rendu : c'est toute la
 // raison d'être de ce seam — le budget et le provisionnement doivent lire la même
 // règle, donc un faux qui recalculerait la sienne ne prouverait rien.
+//
+// quotaErr, quand il est posé, simule le générateur qui échoue à résoudre le
+// quota effectif — pas un seam absent (impossible à obtenir maintenant que
+// r.Ops est VClusterServiceOps), une vraie panne de la résolution elle-même.
 func (f *fakeProvisioner) EffectiveQuotas(req *models.CreateRequest, env string) (string, string, string, bool, error) {
+	if f.quotaErr != nil {
+		return "", "", "", false, f.quotaErr
+	}
 	subs := f.gen.Substitutions(req, env, "")
 	return subs["QUOTA_CPU"], subs["QUOTA_MEMORY"], subs["QUOTA_STORAGE"],
 		subs["QUOTAS_ENABLED"] == "true", nil
@@ -81,6 +89,11 @@ func (f *fakeProvisioner) RenderVClusterSubstitutions(req *models.CreateRequest,
 }
 
 var _ VClusterProvisioner = (*fakeProvisioner)(nil)
+
+// Les intégrations et la suppression sont héritées de fakeVClusterOps (santé
+// par défaut / panics inatteignables) : ces tests portent sur le
+// provisionnement, pas sur ces deux seams.
+var _ VClusterServiceOps = (*fakeProvisioner)(nil)
 
 func newProvisioningVCluster(t *testing.T, ctx context.Context, name string, spec v1alpha1.VClusterSpec) *v1alpha1.VCluster {
 	t.Helper()

@@ -299,7 +299,19 @@ type VClusterStatus struct {
 // et le test TestNameThatResolvesToTheOperatorNamespaceIsRefused garde l'autre
 // moitié de la paire.
 //
+// La forme du nom est vérifiée au même endroit, pour la même raison : un CR
+// refusé par le contrôleur après avoir passé l'admission laisse un
+// `Accepted=False` qui traîne, plutôt qu'un refus net au `kubectl apply`. La
+// règle doit rester d'accord avec service.ValidName (internal/service/vcluster.go) —
+// audit N6, TODO.md.
+//
+// 54 n'est pas arbitraire : un namespace Kubernetes est une étiquette DNS
+// RFC 1123, plafonnée à 63 caractères. Le préfixe "vcluster-" en consomme 9,
+// il reste donc 63 - 9 = 54 pour le nom du vcluster lui-même. `{0,53}` après le
+// premier caractère obligatoire fait bien 1 + 53 = 54 au total.
+//
 // +kubebuilder:validation:XValidation:rule="self.metadata.name != 'manager'",message="nom réservé : « vcluster-manager » est le namespace de l'application, un vcluster portant ce nom ferait de l'opérateur la cible de ses propres sauvegardes et suppressions"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9-]{0,53}$')",message="nom invalide : doit commencer par une lettre minuscule, ne contenir ensuite que des lettres minuscules, des chiffres et des tirets, et ne pas dépasser 54 caractères — vcluster-<nom> doit tenir dans la limite de 63 caractères d'un nom de namespace Kubernetes"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=vc

@@ -52,8 +52,9 @@ const ProvisionFieldManager = "vcluster-manager-operator"
 // VClusterProvisioner rend les objets que l'opérateur applique lui-même.
 //
 // Déclaré ici, là où il est consommé, comme VClusterOps et BudgetReader.
-// L'implémentation de production est *service.Service ; l'assertion ci-dessous
-// le prouve à la compilation.
+// r.Ops est typé VClusterServiceOps (vcluster_controller.go), qui embarque
+// cette interface avec les cinq autres : reconcileProvisioning ci-dessous lit
+// directement r.Ops, sans assertion de type.
 type VClusterProvisioner interface {
 	RenderVClusterSubstitutions(req *models.CreateRequest, env, k8sVersion string) ([]*unstructured.Unstructured, error)
 }
@@ -112,19 +113,7 @@ func (r *VClusterReconciler) reconcileProvisioning(ctx context.Context, vc *v1al
 		return false, nil
 	}
 
-	provisioner, ok := r.Ops.(VClusterProvisioner)
-	if !ok {
-		// En production c'est impossible : l'assertion de compilation ci-dessus
-		// garantit que *service.Service satisfait l'interface. Le cas n'existe que
-		// pour un double de test qui ne couvre pas le provisionnement, d'où une
-		// condition plutôt qu'une erreur — mais une condition visible, pas un
-		// silence.
-		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionFalse, "RendererUnavailable",
-			"cet opérateur n'a pas de générateur : rien n'est provisionné")
-		return false, nil
-	}
-
-	objects, err := provisioner.RenderVClusterSubstitutions(createRequestFromCR(vc), r.Cell, vc.Spec.K8sVersion)
+	objects, err := r.Ops.RenderVClusterSubstitutions(createRequestFromCR(vc), r.Cell, vc.Spec.K8sVersion)
 	if err != nil {
 		return false, r.provisionFailed(ctx, vc, "RenderFailed", err)
 	}

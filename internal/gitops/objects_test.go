@@ -170,6 +170,22 @@ func TestValuesConfigMapMatchesTheGeneratedOne(t *testing.T) {
 	}
 }
 
+// Le namespace hôte porte le label que la ValidatingAdmissionPolicy
+// (deploy/base/operator-admission-policy.yaml) exige pour laisser l'opérateur
+// le modifier ou le supprimer. Sans lui, un namespace appliqué par l'opérateur
+// resterait aussi bloqué que la flotte historique qu'on cherche à exclure.
+func TestHostNamespaceCarriesTheManagedLabel(t *testing.T) {
+	ns := HostNamespace("myvc")
+	if ns.GetKind() != "Namespace" || ns.GetName() != "vcluster-myvc" {
+		t.Fatalf("namespace = %s %q, attendu Namespace vcluster-myvc", ns.GetKind(), ns.GetName())
+	}
+	labels := ns.GetLabels()
+	if labels["vcluster.rebuild-it.fr/managed-namespace"] != "true" {
+		t.Fatalf("label vcluster.rebuild-it.fr/managed-namespace = %q, attendu \"true\" (labels = %v)",
+			labels["vcluster.rebuild-it.fr/managed-namespace"], labels)
+	}
+}
+
 func TestVeleroTTLFromShort(t *testing.T) {
 	tests := map[string]string{
 		"30j": "720h0m0s", "12h": "12h0m0s", "90m": "0h90m0s",

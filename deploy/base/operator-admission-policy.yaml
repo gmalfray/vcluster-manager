@@ -1,0 +1,168 @@
+# Resserre deux droits que RBAC ne peut pas borner sur des ressources
+# cluster-scoped : le `delete`/`update` de l'opérateur sur les namespaces
+# (arbitrage N6, cf. operator-rbac.yaml) et le nom qu'un `VCluster` peut
+# prendre à la création. Contexte complet : docs/etat-brique-operateur.md
+# §« Arbitrages rendus », TODO.md §« Opérateur — durcissement issu de
+# l'audit N6 ».
+#
+# Une ValidatingAdmissionPolicy sans ValidatingAdmissionPolicyBinding ne
+# s'applique à personne — les deux vont toujours par paire ici.
+
+# --- 1. Namespaces : seule l'identité de l'opérateur est concernée --------
+#
+# Le ClusterRole vcluster-manager-operator a delete/update/patch sur
+# `namespaces`, cluster-wide (RBAC ne sait pas écrire "seulement les
+# namespaces vcluster-<nom> que TU as créés" sur une ressource sans
+# namespace). Cette policy referme l'écart : elle ne filtre PAS par nom de
+# ressource dans matchConstraints (impossible de toute façon), elle filtre
+# par IDENTITÉ dans matchConditions, puis vérifie l'objet dans validations.
+#
+# Le filtre porte sur le ServiceAccount de l'opérateur — un humain avec ses
+# propres droits (kubectl en cluster-admin pour dépanner) n'est pas concerné,
+# et ce n'est pas le rôle de cette policy de le contraindre.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: vcluster-manager-operator-namespace-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: only-the-operator-service-account
+      expression: >-
+        request.userInfo.username == 'system:serviceaccount:vcluster-manager:vcluster-manager-operator'
+  validations:
+    # oldObject, jamais object, et sur UPDATE comme sur DELETE.
+    #
+    # object est ce que LA REQUÊTE EN COURS demande. Si l'UPDATE se validait
+    # sur object, la séquence d'attaque qu'on ferme resterait ouverte en deux
+    # temps au lieu d'un : créer un CR homonyme d'un namespace orphelin,
+    # laisser reconcileProvisioning le réappliquer en SSA — cette UPDATE
+    # porterait déjà le label dans son propre payload, donc passerait — puis
+    # laisser le finalizer le supprimer juste après, avec cette fois un
+    # oldObject qui porte le label posé par l'étape précédente. Le contrôle
+    # aurait fini par valider les deux appels sans qu'aucun tiers n'ait jamais
+    # labellisé ce namespace.
+    #
+    # D'où : le label doit avoir été là AVANT cette requête précise, posé par
+    # un geste antérieur et distinct — hostNamespace() à la création du
+    # namespace, ou un ré-étiquetage manuel pour la flotte historique
+    # (procédure : docs/recette-n6-namespace.md).
+    - expression: >-
+        has(oldObject.metadata.labels) &&
+        oldObject.metadata.labels['vcluster.rebuild-it.fr/managed-namespace'] == 'true' &&
+        oldObject.metadata.name.startsWith('vcluster-') &&
+        oldObject.metadata.name != 'vcluster-manager'
+      message: >-
+        l'opérateur ne peut modifier ou supprimer que les namespaces
+        vcluster-<nom> qu'il a lui-même posés (label
+        vcluster.rebuild-it.fr/managed-namespace=true) — jamais
+        vcluster-manager, jamais un namespace hors de ce préfixe, jamais un
+        namespace vcluster-* qui n'a pas encore ce label (flotte historique
+        sans CR : voir la procédure de ré-étiquetage avant de l'exposer à
+        l'opérateur).
+---
+# Warn+Audit au premier déploiement, PAS Deny — et c'est un choix, pas un
+# oubli. La validation ci-dessus lit oldObject sur UPDATE comme sur DELETE
+# (raison donnée plus haut) : ça veut dire que le tout premier Server-Side
+# Apply du namespace de CHAQUE vcluster PILOTÉ PAR UN CR VIVANT — pas
+# seulement la flotte historique — sera lui aussi un UPDATE dont l'oldObject
+# ne porte pas encore le label, puisque personne ne l'a jamais posé avant ce
+# changement. En Deny, ce premier passage échouerait pour toute la flotte
+# gérée : ApplyFailed, Ready=False, sur chaque vcluster existant, en même
+# temps, au prochain reconcile après le déploiement de cette policy.
+#
+# En Warn+Audit, ce même appel PASSE (l'action ne bloque rien, elle journalise
+# et renvoie un warning au client) — et comme il pose le label demandé par
+# hostNamespace() dans le même geste, le namespace de chaque vcluster vivant
+# se ré-étiquette tout seul, gratuitement, à son prochain reconcile. Aucune
+# commande de ré-étiquetage manuelle n'est nécessaire pour la flotte pilotée
+# par un CR : c'est le contrôleur qui s'en charge dès qu'il est redéployé
+# avec le label dans gitops.hostNamespace().
+#
+# Reste hors de cette auto-réparation : la flotte historique SANS CR. Rien
+# ne la fait jamais reconcilier, donc rien ne la relabellise — c'est
+# volontaire (voir docs/recette-n6-namespace.md). Le passage à Deny se fait
+# une fois confirmé, sur un cycle de reconcile complet (quelques minutes),
+# qu'aucun signal de refus potentiel ne porte plus sur un vcluster qu'on
+# s'attend à voir géré. Deux façons de le lire, ni l'une ni l'autre testée ici
+# faute d'apiserver — à confirmer en recette :
+#
+#   - l'action Warn renvoie l'avertissement au client qui a fait l'appel ;
+#     client-go journalise les warnings API server par défaut, donc les logs
+#     du pod opérateur devraient montrer le message de la policy pour chaque
+#     namespace pas encore relabellisé :
+#       kubectl -n vcluster-manager logs deploy/vcluster-manager-operator \
+#         | grep 'vcluster.rebuild-it.fr/managed-namespace'
+#     Plus rien ne doit apparaître une fois la flotte vivante relabellisée.
+#   - l'action Audit ajoute une annotation d'audit (clé du type
+#     validation.policy.admission.k8s.io/validation_failure) aux événements
+#     d'audit de l'apiserver, si l'audit logging est activé sur le cluster —
+#     à vérifier avant de compter dessus, ça dépend de la configuration du
+#     cluster hôte.
+#
+# puis, une fois confirmé :
+#
+#   kubectl patch validatingadmissionpolicybinding \
+#     vcluster-manager-operator-namespace-scope --type=merge \
+#     -p '{"spec":{"validationActions":["Deny"]}}'
+#
+# ou, en GitOps, en repassant cette ligne à ["Deny"] dans un commit dédié.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: vcluster-manager-operator-namespace-scope
+spec:
+  policyName: vcluster-manager-operator-namespace-scope
+  validationActions: ["Warn", "Audit"]
+---
+# --- 2. Nom des VCluster à la création --------------------------------
+#
+# Referme en amont ce que la règle 1 borne en aval : sans contrainte sur
+# `metadata.name`, un CR peut prendre n'importe quel nom, y compris celui
+# d'un namespace vcluster-<nom> de la flotte historique — c'est la
+# précondition de l'attaque décrite dans operator-rbac.yaml (créer le CR,
+# laisser reconcileProvisioning provisionner puis le finalizer détruire).
+#
+# Volontairement redondant avec la règle CEL portée par la CRD
+# (config/crd/vcluster.rebuild-it.fr_vclusters.yaml, hors périmètre de ce
+# changement — un autre chantier la fait converger sur le même motif). Deux
+# lecteurs indépendants du même nom : si l'un dérive de la CRD, l'autre tient
+# encore. Ce n'est pas une garde-fou en double, c'est ne pas miser toute la
+# protection sur un seul fichier.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: vcluster-manager-vcluster-name
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["vcluster.rebuild-it.fr"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE"]
+        resources: ["vclusters"]
+  validations:
+    # 54 = limite du suffixe de namespace après "vcluster-" (63 - 9).
+    - expression: "object.metadata.name.matches('^[a-z][a-z0-9-]{0,53}$')"
+      message: >-
+        nom de vcluster refusé : attendu [a-z][a-z0-9-]{0,53} (54 caractères
+        maximum, c'est la limite du suffixe de namespace une fois préfixé par
+        « vcluster- »).
+    - expression: "object.metadata.name != 'manager'"
+      message: >-
+        « manager » est réservé : c'est le namespace de vcluster-manager
+        lui-même, pas un nom disponible pour un tenant.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: vcluster-manager-vcluster-name
+spec:
+  policyName: vcluster-manager-vcluster-name
+  validationActions: ["Deny"]

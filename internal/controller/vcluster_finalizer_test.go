@@ -22,7 +22,16 @@ import (
 // fakeDeletionOps tient lieu de cluster, pas de reconciler : c'est lui qu'on
 // partage entre deux reconcilers pour simuler un redémarrage, puisque ce qui
 // survit à un redémarrage est précisément l'état du cluster.
+//
+// Il embarque fakeVClusterOps pour les cinq seams qu'il ne teste pas
+// (observation, provisionnement, quotas, intégrations) : aucun test de
+// suppression n'y touche, la suppression court-circuite reconcileAll avant eux
+// (Reconcile() bifurque sur deletionTimestamp avant d'y arriver). Suspend/Resume
+// restent définis ici plutôt qu'hérités : le finalizer ne s'en sert jamais non
+// plus, mais le champ Ops du reconciler est de ce type.
 type fakeDeletionOps struct {
+	fakeVClusterOps
+
 	mu    sync.Mutex
 	calls []string
 
@@ -171,6 +180,12 @@ func (f *fakeDeletionOps) TeardownVCluster(context.Context, models.Actor, string
 	return f.teardownWarnings, f.teardownErr
 }
 
+// Observation, provisionnement et quotas viennent de fakeVClusterOps sans être
+// redéfinis : Reconcile() bifurque sur deletionTimestamp avant reconcileAll, donc
+// aucun test de ce fichier n'atteint ces trois seams — ils n'existent que pour
+// que ce faux compile contre VClusterServiceOps.
+var _ VClusterServiceOps = (*fakeDeletionOps)(nil)
+
 // unpairedOps est le cas nominal : Rancher n'a jamais connu ce vcluster, aucune
 // protection posée, la destruction passe.
 func unpairedOps() *fakeDeletionOps {
@@ -187,6 +202,133 @@ func readyToDestroyOps() *fakeDeletionOps {
 	ops := unpairedOps()
 	ops.backup = service.DeletionBackupState{Found: true, Name: "b1", Phase: "Completed", Completed: true}
 	return ops
+}
+
+// --- ce que les seams du finalizer reçoivent réellement --------------------
+//
+// Même angle mort que celui fermé pour DeleteHostNamespace/HostNamespaceState
+// dans vcluster_namespace_removal_test.go : `name` et `env` sont deux `string`
+// voisines dans la même signature — `UnpairForDeletion(ctx, actor, vc.Name,
+// r.Cell)`, `TriggerVeleroBackup(ctx, actor, vc.Name, r.Cell)`,
+// `SetProtection(ctx, actor, vc.Name, r.Cell, false)`,
+// `TeardownVCluster(ctx, actor, vc.Name, r.Cell, opts)` — et rien ne vérifiait
+// qu'elles n'étaient pas interverties. Ça compile, et en production ça
+// supprimerait le vcluster nommé d'après la cell plutôt que la cell.
+
+// argCall retient (acteur, nom, cell) d'un appel du finalizer vers le service.
+type argCall struct {
+	actor models.Actor
+	name  string
+	env   string
+}
+
+// argCallRecorder embarque fakeDeletionOps pour capter les arguments des
+// quatre seams que TestNamespaceRemovalPassesTheVClusterAndTheCell ne couvrait
+// pas. Comme namespaceCallRecorder, il délègue au vrai comportement du faux
+// après avoir noté l'appel : l'interversion doit se voir sans changer ce que la
+// séquence fait.
+type argCallRecorder struct {
+	*fakeDeletionOps
+
+	mu       sync.Mutex
+	unpair   []argCall
+	trigger  []argCall
+	protect  []argCall
+	teardown []argCall
+}
+
+var _ VClusterDeletionOps = (*argCallRecorder)(nil)
+
+func (r *argCallRecorder) UnpairForDeletion(ctx context.Context, actor models.Actor, name, env string) error {
+	r.mu.Lock()
+	r.unpair = append(r.unpair, argCall{actor, name, env})
+	r.mu.Unlock()
+	return r.fakeDeletionOps.UnpairForDeletion(ctx, actor, name, env)
+}
+
+func (r *argCallRecorder) TriggerVeleroBackup(ctx context.Context, actor models.Actor, name, env string) (service.VeleroBackupCreated, error) {
+	r.mu.Lock()
+	r.trigger = append(r.trigger, argCall{actor, name, env})
+	r.mu.Unlock()
+	return r.fakeDeletionOps.TriggerVeleroBackup(ctx, actor, name, env)
+}
+
+func (r *argCallRecorder) SetProtection(ctx context.Context, actor models.Actor, name, env string, enabled bool) (service.ProtectionState, error) {
+	r.mu.Lock()
+	r.protect = append(r.protect, argCall{actor, name, env})
+	r.mu.Unlock()
+	return r.fakeDeletionOps.SetProtection(ctx, actor, name, env, enabled)
+}
+
+func (r *argCallRecorder) TeardownVCluster(ctx context.Context, actor models.Actor, name, env string, opts service.TeardownOptions) ([]string, error) {
+	r.mu.Lock()
+	r.teardown = append(r.teardown, argCall{actor, name, env})
+	r.mu.Unlock()
+	return r.fakeDeletionOps.TeardownVCluster(ctx, actor, name, env, opts)
+}
+
+// requireArgCall vérifie le dernier appel noté : le bon nom, la bonne cell, et
+// l'acteur système — un acteur vide ferait boucler la séquence sur ErrForbidden
+// sans qu'aucune condition ne le dise.
+func requireArgCall(t *testing.T, calls []argCall, wantName, wantEnv string) {
+	t.Helper()
+	if len(calls) == 0 {
+		t.Fatal("aucun appel noté")
+	}
+	got := calls[len(calls)-1]
+	if got.name != wantName || got.env != wantEnv {
+		t.Fatalf("appel(nom=%q, cell=%q), attendu (%s, %s) : les deux chaînes sont interverties, "+
+			"c'est %s (nom de la cell) qui serait ciblé au lieu de %s (le vcluster)",
+			got.name, got.env, wantName, wantEnv, got.name, wantName)
+	}
+	if got.actor != SystemActor {
+		t.Fatalf("acteur = %+v, attendu %+v : le service refuse tout ce qui n'est pas admin", got.actor, SystemActor)
+	}
+}
+
+// Le dépairage Rancher (étape 1 de §4.4) reçoit le vcluster et la cell, pas
+// l'inverse.
+func TestUnpairForDeletionPassesTheVClusterAndTheCell(t *testing.T) {
+	ctx := context.Background()
+	ops := &argCallRecorder{fakeDeletionOps: unpairedOps()}
+	ops.rancher = service.RancherTeardownState{Enabled: true, StillKnown: true}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "args-unpair", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	requireArgCall(t, ops.unpair, "args-unpair", "cell1")
+}
+
+// La sauvegarde d'avant destruction (étape 2) reçoit le vcluster et la cell,
+// pas l'inverse.
+func TestTriggerVeleroBackupPassesTheVClusterAndTheCell(t *testing.T) {
+	ctx := context.Background()
+	ops := &argCallRecorder{fakeDeletionOps: unpairedOps()} // pas de sauvegarde connue : en lance une
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "args-trigger", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	requireArgCall(t, ops.trigger, "args-trigger", "cell1")
+}
+
+// Le retrait de la protection et la destruction (étapes 3 et 4) reçoivent le
+// vcluster et la cell, pas l'inverse — les deux dans la même passe.
+func TestFinalTeardownPassesTheVClusterAndTheCell(t *testing.T) {
+	ctx := context.Background()
+	ops := &argCallRecorder{fakeDeletionOps: readyToDestroyOps()}
+	ops.protection = service.ProtectionState{Available: true, Protected: true}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "args-teardown", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	requireArgCall(t, ops.protect, "args-teardown", "cell1")
+	requireArgCall(t, ops.teardown, "args-teardown", "cell1")
 }
 
 // --- outillage -----------------------------------------------------------
@@ -303,7 +445,11 @@ func ageCondition(t *testing.T, ctx context.Context, vc *v1alpha1.VCluster, cond
 // qui porte déjà un deletionTimestamp.
 func TestFinalizerIsPlacedOnTheLivePath(t *testing.T) {
 	ctx := context.Background()
-	r := &VClusterReconciler{Client: k8sClient, Ops: unpairedOps(), Cell: "cell1", Namespace: "default"}
+	// newFullOps() et pas unpairedOps() : cet objet n'est pas en suppression, donc
+	// Reconcile() enchaîne sur reconcileAll en entier (budget, provisionnement,
+	// intégrations, observation) avant de revenir ici — unpairedOps() (fakeDeletionOps
+	// nu) ne sait faire que la suppression.
+	r := &VClusterReconciler{Client: k8sClient, Ops: newFullOps(), Cell: "cell1", Namespace: "default"}
 
 	vc := createVCluster(t, ctx, "pose-finalizer", false)
 	defer func() { releaseVCluster(ctx, vc) }()
@@ -939,7 +1085,72 @@ func TestNamespaceDeletionRefusalKeepsTheCR(t *testing.T) {
 	if vclusterGone(t, ctx, vc) {
 		t.Fatal("le CR a été lâché alors que la suppression du namespace a été refusée")
 	}
-	requireVClusterCond(t, fetchVCluster(t, ctx, vc), v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "DeleteFailed")
+	// Rapportée sur Ready, pas sur NamespaceRemoved : voir le commentaire de
+	// reconcileNamespaceRemoval. NamespaceRemoved ne doit être écrite QUE par
+	// l'attente, sinon son ancre de délai mesure tantôt un refus tantôt une
+	// attente — bug trouvé en recette (cas A), voir namespaceRemovalOverdue et
+	// TestARefusalDoesNotLendItsAgeToTheWaitThatFollows plus bas.
+	got := fetchVCluster(t, ctx, vc)
+	requireVClusterCond(t, got, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "NamespaceDeletionForbidden")
+	if c := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.CondNamespaceRemoved); c != nil {
+		t.Fatalf("NamespaceRemoved = %+v : un refus ne doit plus l'écrire du tout", c)
+	}
+}
+
+// Une vieille condition NamespaceRemoved posée pour une raison étrangère à
+// l'attente ne doit pas prêter son âge à l'attente qui commence quand la
+// suppression finit par réussir.
+//
+// C'est le bug trouvé en recette (cas A) : avant le correctif ci-dessus, un
+// refus écrivait CondNamespaceRemoved=False/DeleteFailed, et SetStatusCondition
+// ne remet LastTransitionTime à zéro que quand le STATUT change, pas la raison
+// — donc un refus qui durait plus de dix minutes (le scénario le plus probable
+// du chantier : le ClusterRole pas redéployé) prêtait sa vieille horloge à
+// l'attente qui commençait tout juste dès que quelqu'un corrigeait le
+// ClusterRole. Le CR partait au tout premier tour où la suppression aboutissait
+// enfin, sans avoir observé la disparition une seule fois.
+//
+// Ce test sème directement la condition périmée plutôt que de rejouer un vrai
+// refus pendant dix minutes : la condition posée à la main, vieille de plus de
+// dix minutes et sous une raison qui n'est PAS l'une des deux que l'attente
+// écrit elle-même, simule aussi bien une trace laissée par l'ancien code qu'une
+// main qui aurait patché l'objet. namespaceRemovalOverdue doit l'ignorer dans
+// les deux cas — c'est la défense en profondeur, en plus de la relocalisation
+// vérifiée par TestNamespaceDeletionRefusalKeepsTheCR juste au-dessus.
+func TestAnOldForeignReasonOnNamespaceRemovedDoesNotEndTheWaitEarly(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	// La suppression réussit dès ce tour, mais le namespace n'a pas encore eu le
+	// temps de disparaître : l'état normal du tout premier tour qui aboutit.
+	ops.nsSurvivesDelete = true
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ancre-etrangere", false, nil)
+
+	ageCondition(t, ctx, vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "DeleteFailed",
+		namespaceRemovalGiveUpAfter+time.Hour)
+
+	res, err := r.Reconcile(ctx, vcReq(vc))
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if vclusterGone(t, ctx, vc) {
+		t.Fatal("CR lâché au premier tour où la suppression a réussi : la vieille condition a " +
+			"prêté son âge à l'attente qui commençait tout juste — le bug de recette (cas A)")
+	}
+	got := fetchVCluster(t, ctx, vc)
+	c := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.CondNamespaceRemoved)
+	if c == nil {
+		t.Fatal("NamespaceRemoved absente après une demande de suppression réussie")
+	}
+	if c.Reason != "NamespaceTerminating" {
+		t.Fatalf("NamespaceRemoved = %s/%s, attendu False/NamespaceTerminating : l'attente a conclu "+
+			"prématurément (RemovalUnconfirmed) sur l'âge d'une condition qui n'est pas la sienne",
+			c.Status, c.Reason)
+	}
+	if res.RequeueAfter != deletionStepRequeue {
+		t.Fatalf("requeue %s, attendu %s : l'attente vient de commencer, pas de terminer", res.RequeueAfter, deletionStepRequeue)
+	}
 }
 
 // « Je n'arrive pas à regarder » n'est pas « il a disparu ». Une lecture ratée

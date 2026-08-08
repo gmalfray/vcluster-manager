@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -39,10 +38,6 @@ type QuotaResolver interface {
 }
 
 var _ QuotaResolver = (*service.Service)(nil)
-
-// errNoQuotaResolver ne peut arriver qu'avec un double de test incomplet ; en
-// production l'assertion ci-dessus l'exclut.
-var errNoQuotaResolver = errors.New("l'implémentation de VClusterOps ne sait pas résoudre les quotas effectifs")
 
 // BudgetRetryInterval est le rythme auquel un vcluster refusé pour dépassement
 // revient frapper à la porte.
@@ -178,16 +173,7 @@ func (r *VClusterReconciler) checkResourceBudget(ctx context.Context, vc *v1alph
 // Un quota effectif entièrement vide n'est pas imputable : aucune valeur ne sera
 // écrite, il n'y a rien à compter.
 func (r *VClusterReconciler) effectiveQuotas(vc *v1alpha1.VCluster) (cpu, mem, sto string, billable bool, err error) {
-	resolver, ok := r.Ops.(QuotaResolver)
-	if !ok {
-		// Sans résolveur on ne peut pas savoir ce qui sera écrit. On refuse plutôt
-		// que de supposer zéro : c'est la même règle que §5.3 sur le plafond
-		// absent, et pour la même raison — une mauvaise configuration doit se voir
-		// tout de suite plutôt qu'ouvrir un trou silencieux.
-		return "", "", "", false, errNoQuotaResolver
-	}
-
-	cpu, mem, sto, enabled, err := resolver.EffectiveQuotas(createRequestFromCR(vc), r.Cell)
+	cpu, mem, sto, enabled, err := r.Ops.EffectiveQuotas(createRequestFromCR(vc), r.Cell)
 	if err != nil {
 		return "", "", "", false, err
 	}

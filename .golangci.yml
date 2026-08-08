@@ -81,6 +81,7 @@ linters:
         - terminaison
         - portait
         - demandes
+        - respecte
 
   exclusions:
     generated: lax

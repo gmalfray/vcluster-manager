@@ -5,25 +5,45 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 
 ## Opérateur — durcissement issu de l'audit N6
 
-- [ ] 🔴 **`ValidatingAdmissionPolicy` sur les namespaces de l'opérateur** : depuis
-      N6, le ClusterRole de l'opérateur a `delete` sur `namespaces` cluster-wide,
-      et `update`/`patch` l'avaient déjà (de quoi réécrire
-      `pod-security.kubernetes.io/enforce` sur `kube-system`). RBAC ne sait pas
-      resserrer ça — `resourceNames` sur une ressource cluster-scoped exigerait de
-      réécrire le ClusterRole à chaque vcluster. Une VAP le peut (k8s ≥ 1.30, GA) :
-      restreindre DELETE/UPDATE de ce ServiceAccount aux namespaces préfixés
-      `vcluster-`, hors `vcluster-manager`, et porteurs d'un label posé par
-      l'opérateur (à ajouter dans `gitops.hostNamespace()`, qui rend aujourd'hui un
-      objet nu). ⚠️ La flotte historique n'a pas ce label : sa suppression serait
-      bloquée tant qu'elle n'est pas ré-étiquetée — c'est souhaitable, mais ça doit
-      être un choix conscient, pas une surprise en recette.
-- [ ] 🟠 **VAP sur `CREATE vclusters`** (nom contraint) : referme en amont le fait
-      que créer un CR homonyme d'un vcluster sans CR permet de le faire détruire.
-- [ ] 🟡 **Règle CEL de nom sur la CRD** : elle ne refuse aujourd'hui que `manager`.
-      Le contrôleur refait le vrai contrôle (`ValidName`) — mais la doctrine du
-      projet est d'exprimer la règle là où l'API server peut l'appliquer :
-      `self.metadata.name.matches('^[a-z][a-z0-9-]{0,53}$')` (54 = limite du
-      suffixe de namespace).
+- [x] ~~🔴 **`ValidatingAdmissionPolicy` sur les namespaces de l'opérateur**~~ :
+      `deploy/base/operator-admission-policy.yaml` restreint DELETE/UPDATE du
+      ServiceAccount de l'opérateur aux namespaces `vcluster-*` (hors
+      `vcluster-manager`) porteurs du label `vcluster.rebuild-it.fr/managed-namespace:
+      "true"`, posé par `gitops.hostNamespace()`. La validation lit `oldObject`
+      (l'état avant la requête), jamais `object` : un Server-Side Apply ne peut pas
+      poser le label et agir sur l'objet dans le même geste. ⚠️ La flotte
+      historique n'a pas ce label et reste donc hors de portée de l'opérateur tant
+      qu'elle n'est pas ré-étiquetée sciemment — procédure et grille de décision
+      dans `docs/recette-n6-namespace.md` §« VAP namespaces ». Prouvé par
+      `kustomize build` (base + overlays) et par les tests Go sur le label ; **pas
+      encore vérifié contre un vrai apiserver** (CEL non évalué faute d'un
+      cluster 1.35 disponible ici) — à faire en recette.
+- [x] ~~🟠 **VAP sur `CREATE vclusters`** (nom contraint)~~ : même fichier,
+      seconde policy — `[a-z][a-z0-9-]{0,53}` et `manager` refusé, redondant à
+      dessein avec la règle CEL de la CRD (autre chantier) pour ne pas dépendre
+      d'un seul fichier. Même limite de preuve que ci-dessus : YAML valide,
+      CEL non évalué en réel.
+- [x] ~~🟡 **Règle CEL de nom sur la CRD**~~ : deuxième `XValidation` sur `VCluster`
+      (`api/v1alpha1/vcluster_types.go`, à côté de la règle `manager`) —
+      `self.metadata.name.matches('^[a-z][a-z0-9-]{0,53}$')`. Elle ne fait pas
+      double emploi avec `service.ValidName` : les deux couvrent le même charset,
+      mais `ValidName` n'a pas de plafond de longueur — la CEL est donc la
+      première à borner un nom trop long, avant que le contrôleur ne tente de
+      créer un namespace de plus de 63 caractères. Testé sous envtest
+      (`internal/controller/vcluster_name_validation_test.go`) : nom valide,
+      borne à 54/55 caractères, majuscule, chiffre en tête, `manager` (non-
+      régression), message d'erreur lisible. Vérifié par mutation : règle
+      retirée, borne relâchée, classe de caractères élargie (majuscule, chiffre
+      en tête), message vidé de son contenu — chaque mutant fait tomber
+      exactement le test qui le vise, aucun autre.
+      ⚠️ Régression connue et non corrigée ici (hors périmètre) :
+      `TestAnInvalidNameIsStoppedByTheGuardBeforeProvisioning`
+      (`internal/controller/interactions_test.go`) crée un CR nommé `1cluster`
+      en supposant que K8s l'accepte pour vérifier ensuite que le contrôleur le
+      rattrape — cette règle CEL le refuse maintenant à l'admission, donc ce test
+      échoue. Le fixer suppose de changer l'entrée du test ou son intention ;
+      `interactions_test.go` est un fichier carrefour, à traiter par qui le
+      possède.
 
 ## Correctifs recette 1.4.0 → 1.4.1
 

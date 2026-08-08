@@ -16,8 +16,9 @@ import (
 // VClusterIntegrationOps est la tranche du service que ce chantier consomme :
 // Vault, Keycloak, Rancher — ce qui vit hors du cluster hôte et que le CR doit
 // piloter. Déclarée ici, comme VClusterOps/VClusterObserver/VClusterProvisioner/
-// VClusterDeletionOps avant elle : le seam appartient à l'appelant, et
-// l'assertion ci-dessous garantit que le vrai service la satisfait.
+// VClusterDeletionOps avant elle, et fusionnée avec elles dans le type de
+// r.Ops (VClusterServiceOps, vcluster_controller.go) : reconcileIntegrations
+// ci-dessous lit directement r.Ops.
 type VClusterIntegrationOps interface {
 	// Vault : chemin d'auth kubernetes-vcluster-<nom>-<cell>.
 	VaultAuthConfigured(ctx context.Context, name, env string) (bool, error)
@@ -52,20 +53,6 @@ var _ VClusterIntegrationOps = (*service.Service)(nil)
 // condition. Les erreurs sont jointes, le délai de re-scrutation retenu est le
 // plus court des trois.
 func (r *VClusterReconciler) reconcileIntegrations(ctx context.Context, vc *v1alpha1.VCluster) (time.Duration, error) {
-	ops, ok := r.Ops.(VClusterIntegrationOps)
-	if !ok {
-		// Impossible en prod (l'assertion de compilation ci-dessus l'exclut) :
-		// seulement un faux de test qui ne couvre pas ce chantier. On n'écrit
-		// aucune condition — ni Unknown ni False — plutôt que d'en inventer une :
-		// aggregateVClusterStatus traite déjà une condition absente comme « cette
-		// étape n'a pas encore tourné », sans bloquer Ready pour autant (le même
-		// principe que blockingConditions applique à ArgoCDReady). Poser un Unknown
-		// ici bloquerait Ready sur tous les tests d'autres chantiers dont le faux ne
-		// porte pas ce seam, pour une raison qui n'a rien à voir avec ce qu'ils
-		// testent.
-		return 0, nil
-	}
-
 	var (
 		errs    []error
 		requeue time.Duration
@@ -77,9 +64,9 @@ func (r *VClusterReconciler) reconcileIntegrations(ctx context.Context, vc *v1al
 		requeue = minPositiveDuration(requeue, d)
 	}
 
-	merge(r.reconcileVault(ctx, ops, vc))
-	merge(r.reconcileKeycloak(ops, vc))
-	merge(r.reconcileRancherPairing(ctx, ops, vc))
+	merge(r.reconcileVault(ctx, r.Ops, vc))
+	merge(r.reconcileKeycloak(r.Ops, vc))
+	merge(r.reconcileRancherPairing(ctx, r.Ops, vc))
 
 	return requeue, errors.Join(errs...)
 }

@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -74,12 +73,11 @@ const reasonBackupProgress = "InProgress"
 
 // VClusterDeletionOps est la tranche du service que le finalizer consomme.
 //
-// Elle est déclarée à part de VClusterOps parce que trois chantiers se
-// partagent vcluster_controller.go ; les deux interfaces ont vocation à
-// fusionner quand ils se rejoignent, et le champ `Ops` du reconciler portera
-// alors le tout. En attendant, l'assertion à la compilation ci-dessous garantit
-// que le vrai service satisfait l'ensemble, donc la conversion de type en
-// production ne peut pas échouer.
+// Elle reste déclarée à part de VClusterOps — un seam par étape, plus lisible
+// qu'une seule grosse interface — mais le champ `Ops` du reconciler porte
+// `VClusterServiceOps` (vcluster_controller.go), qui les fusionne toutes. C'est
+// ce qui garantit ici que `r.Ops` implémente VClusterDeletionOps sans assertion
+// de type à l'exécution.
 type VClusterDeletionOps interface {
 	// InspectRancherTeardown observe où en est le dépairage, sans rien changer.
 	InspectRancherTeardown(ctx context.Context, name, env string) service.RancherTeardownState
@@ -114,10 +112,6 @@ type VClusterDeletionOps interface {
 
 var _ VClusterDeletionOps = (*service.Service)(nil)
 
-// errNoDeletionOps ne peut arriver qu'avec un faux qui n'implémente que la
-// moitié du seam ; en production l'assertion ci-dessus l'exclut.
-var errNoDeletionOps = errors.New("l'implémentation de VClusterOps ne porte pas la séquence de suppression")
-
 // ensureFinalizer pose le finalizer sur le chemin vivant.
 //
 // Il faut que ce soit là et pas ailleurs : l'API server refuse d'ajouter un
@@ -147,17 +141,12 @@ func (r *VClusterReconciler) reconcileDeletion(ctx context.Context, vc *v1alpha1
 		// personne.
 		return ctrl.Result{}, nil
 	}
-	ops, ok := r.Ops.(VClusterDeletionOps)
-	if !ok {
-		return ctrl.Result{}, errNoDeletionOps
-	}
-
 	if vc.Status.Deletion == nil {
 		vc.Status.Deletion = &v1alpha1.DeletionStatus{}
 	}
 	vc.Status.Phase = v1alpha1.VClusterPhaseDeleting
 
-	done, requeue, seqErr := r.runDeletionSequence(ctx, ops, vc)
+	done, requeue, seqErr := r.runDeletionSequence(ctx, r.Ops, vc)
 
 	// Le status part avant le retrait du finalizer : après, l'objet n'existe
 	// plus et il n'y a plus rien où écrire.
@@ -494,7 +483,11 @@ func (r *VClusterReconciler) reconcileFinalTeardown(ctx context.Context, ops VCl
 	// regardé — le défaut même qu'on vient de fermer, un maillon plus loin.
 	vc.Status.ProtectionEnabled = false
 
-	vc.Status.Deletion.Stage = stageDestroying
+	// Le stage passe à stageDestroying dans reconcileNamespaceRemoval, l'étape
+	// suivante de la même passe : l'écrire aussi ici serait retenu une fraction de
+	// seconde puis écrasé avant qu'aucun Status().Update() n'ait eu la moindre
+	// chance de le publier — runDeletionSequence enchaîne les étapes sans écrire
+	// entre les deux.
 	opts := service.TeardownOptions{
 		DeleteAppManifestsRepo: vc.Annotations[v1alpha1.AnnDeletionDeleteAppManifestsRepo] == "true",
 	}
@@ -547,15 +540,27 @@ func (r *VClusterReconciler) reconcileNamespaceRemoval(ctx context.Context, ops 
 		// transformerait alors une panne réparable, visible et nommée, en un
 		// namespace orphelin que plus aucun objet ne réclame.
 		//
-		// Ce qui reste dû dans ce cas, c'est de le dire, et de dire que ça dure —
-		// le bug 1 du POC était une boucle silencieuse, pas une boucle.
-		msg := "suppression du namespace refusée : " + err.Error()
-		if r.overdue(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, namespaceRemovalGiveUpAfter) {
-			msg += " — refusée depuis plus de " + namespaceRemovalGiveUpAfter.String() +
-				" : ce n'est pas un hoquet. Vérifier que le ClusterRole de l'opérateur porte " +
-				"bien `delete` sur les namespaces. Rien n'a été détruit, le CR attend."
-		}
-		setVClusterCond(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "DeleteFailed", msg)
+		// Rapporté sur CondVClusterReady, PAS sur CondNamespaceRemoved — c'est le
+		// correctif d'un bug trouvé en recette. Les deux conditions partageaient
+		// avant la même ancre de délai (SetStatusCondition ne remet
+		// LastTransitionTime à zéro que quand le STATUT change, pas la raison), donc
+		// un refus qui dure plus de dix minutes — le scénario le plus probable du
+		// chantier : le ClusterRole pas redéployé — faisait hériter à l'ATTENTE
+		// ci-dessous une horloge déjà expirée. Dès que quelqu'un corrigeait le
+		// ClusterRole, le tout premier tour où la suppression passait enfin lâchait
+		// le CR sans avoir observé la disparition une seule fois, avec un message
+		// qui accusait un finalizer tiers plutôt que la vraie cause. En écrivant
+		// ailleurs, CondNamespaceRemoved n'est plus alimentée que par l'attente
+		// réelle (voir namespaceRemovalOverdue), et sa propre ancre ne mesure plus
+		// qu'une seule chose.
+		//
+		// Pas de délai affiché ici non plus : LastTransitionTime de CondVClusterReady
+		// dit déjà « depuis quand » à qui lit l'objet, pas besoin de le répéter en
+		// toutes lettres dans le message.
+		msg := "suppression du namespace refusée : " + err.Error() +
+			" — vérifier que le ClusterRole de l'opérateur porte bien `delete` sur les namespaces. " +
+			"Rien n'a été détruit, le CR attend."
+		setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "NamespaceDeletionForbidden", msg)
 		return false, deletionStepRequeue, err
 	}
 
@@ -569,8 +574,12 @@ func (r *VClusterReconciler) reconcileNamespaceRemoval(ctx context.Context, ops 
 	// L'ancre du délai est la condition, dont la LastTransitionTime survit au
 	// redémarrage. Statut False dans les deux branches ci-dessous, précisément
 	// pour que l'ancre ne se remette pas à zéro quand la raison alterne entre
-	// « encore là » et « je n'arrive pas à regarder ».
-	if r.overdue(vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, namespaceRemovalGiveUpAfter) {
+	// « encore là » et « je n'arrive pas à regarder » — mais namespaceRemovalOverdue
+	// vérifie AUSSI la raison, en défense en profondeur : si une condition
+	// CondNamespaceRemoved=False finit un jour posée pour une tout autre cause
+	// (un downgrade, un `kubectl patch` de dépannage), elle ne doit pas prêter son
+	// âge à une attente qui vient tout juste de commencer.
+	if r.namespaceRemovalOverdue(vc) {
 		// On lâche le CR malgré tout. Le laisser en Terminating pour toujours
 		// n'efface pas le namespace et ajoute un objet coincé au problème ; ce qui
 		// aide, c'est de nommer ce qui reste.
@@ -651,4 +660,30 @@ func (r *VClusterReconciler) overdue(vc *v1alpha1.VCluster, condType string, sta
 		return false
 	}
 	return time.Since(c.LastTransitionTime.Time) > after
+}
+
+// namespaceRemovalOverdue est overdue(), mais pour CondNamespaceRemoved
+// seulement, et avec un contrôle de plus : la raison.
+//
+// overdue() partage volontairement son ancre entre deux raisons pour l'étape
+// Rancher — la panne de lecture et l'attente du job de nettoyage sont la même
+// horloge. Ici, une seule raison a le droit d'alimenter le délai : les deux
+// qu'écrit l'attente elle-même (NamespaceTerminating, NamespaceStateUnknown).
+// Le refus de suppression (NamespaceDeletionForbidden) n'écrit plus cette
+// condition du tout depuis le correctif ci-dessus, mais garder ce filtre est
+// une défense en profondeur bon marché : si une raison étrangère venait un jour
+// s'y poser — un downgrade, un `kubectl patch` — elle ne doit pas prêter son âge
+// à une attente qui commence tout juste, et transformer une suppression qui
+// vient enfin de réussir en un CR lâché sans avoir rien observé.
+func (r *VClusterReconciler) namespaceRemovalOverdue(vc *v1alpha1.VCluster) bool {
+	c := apimeta.FindStatusCondition(vc.Status.Conditions, v1alpha1.CondNamespaceRemoved)
+	if c == nil || c.Status != metav1.ConditionFalse || c.LastTransitionTime.IsZero() {
+		return false
+	}
+	switch c.Reason {
+	case "NamespaceTerminating", "NamespaceStateUnknown":
+	default:
+		return false
+	}
+	return time.Since(c.LastTransitionTime.Time) > namespaceRemovalGiveUpAfter
 }

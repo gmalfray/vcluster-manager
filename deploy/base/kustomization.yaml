@@ -11,4 +11,5 @@ resources:
   - service.yaml
   - ingress.yaml
   - operator-rbac.yaml
+  - operator-admission-policy.yaml
   - operator-deployment.yaml

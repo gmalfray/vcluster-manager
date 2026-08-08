@@ -244,11 +244,29 @@ func HostNamespace(name string) *unstructured.Unstructured {
 }
 
 // hostNamespace is the vcluster's namespace on the host cluster.
+//
+// The label marks a namespace the operator actually manages — one it created
+// and will delete itself, as opposed to a same-named namespace left over from
+// before the operator existed. Server-Side Apply means the operator owns this
+// field the moment it applies it, so it stays put across reconciles instead of
+// getting reset by whoever applies the rest of the object.
+//
+// It exists for the ValidatingAdmissionPolicy in
+// deploy/base/operator-admission-policy.yaml, which is the actual boundary on
+// the operator's `delete namespaces` right: RBAC only bounds by resource type,
+// not by name, on a cluster-scoped resource. The VAP reads oldObject, i.e. the
+// namespace as it stood *before* the request being evaluated — never the
+// request's own payload — so an operator write cannot both attach the label
+// and act on the object in the same call. A namespace only starts passing
+// once something outside that write path has labeled it first.
 func hostNamespace(name string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Namespace",
-		"metadata":   map[string]any{"name": "vcluster-" + name},
+		"metadata": map[string]any{
+			"name":   "vcluster-" + name,
+			"labels": map[string]any{"vcluster.rebuild-it.fr/managed-namespace": "true"},
+		},
 	}}
 }
 
