@@ -65,17 +65,63 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       le RBAC**. Les deux ClusterRoles (app et opérateur) ne couvrent pas les mêmes appels et
       rien ne le vérifie. Le vrai correctif est en dessous, pas ici.
 
-- [ ] 🔴 **Vérifier le RBAC contre les appels réellement émis** (issu de la recette). Ces deux
+- [x] ~~🔴 **Vérifier le RBAC contre les appels réellement émis** (issu de la recette). Ces deux
       trous ont la même cause : les ClusterRoles sont écrits à la main en dérivant « ce que
       telle fonctionnalité touche », donc ils dérivent dès qu'un chemin de code change, et la
-      campagne de tests est structurellement aveugle. Trois pistes, à arbitrer :
-      1. un test qui liste les verbes/ressources attendus et les compare aux ClusterRoles
-         commités — attrape la dérive, pas l'oubli initial ;
-      2. faire tourner l'opérateur en recette avec un ServiceAccount et lire les `Forbidden`
-         dans les logs — attrape tout, mais seulement ce qui est exercé ;
-      3. un `kubectl auth can-i --list` dans le plan de recette, comparé à une liste de
-         référence — le moins cher, à mettre en précondition.
-      Ce qui n'est pas une option : continuer à découvrir ces trous en production.
+      campagne de tests est structurellement aveugle.~~
+      **Aucune des trois pistes proposées n'a été retenue telle quelle** : envtest applique déjà
+      le RBAC (`--authorization-mode=RBAC`), ce qui l'a rendu invisible jusqu'ici est que le
+      client rendu par `testEnv.Start()` est dans `system:masters`, qui court-circuite
+      l'autorisation. Il suffit donc de parler à ce même apiserver en IMPERSONANT le
+      ServiceAccount de l'opérateur pour que le vrai ClusterRole s'applique — sans cluster, dans
+      la suite qui existe déjà. C'est ce qui est fait :
+      `internal/controller/rbac_probe_test.go` (le harnais) et `rbac_operator_test.go` (les
+      scénarios). Un reverse proxy local réémet les appels sous cette identité et lit le code
+      HTTP de chaque réponse ; le kubeconfig du service pointe dessus, donc les appels de
+      `internal/kubernetes` sont couverts au même titre que ceux du client controller-runtime —
+      y compris ceux dont le code AVALE le refus (`HostNamespaceState`, `CountVClusterPods`
+      rendent « je ne sais pas » sur un 403).
+      La source de « ce qui est attendu » est le code exécuté, pas une seconde liste : le
+      reconcile complet, la séquence de suppression, et les appels Velero/Flux/volume que le
+      service émet. Quatre scénarios + un **canari** qui exige un refus sur `list nodes` (sans
+      lui, un dispositif qui n'appliquerait plus rien passerait au vert), + `requireExercised`
+      qui refuse le vert vide, + `TestOperatorRBACStopsAtWhatTheDesignRefuses` qui transforme en
+      test les droits que le fichier dit refuser volontairement (`create vclusterveleroops`,
+      `delete backups`, `create vclusters`).
+      **Les deux ClusterRoles sont couverts**, pas seulement celui de l'opérateur — c'est le
+      constat de l'incident : ils ne couvrent pas les mêmes appels.
+      Vérifié par mutation, chaque mutant tué par exactement le test qui le vise et aucun autre :
+      `list resourcequotas` retiré → 3 tests tombent, dont le reconcile complet avec le message
+      exact de production ; `delete namespaces` retiré → seule la séquence de suppression tombe ;
+      `patch kustomizations` retiré → seuls les appels du service tombent ; `delete backups`
+      retiré du ClusterRole de l'app → seul le test de l'app tombe.
+      Trouvé au passage, sans le chercher : ma propre liste d'opérations incluait
+      `RequestVeleroOps`, que l'opérateur n'émet jamais (c'est l'app qui pose l'ordre) — 403
+      immédiat. Le dispositif attrape donc aussi une liste trop large, pas seulement un droit
+      manquant.
+      **Ce qui reste non couvert et pourquoi** : `create pods/portforward` (il faut un pod qui
+      tourne, envtest n'a ni kubelet ni scheduler — le `get secrets` qui le précède, lui, est
+      couvert) ; les `events` et les `leases`, émis par le manager controller-runtime et non par
+      un reconcile ; le `watch` ; le Role namespacé `vcluster-manager-state` ; et surtout
+      **l'écart entre le ClusterRole commité et celui réellement déployé** — ces tests lisent
+      `deploy/base/*.yaml`, un cluster où le manifeste n'a pas été réappliqué reste cassé avec
+      des tests verts. C'est le seul endroit où la piste 3 garde sa valeur : un
+      `kubectl auth can-i` en précondition de recette. Reste ouvert ci-dessous.
+
+- [ ] 🟠 **Précondition de recette : le ClusterRole déployé == le ClusterRole commité.** Le seul
+      trou que les tests Go ne peuvent pas fermer par construction. À ajouter en tête des plans
+      de recette, avant toute étape : `kubectl get clusterrole vcluster-manager-operator -o yaml`
+      comparé au fichier de HEAD, puis `kubectl auth can-i --list --as
+      system:serviceaccount:vcluster-manager:vcluster-manager-operator`. Le protocole exact (avec
+      la contre-preuve par mutation) est déjà écrit plus haut pour le ClusterRole de l'app.
+      ⚠️ **Piège mesuré le 2026-08-08 sur le cluster de recette** (kubectl v1.35.2) : la forme
+      `kubectl auth can-i create pods/portforward` répond **`no`** alors que le droit est bien
+      accordé — `kubectl auth can-i create pods --subresource=portforward` répond `yes`, et
+      `--list` affiche bien `pods/portforward [create]`. La forme avec slash ment sur les
+      sous-ressources. Une précondition écrite avec elle ferait déclarer un No-Go sur un droit
+      qui est là. N'utiliser que `--list` ou `--subresource=`.
+      Rien à corriger côté dépôt au moment de ce constat : le ClusterRole déployé sur le cluster
+      de recette est identique règle pour règle au fichier de HEAD (17 règles, diff vide).
 - [x] ~~🟠 **Restore Velero — topologie** : `internal/kubernetes/velero.go` — cibler l'etcd StatefulSet `vcluster-<name>-etcd` + PVC `data-vcluster-<name>-etcd-0` (control-plane = Deployment, pas StatefulSet).~~
       Déjà fait (commit `3f931c6`) : `detectVClusterTopology` observe ce qui est réellement
       déployé (etcd StatefulSet présent ou non, control-plane Deployment ou StatefulSet) plutôt
@@ -126,7 +172,29 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       tant qu'elle a du contenu ; retiré au `htmx:afterSwap` (et en secours à `afterRequest` si
       la requête échoue sans swap). Pas de test Go possible ici (comportement JS/CSS côté
       navigateur) — vérifié par lecture du code, pas par exécution.
-- [ ] 🟡 **Vault webhook** : refonte du template `examples/gitops-repo/lib/tenant-template/vault-webhook` (OCIRepository `v1beta2`, `chartRef`, création du ns `vault-system`) — incompatible avec Flux < 2.6.
+- [x] ~~🟡 **Vault webhook** : refonte du template `examples/gitops-repo/lib/tenant-template/vault-webhook` (OCIRepository `v1beta2`, `chartRef`, création du ns `vault-system`) — incompatible avec Flux < 2.6.~~
+      Investigué : rien à changer dans ce repo. Le chemin cité n'a jamais existé ici — `git log --all
+      -S"gitops-repo"` ne remonte que le commit qui a écrit ce finding, et `git log --all -- examples/`
+      n'a qu'un seul commit, l'ajout du pattern navlink. `examples/fluxprod` (le nom actuel) ne démontre
+      que ce pattern, jamais de copie de vault-webhook. Ce que ce repo possède réellement
+      (`internal/gitops/templates/tenant/vault-webhook/kustomization.yaml.tmpl`, source de vérité —
+      déclaré dans `objects.go`) n'est qu'un patch JSON6902 sur la base fluxprod
+      (`metadata.namespace` + `spec.kubeConfig.secretRef`), agnostique de la façon dont cette base
+      source son chart. Rien à y toucher.
+      **Prémisse fausse à corriger** : « incompatible avec Flux < 2.6 » ne tient pas. Vérifié en direct
+      sur le cluster de recette (`export KUBECONFIG=~/GIT/github/vcluster-manager-infra/terraform/kubeconfig`) :
+      `flux version` → `distribution: flux-2.4.0`, `helm-controller: v1.1.0`, `source-controller: v1.4.1` ;
+      `kubectl get crd ocirepositories.source.toolkit.fluxcd.io` → seule `v1beta2` est servie (`v1`
+      n'existe pas sur ce Flux) ; `kubectl explain helmrelease.spec.chartRef` → le champ existe et
+      accepte `kind: OCIRepository`. Le HelmRelease `vault-webhook` réellement déployé sur ce cluster
+      (`vcluster-demo`, ns `vault-system`) utilise déjà `chartRef: {kind: OCIRepository, name:
+      vault-secrets-webhook}` + `install.createNamespace: true`, `Ready=True` — la refonte visée par ce
+      TODO est déjà en place et fonctionnelle sur le repo fluxprod suivi par la recette
+      (`gitlab.com/vcluster-manager/fluxprod.git`, branche `preprod`, hors périmètre de cet agent). Le
+      vrai bug n'était pas une histoire de version de Flux mais d'`apiVersion` : `source.toolkit.fluxcd.io/v1`
+      n'existe pas sur ce Flux, il fallait `v1beta2`. `install.createNamespace: true` sur le HelmRelease
+      crée `vault-system` lui-même, pas besoin d'un namespace pré-créé côté générateur. Détail dans
+      `docs/ARCHITECTURE.md` §« Vault webhook (tenant) ».
 - [x] ~~**UX — modale de confirmation générique** : remplacer les `window.confirm()` (backup) ; unifier Supprimer / Backup / Restaurer / désactivation protection.~~
       Déjà fait : `wfConfirm` (`layout.html`) intercepte `htmx:confirm` et lit
       `data-confirm-severity`/`data-confirm-label` sur l'élément déclencheur. Utilisé par
@@ -267,3 +335,13 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 - [ ] Workaround Pod exclusion ArgoCD
       (`fluxprod/lib/tenant-template/argocd/base/configmap-argocd-cm.yaml`) à
       retirer quand le bug est corrigé upstream (ArgoCD 3.3.3+).
+      Vérifié le 2026-08-08, laissé ouvert : le bug est toujours ouvert en amont —
+      [argoproj/argo-cd#26529](https://github.com/argoproj/argo-cd/issues/26529), panic
+      « assignment to entry in nil map » dans `k8s.io/kubectl/pkg/util/resource.maxResourceList`,
+      appelé par `populatePodInfo` sur un pod sans `resources` défini, dans un vcluster avec
+      LimitRange actif. Le changelog de la 3.3.3 (récupéré via l'API GitHub) ne mentionne aucun
+      correctif dessus, et la dernière release (v3.5.0) n'a rien fermé non plus — la timeline de
+      l'issue montre d'autres équipes contournant encore le même bug par la même exclusion en
+      mai et juillet 2026. Rien à changer ici : le fichier visé vit dans le repo fluxprod, hors du
+      périmètre de cet agent, et la condition de retrait (bug corrigé) n'est de toute façon pas
+      remplie. Repasser dessus quand `argoproj/argo-cd#26529` ferme.
