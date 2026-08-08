@@ -12,6 +12,7 @@ resources:
   - ingress.yaml
   - operator-rbac.yaml
   - operator-admission-policy.yaml
+  - namespace-protection-policy.yaml
   - operator-deployment.yaml
   - veleroops-operator-rbac.yaml
   - veleroops-operator-deployment.yaml
