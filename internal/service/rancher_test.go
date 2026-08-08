@@ -9,6 +9,7 @@ import (
 	"github.com/gmalfray/vcluster-manager/internal/config"
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/rancher"
 )
 
 // newRancherTestService builds a Service with no Rancher client and Rancher
@@ -83,6 +84,29 @@ func TestUnpairRancher_NotEnabledForEnv(t *testing.T) {
 	_, err := s.UnpairRancher(context.Background(), models.Actor{Username: "alice", IsAdmin: true}, "demo", "preprod")
 	if !errors.Is(err, ErrRancherNotConfigured) {
 		t.Fatalf("expected ErrRancherNotConfigured, got %v", err)
+	}
+}
+
+// TestPairRancher_ProdK8sClientMissing locks the D3 fix: PairRancher applies
+// the Rancher registration manifest through the prod Kubernetes client
+// specifically (hardcoded, not the vcluster's own env — see the comment on
+// k8sForEnv in service.go for why). Before the fix, k8sForEnv fell back to
+// "any client in the map" when "prod" wasn't registered, so this case was
+// unreachable: a preprod-only install would silently apply the manifest
+// through the preprod client instead of failing loudly.
+func TestPairRancher_ProdK8sClientMissing(t *testing.T) {
+	var mu sync.RWMutex
+	s := New(Deps{
+		Cfg:     &config.Config{RancherEnabledPreprod: true},
+		Rancher: rancher.NewClient("http://unused.invalid", "tok"),
+		// Only "preprod" is registered — no "prod" client, mirroring an
+		// install where KUBECONFIG_PROD is missing.
+		K8sClients:   map[string]*kubernetes.StatusClient{"preprod": kubernetes.NewTestStatusClient()},
+		K8sClientsMu: &mu,
+	})
+	_, err := s.PairRancher(context.Background(), models.Actor{Username: "alice", IsAdmin: true}, "demo", "preprod")
+	if !errors.Is(err, ErrRancherK8sProdUnavailable) {
+		t.Fatalf("expected ErrRancherK8sProdUnavailable when no prod k8s client is registered, got %v", err)
 	}
 }
 
