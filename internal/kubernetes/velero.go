@@ -354,13 +354,34 @@ func (s *StatusClient) CreateVeleroBackup(ctx context.Context, vcName, veleroNam
 				"snapshotVolumes":          false,
 				"storageLocation":          storageLocation,
 				"ttl":                      ttl,
-				// Pods and replicasets are ephemeral and synced by vcluster — they are recreated
-				// automatically when the vcluster starts. Including them causes Velero to inject
-				// restore-wait init containers which fail when pods have runAsNonRoot security
-				// contexts (velero image uses non-numeric user "cnb"). Only the PVCs matter.
+				// defaultVolumesToFsBackup captures volume DATA via a PodVolumeBackup
+				// per pod that mounts the volume — no pod in the backup means no
+				// PodVolumeBackup, which means the backup only holds the empty PVC
+				// object. Pods and replicasets used to be excluded here on the theory
+				// that vcluster recreates them anyway, but that reasoning only holds
+				// for the objects, not the data they carry: excluding pods silently
+				// turned every manual backup into an empty one (confirmed on the
+				// recette cell — Completed, 127 items, zero PodVolumeBackup).
+				//
+				// Pods used to also fail the restore, via a "restore-wait" init
+				// container Velero injects that ran as root and got rejected by
+				// restricted PodSecurity namespaces. Velero fixed that at the source
+				// in v1.15.1 (PR #8495): the init container now carries an explicit
+				// non-root securityContext by default, no extra ConfigMap needed.
+				// Re-excluding pods here would only be safe to bring back if we ever
+				// downgrade below v1.15.1.
+				//
+				// "events" alone only matches the core v1 Event — Velero resolves
+				// each entry via schema.ParseGroupResource, which splits on the
+				// FIRST dot, so the events.k8s.io Event needs its resource name
+				// repeated ("events.events.k8s.io"), not the bare group
+				// ("events.k8s.io" would parse as resource "events" in group
+				// "k8s.io", which doesn't exist). Confirmed missing on the recette
+				// cell: the plain "events" exclusion left events.k8s.io/v1 Event in
+				// the backup content.
 				"excludedResources": []interface{}{
-					"events", "leases",
-					"pods", "replicasets.apps",
+					"events", "events.events.k8s.io",
+					"leases",
 				},
 			},
 		},

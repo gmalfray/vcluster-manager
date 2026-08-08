@@ -16,6 +16,19 @@
         nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
         nginx.ingress.kubernetes.io/ssl-passthrough: "true"
         nginx.ingress.kubernetes.io/ssl-redirect: "true"
+        # `ssl-redirect` ne s'applique QUE si l'Ingress porte une section TLS.
+        # Celui-ci n'en a pas — c'est tout l'intérêt du passthrough, le TLS est
+        # terminé par l'API server du vcluster, pas par l'ingress. L'annotation
+        # au-dessus était donc sans effet, et le port 80 servait l'API en CLAIR.
+        #
+        # Mesuré le 2026-08-08, avant correctif :
+        #   curl http://demo.api.preprod.rebuild-it.fr/version → HTTP 200
+        # après :
+        #   → HTTP 308 vers https://…, et le 443 sert bien CN=kube-apiserver
+        #
+        # Ça compte parce que le kubeconfig `-ext` distribué au tenant porte un
+        # token : sur le port 80, il partait en clair sur Internet.
+        nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     proxy:
       extraSANs:
         - vcluster-{{.Name}}.vcluster-{{.Name}}.svc.cluster.local

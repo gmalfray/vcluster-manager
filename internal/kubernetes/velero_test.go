@@ -107,6 +107,88 @@ func toInterfaceMap(m map[string]string) map[string]interface{} {
 	return out
 }
 
+// --- CreateVeleroBackup ---
+//
+// D1 (docs/recette-restauration.md, cas A): a manual backup used to exclude
+// pods, which sounded harmless ("vcluster recreates them anyway") but is not:
+// Velero creates one PodVolumeBackup per POD that mounts a volume, not one per
+// PVC. Without pods in the backup, defaultVolumesToFsBackup has nothing to
+// act on and Velero creates zero PodVolumeBackup — the backup ends up holding
+// an empty PVC object instead of the volume's data. Proven on the recette
+// cell: excluding pods gave phase=Completed, 127 items, zero PodVolumeBackup;
+// the same backup without that exclusion gave six PodVolumeBackup, the etcd
+// one at 144 801 792 bytes.
+//
+// A real end-to-end check (did a PodVolumeBackup actually get created) needs
+// Velero's own controller running against real pods and volumes, which is out
+// of reach for a fake dynamic client — that part was verified on-cluster
+// instead. What these tests pin down is the two knobs Velero's controller
+// reads to decide whether to even try: defaultVolumesToFsBackup, and whether
+// pods are excluded. Get either wrong and the backup goes quietly empty again.
+
+func TestCreateVeleroBackup_DoesNotExcludePodsOrReplicaSets(t *testing.T) {
+	sc := newTestStatusClient()
+	backupName, err := sc.CreateVeleroBackup(context.Background(), "demo", "velero-system", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	obj, err := sc.client.Resource(veleroBackupGVR).Namespace("velero-system").Get(context.Background(), backupName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error re-fetching backup: %v", err)
+	}
+	excluded, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "excludedResources")
+	for _, res := range excluded {
+		if res == "pods" || res == "replicasets.apps" {
+			t.Errorf("excludedResources = %v: must not exclude %q — without pods in the backup, Velero produces no PodVolumeBackup at all (D1)", excluded, res)
+		}
+	}
+}
+
+func TestCreateVeleroBackup_RequestsFilesystemBackupOfEveryVolume(t *testing.T) {
+	sc := newTestStatusClient()
+	backupName, err := sc.CreateVeleroBackup(context.Background(), "demo", "velero-system", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	obj, err := sc.client.Resource(veleroBackupGVR).Namespace("velero-system").Get(context.Background(), backupName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error re-fetching backup: %v", err)
+	}
+	fsBackup, _, _ := unstructured.NestedBool(obj.Object, "spec", "defaultVolumesToFsBackup")
+	if !fsBackup {
+		t.Error("defaultVolumesToFsBackup = false, want true — without it Velero backs up no volume data regardless of what's excluded")
+	}
+}
+
+func TestCreateVeleroBackup_ExcludesOnlyEventsAndLeases(t *testing.T) {
+	sc := newTestStatusClient()
+	backupName, err := sc.CreateVeleroBackup(context.Background(), "demo", "velero-system", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	obj, err := sc.client.Resource(veleroBackupGVR).Namespace("velero-system").Get(context.Background(), backupName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error re-fetching backup: %v", err)
+	}
+	excluded, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "excludedResources")
+	// "events.events.k8s.io", not "events.k8s.io": Velero's ParseGroupResource
+	// splits on the FIRST dot, so the group name has to be repeated after the
+	// resource name to actually match the events.k8s.io Event (recette cas E:
+	// the bare "events.k8s.io" form left events.k8s.io/v1 Event in the backup).
+	want := map[string]bool{"events": true, "events.events.k8s.io": true, "leases": true}
+	if len(excluded) != len(want) {
+		t.Fatalf("excludedResources = %v, want exactly %v", excluded, want)
+	}
+	for _, res := range excluded {
+		if !want[res] {
+			t.Errorf("excludedResources contains unexpected %q (got %v)", res, excluded)
+		}
+	}
+}
+
 // --- GetVeleroBackupPhase ---
 //
 // This is the pre-flight check an in-place restore relies on: CreateVeleroRestore

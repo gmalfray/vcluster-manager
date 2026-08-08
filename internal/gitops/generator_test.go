@@ -377,6 +377,52 @@ func TestGenerateVCluster_ValuesContainsName(t *testing.T) {
 	}
 }
 
+// L'API server d'un vcluster ne doit jamais être joignable en clair.
+//
+// Ces trois annotations forment un tout, et le défaut venait de ce qu'on croyait
+// que deux suffisaient :
+//
+//   - `ssl-passthrough` fait porter le TLS par l'API server du vcluster plutôt
+//     que par l'ingress — c'est ce qui permet au kubeconfig `-ext` de vérifier
+//     un vrai certificat. Sans le flag `--enable-ssl-passthrough` côté
+//     contrôleur, elle est ignorée EN SILENCE (constaté le 2026-08-08 : le 443
+//     servait le certificat par défaut de nginx).
+//   - `ssl-redirect` ne s'applique QUE si l'Ingress porte une section TLS. Celui
+//     d'un vcluster n'en a pas, justement parce que le TLS est en passthrough :
+//     l'annotation était donc sans effet, et le port 80 répondait 200 sur l'API.
+//   - `force-ssl-redirect` est celle qui redirige dans tous les cas. Mesuré :
+//     HTTP 200 avant, HTTP 308 après.
+//
+// Le kubeconfig distribué au tenant porte un token : sur le port 80, il partait
+// en clair sur Internet. Retirer l'une de ces annotations doit faire tomber ce
+// test.
+func TestGenerateVCluster_ValuesForcesTLSOnTheAPIEndpoint(t *testing.T) {
+	g := NewGenerator(testConfig())
+	files := g.GenerateVCluster(&models.CreateRequest{Name: "myvc"}, "preprod")
+
+	var values string
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, "/values.yaml") {
+			values = f.Content
+			break
+		}
+	}
+	if values == "" {
+		t.Fatal("values.yaml absent des fichiers générés")
+	}
+
+	for _, annotation := range []string{
+		"nginx.ingress.kubernetes.io/ssl-passthrough: \"true\"",
+		"nginx.ingress.kubernetes.io/force-ssl-redirect: \"true\"",
+		"nginx.ingress.kubernetes.io/backend-protocol: \"HTTPS\"",
+	} {
+		if !strings.Contains(values, annotation) {
+			t.Errorf("values.yaml doit porter %q — sans elle, l'API du vcluster est "+
+				"joignable en clair ou derrière le mauvais certificat", annotation)
+		}
+	}
+}
+
 func TestGenerateVCluster_ValuesVeleroDisabled(t *testing.T) {
 	g := NewGenerator(testConfig())
 	req := &models.CreateRequest{Name: "myvc", VeleroEnabled: false}
