@@ -10,10 +10,14 @@
     <div class="wf-status-group">
         <span class="wf-status-group-label">Flux</span>
         <div class="flex flex-wrap gap-1.5">
-            <span class="wf-status-tag {{if eq .HelmRelease "Ready"}}ready{{else if eq .HelmRelease "N/A"}}na{{else}}notready{{end}}">
+            <!-- "Unknown" (le contrôleur n'a rien de concluant à lire) va au gris "na",
+                 pas au rouge "notready" : un signal absent n'est pas un échec constaté,
+                 et le peindre en rouge mentirait autant qu'un vert de complaisance
+                 mentirait dans l'autre sens. -->
+            <span class="wf-status-tag {{if eq .HelmRelease "Ready"}}ready{{else if or (eq .HelmRelease "N/A") (eq .HelmRelease "Unknown")}}na{{else}}notready{{end}}">
                 HelmRelease: {{.HelmRelease}}
             </span>
-            <span class="wf-status-tag {{if eq .Kustomization "Ready"}}ready{{else if eq .Kustomization "N/A"}}na{{else}}notready{{end}}">
+            <span class="wf-status-tag {{if eq .Kustomization "Ready"}}ready{{else if or (eq .Kustomization "N/A") (eq .Kustomization "Unknown")}}na{{else}}notready{{end}}">
                 Kustomization: {{.Kustomization}}
             </span>
             {{if .K8sVersion}}

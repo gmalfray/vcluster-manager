@@ -21,7 +21,17 @@
   --border-subtle:#22222f;
   --text:         #e4e7f0;
   --text-secondary:#8b92a8;
-  --text-muted:   #565e78;
+  /* --text-muted servait aussi de premier plan aux badges "inactif"/"N/A"
+     (--status-inactive-fg), posé DIRECTEMENT sur --surface3 (le fond de ces
+     badges) : #565e78 n'y faisait que 2.3:1, largement sous les 4.5:1 AA pour
+     du texte de cette taille — un libellé gris illisible plutôt que discret.
+     Éclairci pour tenir l'AA sur le pire cas réel (surface3, 4.6:1) ; sur les
+     fonds plus sombres où il sert de simple libellé secondaire (surface/bg),
+     la marge est plus large (5.1 à 6:1). Conséquence assumée : il se
+     distingue moins de --text-secondary qu'avant (rapport ~1:1 entre les
+     deux) — l'écart de teinte n'était qu'une nuance esthétique, la
+     lisibilité ne l'est pas. */
+  --text-muted:   #868fa8;
 
   /* Primaire — indigo (brand primary-600/700) */
   --indigo:       #4F46E5;
@@ -767,7 +777,13 @@ input[type="file"]::file-selector-button:hover {
 }
 .switch input:checked ~ .switch-track { background-color: var(--indigo); }
 .switch input:checked ~ .switch-track::before { transform: translateX(18px); }
-.switch input:focus-visible ~ .switch-track { box-shadow: 0 0 0 3px var(--indigo-dim); }
+/* outline + offset plutôt qu'un box-shadow collé au bord : la piste change de
+   couleur selon l'état (gris éteint / indigo allumé), donc un anneau posé
+   directement dessus n'a jamais un contraste fiable dans les deux cas (2.4:1
+   à 5.8:1 selon l'état pour un anneau indigo comme pour un anneau orange).
+   Décalé de 2px, il se dessine sur le fond de page, uniformément sombre — le
+   même choix que le reste des indicateurs de focus du site. */
+.switch input:focus-visible ~ .switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch input:disabled ~ .switch-track { opacity: 0.45; cursor: not-allowed; }
 
 /* ─── Pending MR (amber) ────────────────────────────────────────────────────── */
@@ -995,7 +1011,14 @@ input[type="file"]::file-selector-button:hover {
 
 /* ─── Accessibility — visible focus ring, incl. dark theme (recette 1.4.0 #9) ─
    Custom toggles hide their checkbox (.sr-only) and show a sibling div, so the
-   ring is drawn on that sibling when the (invisible) input has keyboard focus. */
+   ring is drawn on that sibling when the (invisible) input has keyboard focus.
+
+   Couleur : l'accent orange de charte, pas l'indigo primaire. Avec
+   outline-offset:2px l'anneau se dessine sur le fond autour de l'élément
+   (surface/surface2/surface3 selon l'endroit), et l'indigo n'y tient que
+   2.4:1 à 3.1:1 selon le fond — sous les 3:1 exigés pour un indicateur
+   d'interface (WCAG 1.4.11), un anneau de focus qu'on distingue mal est un
+   anneau qui ne sert à rien. L'orange y tient 5.8:1 à 7.6:1 partout. */
 a:focus-visible,
 button:focus-visible,
 .btn:focus-visible,
@@ -1004,14 +1027,15 @@ input[type="text"]:focus-visible,
 input[type="password"]:focus-visible,
 input[type="email"]:focus-visible,
 input[type="radio"]:focus-visible,
+input[type="checkbox"]:focus-visible,
 input[type="file"]:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--indigo);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 4px;
 }
 input.sr-only:focus-visible ~ div {
-  outline: 2px solid var(--indigo);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

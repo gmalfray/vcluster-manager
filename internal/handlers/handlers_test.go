@@ -270,3 +270,25 @@ func TestRequireAdmin_ToastRendered(t *testing.T) {
 		t.Errorf("expected error toast in body, got: %q", body)
 	}
 }
+
+// TestRequireAdmin_DoesNotRedirectToLogin verrouille l'arbitrage 401 vs 403 :
+// un lecteur authentifié qui tente une action admin sait qui il est, il n'a
+// juste pas le droit. Le rediriger vers /auth/login lui ferait croire qu'il
+// est déconnecté, ce qui est faux et trompeur. Seul le middleware d'authen-
+// tification (redirectToLogin, package auth) doit poser HX-Redirect ; un 403
+// applicatif comme celui-ci reste un toast HTMX classique, sur place.
+func TestRequireAdmin_DoesNotRedirectToLogin(t *testing.T) {
+	h := minimalHandlers()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("HX-Request", "true")
+
+	h.requireAdmin(w, r)
+
+	if got := w.Header().Get("HX-Redirect"); got != "" {
+		t.Errorf("HX-Redirect = %q, want none: un 403 (droits insuffisants) ne doit pas rediriger vers le login", got)
+	}
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+}

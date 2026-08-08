@@ -3,17 +3,20 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // GetNamespaceProtection reports whether the vcluster host namespace carries
 // the protect-deletion annotation.
 //
 // The error return exists to separate "we looked and it's not there" from
-// "we couldn't look" — the same distinction HostNamespaceExists makes below,
+// "we couldn't look" — the same distinction HostNamespaceState makes below,
 // for the same reason: a caller that treats a failed read as "not protected"
 // silently drops a safeguard on an API hiccup instead of on an actual
 // decision. A missing namespace is not a failed read, though: it is itself
@@ -50,22 +53,71 @@ func (s *StatusClient) SetNamespaceProtection(ctx context.Context, name string, 
 	return err
 }
 
-// HostNamespaceExists dit si le namespace hôte du vcluster est là.
+// NamespaceState est ce qu'un seul Get dit du cycle de vie d'un namespace :
+// s'il existe, depuis quand il est condamné (s'il l'est), et ce que
+// l'apiserver écrit lui-même sur ce qui bloque sa terminaison.
 //
-// Trois réponses et non deux, délibérément : « il existe », « il n'existe pas »,
-// et « je n'ai pas pu savoir ». Même doctrine que GetNamespaceProtection
-// juste au-dessus (qui a longtemps rendu false aussi bien pour une absence
-// d'annotation que pour un namespace illisible, avant de gagner son propre
-// retour d'erreur) — et cette fonction-ci sert à décider s'il faut exiger une
-// sauvegarde avant destruction, donc confondre les deux ferait sauter le
-// filet sur un hoquet d'API.
-func (s *StatusClient) HostNamespaceExists(ctx context.Context, name string) (exists, known bool) {
-	_, err := s.client.Resource(namespaceGVR).Get(ctx, "vcluster-"+name, metav1.GetOptions{})
-	if err == nil {
-		return true, true
-	}
+// Conditions porte status.conditions tel quel — NamespaceFinalizersRemaining,
+// NamespaceContentRemaining, NamespaceDeletionContentFailure, avec le
+// finalizer ou la ressource concernée dans Message. C'est ce qui permet de
+// NOMMER ce qui retient un namespace au lieu de deviner : deviner a fait dire
+// « un finalizer tiers le retient » sur un namespace vieux de dix-sept
+// secondes en recette, où rien ne le retenait du tout.
+type NamespaceState struct {
+	Exists            bool
+	DeletionTimestamp time.Time
+	Conditions        []corev1.NamespaceCondition
+}
+
+// HostNamespaceState lit le namespace hôte du vcluster en un seul Get.
+//
+// known distingue « j'ai regardé, il n'est pas là » de « je n'ai pas pu
+// regarder » — même doctrine que GetNamespaceProtection juste au-dessus (qui a
+// longtemps rendu false aussi bien pour une absence d'annotation que pour un
+// namespace illisible, avant de gagner son propre retour d'erreur). Un
+// namespace absent n'est pas une lecture ratée : c'est lui-même la réponse.
+func (s *StatusClient) HostNamespaceState(ctx context.Context, name string) (state NamespaceState, known bool) {
+	ns, err := s.client.Resource(namespaceGVR).Get(ctx, "vcluster-"+name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return false, true
+		return NamespaceState{}, true
 	}
-	return false, false
+	if err != nil {
+		return NamespaceState{}, false
+	}
+	state.Exists = true
+	if dt := ns.GetDeletionTimestamp(); dt != nil {
+		state.DeletionTimestamp = dt.Time
+	}
+	state.Conditions = namespaceConditions(ns)
+	return state, true
+}
+
+// namespaceConditions convertit status.conditions, lu comme n'importe quel
+// autre champ d'un objet non typé, vers le type stable de l'API Kubernetes —
+// pour porter les mêmes Type/Status/Reason/Message que `kubectl get ns -o
+// yaml` montrerait, sans les redéfinir à côté.
+func namespaceConditions(ns *unstructured.Unstructured) []corev1.NamespaceCondition {
+	raw, found, err := unstructured.NestedSlice(ns.Object, "status", "conditions")
+	if err != nil || !found {
+		return nil
+	}
+	conds := make([]corev1.NamespaceCondition, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		conds = append(conds, corev1.NamespaceCondition{
+			Type:    corev1.NamespaceConditionType(nestedStringField(m, "type")),
+			Status:  corev1.ConditionStatus(nestedStringField(m, "status")),
+			Reason:  nestedStringField(m, "reason"),
+			Message: nestedStringField(m, "message"),
+		})
+	}
+	return conds
+}
+
+func nestedStringField(m map[string]interface{}, key string) string {
+	v, _ := m[key].(string)
+	return v
 }

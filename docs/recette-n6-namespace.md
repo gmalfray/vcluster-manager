@@ -200,9 +200,11 @@ pour l'occasion.
    - le CR **est toujours là**.
 
    **Ce qui invalide le cas** : le CR est parti. Rien ne prouvait la disparition.
-6. Vérifier le rythme de réessai : la condition doit garder le **même**
-   `lastTransitionTime` d'un tour à l'autre (c'est l'ancre du délai), et les logs doivent
-   montrer un passage toutes les 30 s. Compter aussi les lignes d'audit :
+6. Vérifier le rythme de réessai : `kubectl get ns vcluster-recette-n6-b -o
+   jsonpath='{.metadata.deletionTimestamp}'` doit garder la **même** valeur
+   d'un tour à l'autre (c'est l'ancre du délai — voir la note ci-dessous), et
+   les logs doivent montrer un passage toutes les 30 s. Compter aussi les
+   lignes d'audit :
 
    ```bash
    kubectl -n $CRNS logs $OPDEPLOY --since=5m \
@@ -217,12 +219,40 @@ pour l'occasion.
    noyait la seule qui compte.
 
    **Ce qui invalide le cas** : plus d'une ligne. Le filtre ne fait pas son travail.
+
+   > **Note post-challenge N6 (namespace).** Ce filtre a changé d'étage depuis
+   > le passage ci-dessus, sans changer ce que ce point mesure. Il vivait dans
+   > `kubernetes.DeleteHostNamespace` (un `Get` avant le `Delete`, pour ne pas
+   > écrire une ligne d'audit sur un namespace déjà en Terminating) ; il vit
+   > maintenant dans l'ORDRE du contrôleur — celui-ci observe le namespace
+   > *avant* d'agir, et n'appelle `DeleteHostNamespace` que quand cette
+   > observation vient de montrer un namespace sans `deletionTimestamp`. Sur
+   > un namespace déjà condamné, le contrôleur ne rappelle plus
+   > `DeleteHostNamespace` du tout — l'attendu de ce point n'a pas bougé.
+   >
+   > La borne des dix minutes s'ancre elle aussi différemment : sur le
+   > `deletionTimestamp` du namespace lui-même (`metadata.deletionTimestamp`,
+   > posé par l'apiserver), plus sur la `lastTransitionTime` de la condition
+   > `NamespaceRemoved`. C'est ce qui a fermé le bug trouvé au cas D 6bis
+   > ci-dessous — voir la note qui y est attachée.
 7. Attendre **dix minutes** après l'heure notée au point 4. **Attendu** :
    - `NamespaceRemoved=Unknown/RemovalUnconfirmed` ;
-   - le message nomme le namespace resté debout ET l'état dans lequel il est laissé :
-     « le namespace vcluster-recette-n6-b est toujours là après 10m0s : un finalizer tiers
-     le retient, ou la Kustomization Flux du tenant le réapplique — à finir à la main ;
-     sa protection a été levée et ses finalizers Flux retirés — il ne tient plus à rien » ;
+   - le message nomme le namespace resté debout ET l'état dans lequel il est laissé.
+     **Ce texte a changé depuis le passage du 2026-08-08** (voir la note
+     post-challenge N6 au point 6) : il ne devine plus, il cite
+     `namespace.status.conditions`. Pour le finalizer tiers `recette.local/bloque`
+     posé au point 2, ce que le namespace controller y rapporte typiquement est
+     `NamespaceFinalizersRemaining`, donc un message de la forme :
+     « le namespace vcluster-recette-n6-b est toujours là après 10m0s : some finalizers
+     remain: recette.local/bloque ; sa protection a été levée et ses finalizers Flux
+     retirés — il ne tient plus à rien ».
+     Si `status.conditions` ne rapporte encore rien au moment du renoncement (rare,
+     mais possible si le namespace controller n'est pas encore repassé), le message dit
+     honnêtement « l'apiserver ne rapporte encore aucune cause dans status.conditions —
+     à inspecter à la main » plutôt que de deviner une cause plausible — **c'est
+     l'ancien texte** (« un finalizer tiers le retient, ou la Kustomization Flux du
+     tenant le réapplique ») **qu'il ne faut plus voir apparaître** : sa présence
+     signalerait une régression ;
    - le CR est lâché juste après.
 
 **Retour arrière** — obligatoire, sinon le namespace reste en Terminating pour toujours :
@@ -380,12 +410,22 @@ dégradée le temps du cas.
 
 6 bis. **Le refus prolongé — c'est ce point qui a trouvé le bug, ne pas le sauter.**
    Rejouer les points 1 à 5 sur une cible `recette-n6-d-long`, mais en laissant le refus
-   durer **plus de dix minutes** avant de remettre le ClusterRole. Relever l'ancre d'abord :
+   durer **plus de dix minutes** avant de remettre le ClusterRole.
+
+   > **Note post-challenge N6 (namespace).** Ce bug est désormais fermé
+   > structurellement, pas seulement corrigé : la borne s'ancre sur
+   > `namespace.metadata.deletionTimestamp`, posé par l'apiserver, jamais par
+   > l'opérateur — et un refus n'en pose aucun. Il n'y a donc plus d'horloge à
+   > prêter. Ce point reste dans le plan pour vérifier que la fermeture tient,
+   > pas parce que le bug est encore ouvert. La commande de relevé change en
+   > conséquence : ce qu'il faut relever avant le refus n'est plus la
+   > condition du CR, mais confirmer qu'il n'y a PAS de `deletionTimestamp`
+   > tant que le refus dure — sinon quelque chose d'autre l'a posé.
 
    ```bash
-   kubectl -n $CRNS get vcluster recette-n6-d-long -o jsonpath='
-   {range .status.conditions[?(@.type=="NamespaceRemoved")]}{.status}/{.reason} depuis {.lastTransitionTime}{end}{"\n"}'
-   # attendre que cette date ait plus de 10 minutes, PUIS remettre le ClusterRole
+   kubectl get ns vcluster-recette-n6-d-long -o jsonpath='{.metadata.deletionTimestamp}{"\n"}'
+   # attendu : vide, tant que le ClusterRole refuse le delete
+   # attendre plus de 10 minutes dans cet état, PUIS remettre le ClusterRole
    ```
 
    **Attendu** : après la remise du droit, le CR **attend** la disparition réelle du
@@ -393,11 +433,11 @@ dégradée le temps du cas.
 
    **Ce qui invalide le cas** : le CR disparaît dans les secondes qui suivent la remise du
    droit alors que `kubectl get ns vcluster-recette-n6-d-long` répond encore `Terminating`.
-   C'est le bug d'ancre — le refus prêtait sa vieille horloge à l'attente qui commençait —
-   et son symptôme lisible est un message d'adieu qui accuse « un finalizer tiers le
+   C'était le bug d'ancre — le refus prêtait sa vieille horloge à l'attente qui commençait —
+   et son symptôme lisible était un message d'adieu qui accusait « un finalizer tiers le
    retient, ou la Kustomization Flux du tenant le réapplique » sur un `deletionTimestamp`
-   vieux de quelques secondes. Si vous lisez cette phrase-là avec un namespace fraîchement
-   condamné, ne cherchez pas le finalizer tiers : c'est l'opérateur qui ment.
+   vieux de quelques secondes. Un message pareil sur un namespace fraîchement condamné
+   voudrait dire que la fermeture du point 2 a régressé.
 
 **Retour arrière** : le point 5, et il n'est pas optionnel. Vérifier avec
 `kubectl diff -f /tmp/n6-clusterrole.bak.yaml` qu'il ne reste aucun écart. Si la

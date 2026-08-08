@@ -313,6 +313,119 @@ qu'un nom — et un nom est l'identité de l'objet, pas un champ géré (ce que
 Verdict inchangé pour la production : **No-Go prod.** Ce qui a tourné est la
 séquence de suppression sur des vclusters jetables, pas le cycle complet.
 
+## Le challenge N6 sur le namespace : `HostNamespaceState` rend plus qu'un booléen
+
+Quatre verdicts d'un challenge sur le cas B/D de la recette convergeaient vers
+le même changement de seam, et ont été traités ensemble.
+
+**1. Le seam pivot, appliqué.** `HostNamespaceState` rendait `(exists, known
+bool)` ; elle rend maintenant `service.NamespaceState{Exists, Known,
+DeletionTimestamp, Conditions}`, en un seul `Get`. C'est ce qui débloque les
+trois points suivants — sans lui, aucun des trois n'avait où s'accrocher.
+
+**2. L'ancre du délai, appliquée — c'est le changement qui compte.**
+`namespaceRemovalGiveUpAfter` s'ancrait sur la `LastTransitionTime` d'une
+condition que l'opérateur écrit lui-même (`CondNamespaceRemoved`). C'était le
+seul endroit du finalizer à le faire ; les deux autres bornes (Rancher, la
+sauvegarde) s'ancrent sur des faits observés. Ce défaut a produit un bug réel
+en recette (cas D 6bis) : un refus de suppression prolongé prêtait sa vieille
+horloge à l'attente qui commençait dès que le droit était corrigé, et le CR
+partait sans avoir observé la disparition une seule fois — avec un message qui
+accusait un finalizer tiers inexistant.
+
+L'ancre est maintenant `namespace.metadata.deletionTimestamp`, posé par
+l'apiserver, jamais par l'opérateur. Un refus ne le pose pas — la classe de bug
+entière devient **impossible par construction** plutôt que corrigée par un
+garde qu'il faut défendre. Conséquence sur les deux verrous que le correctif
+d'origine avait posés :
+
+- **Le refus écrit sur `CondVClusterReady`, pas sur `CondNamespaceRemoved`** —
+  gardé, mais ce n'est plus un correctif à défendre : un refus ne pose aucun
+  `deletionTimestamp`, donc le code qui écrit `CondNamespaceRemoved` n'est
+  simplement jamais atteint sur ce chemin. La séparation est devenue une
+  conséquence de l'ordre du code, pas un contournement.
+- **Le filtre de raison dans `namespaceRemovalOverdue`** — devenu du bruit,
+  **supprimé**, avec la fonction elle-même. Il défendait l'ancre contre une
+  raison étrangère qui aurait pu s'y poser ; l'ancre n'étant plus une condition
+  écrite par l'opérateur, il n'y a plus rien à défendre.
+
+Effet de bord assumé, pas caché : la borne ne se déclenche plus tant que l'état
+du namespace n'a jamais pu être lu ne serait-ce qu'une fois (`Known=false` en
+continu). Avant, dix minutes d'illisibilité suffisaient à lâcher le CR avec un
+message « je n'ai pas pu vérifier ». C'était relâcher un objet sur une
+incertitude totale — l'inverse de « inconnu n'est pas faux ». Le résiduel
+pratique est faible : cet état suppose que le `Get` qui a réussi une étape plus
+tôt pour `GetProtection` échoue ensuite pour `HostNamespaceState`, sur le même
+tour.
+
+**3. Le `Get` redondant dans `kubernetes.DeleteHostNamespace`, appliqué.** Il
+lisait le namespace avant de le supprimer pour la seule raison de ne pas
+journaliser une suppression sur un objet déjà en Terminating. Avec le point 1,
+le contrôleur observe déjà l'objet avant d'agir ; `DeleteHostNamespace` n'est
+plus appelée que sur un namespace tout juste vu sans `deletionTimestamp`. Le
+`Get` préalable et le retour `requested bool` ont donc disparu — un appel qui
+réussit est une suppression réelle, l'audit journalise sans condition.
+
+Tests retirés parce que la propriété qu'ils vérifiaient n'existe plus au niveau
+qu'ils testaient :
+- `kubernetes.TestDeleteHostNamespaceIsReplayable` et
+  `TestDeleteHostNamespaceReadRefusalIsAnError` — la lecture qu'ils
+  vérifiaient n'existe plus dans cette fonction.
+- `service.TestDeleteHostNamespaceAuditsATerminatingNamespaceOnlyOnce` — le
+  filtre qu'il vérifiait a été retiré ; appeler `DeleteHostNamespace` deux fois
+  sur le même namespace journalise maintenant deux fois, par construction.
+
+La propriété qui comptait — **une ligne d'audit par suppression réelle, aucune
+sur une redemande** — n'a pas disparu, elle a changé d'étage : elle vit
+maintenant dans l'ORDRE du contrôleur, pas dans un filtre du service. Elle est
+couverte par un nouveau test au niveau contrôleur,
+`TestNamespaceRemovalOnlyRequestsDeletionOnce`, qui vérifie que
+`DeleteHostNamespace` n'est appelée qu'une fois sur trois tours de reconcile
+quand le namespace reste en Terminating après le premier.
+
+**4. Le message d'abandon devine, appliqué.** Il disait « un finalizer tiers le
+retient, ou la Kustomization Flux du tenant le réapplique » — sur CHAQUE
+abandon, qu'il y ait une vraie cause ou non. La recette a mesuré ce que ça
+vaut : sur un namespace dont le `deletionTimestamp` avait dix-sept secondes, ce
+message accusait un finalizer tiers qui n'existait pas. `namespace.status.
+conditions` porte la réponse — `NamespaceFinalizersRemaining`,
+`NamespaceContentRemaining`, `NamespaceDeletionContentFailure`, avec le
+finalizer ou la ressource en cause dans `Message`. `namespaceGiveUpDetail`
+les lit et les cite ; si l'apiserver n'a encore rien rapporté, le message le
+dit honnêtement plutôt que d'inventer une cause plausible.
+
+**5. Deux broutilles, tranchées.**
+- Le commentaire de `namespaceRemovalGiveUpAfter` affirmait « comme Rancher, et
+  pour la même raison » — faux, corrigé : la borne Rancher couvre un job tiers
+  qui traîne, celle-ci couvre une terminaison de namespace (grâce des pods,
+  détachement CSI, kubelet). Au-delà de dix minutes, une terminaison normale a
+  fini ; ce qui reste debout est un finalizer, pas un délai.
+- `deletionRun` — **supprimé**. `reconcileFinalTeardown` et
+  `reconcileNamespaceRemoval` étaient TOUJOURS jouées dans le même tour de
+  reconcile (vérifié : la seconde ne peut être atteinte que si la première a
+  rendu `true`, dans la même boucle `for` de `runDeletionSequence`), donc le
+  type qui faisait transiter les avertissements du teardown d'une fonction à
+  l'autre était une indirection sans rôle. Les deux fonctions sont fusionnées
+  en `reconcileFinalTeardownAndNamespaceRemoval` ; `warnings` est une variable
+  locale, `deletionRun` a disparu, avec un paramètre sur cinq signatures et
+  trois `_ *deletionRun` inutilisés. Vérifié : zéro test à réécrire pour cause
+  de comportement changé — seuls des commentaires qui nommaient l'ancienne
+  fonction ont bougé.
+
+Vérifié par mutation, sur les cinq points : la réobservation après `delete`
+retirée (treize tests tombent — c'est elle qui rend l'issue rapide du cas
+courant), l'appel à `DeleteHostNamespace` rendu inconditionnel (le test du
+point 3 tombe), le message d'abandon remis à la devinette d'origine (les deux
+tests du point 4 tombent), l'ancre remise sur `vc.DeletionTimestamp` au lieu du
+namespace (deux tests du point 2 tombent), le `NotFound` de
+`kubernetes.DeleteHostNamespace` remonté en erreur au lieu d'être absorbé, la
+ligne d'audit supprimée du service, `Conditions` jamais rempli, le `Stage` de
+la fonction fusionnée jamais mis à jour — chacune fait tomber son test.
+
+`go build`, `go vet` et `go test -race ./...` verts sur les trois couches
+touchées (`internal/kubernetes`, `internal/service`, `internal/controller`) ;
+`golangci-lint run ./...` à zéro issue.
+
 ## Dette soldée : les six seams se sont rejoints
 
 Les chantiers récupéraient leurs dépendances de service par **assertion de type sur

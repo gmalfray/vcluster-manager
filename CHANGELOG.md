@@ -6,7 +6,49 @@ Toutes les modifications notables sont documentées ici. Le format suit
 
 ## [Unreleased]
 
+### Added
+- **Opérateur — Events Kubernetes** : `Normal/Deleted` et `Warning/DeletedWithLeftovers`, émis
+  au seul endroit où l'information **disparaît** — la conclusion de la suppression s'écrit dans
+  le status d'un objet dont le finalizer part deux appels plus loin. Pendant la recette réelle,
+  la seule façon d'apprendre que Keycloak et Vault n'avaient pas été nettoyés a été de fouiller
+  les logs du pod. Rien n'est émis sur les états stables (budget refusé, protection illisible,
+  étapes intermédiaires) : sur une boucle à 30 s, le bruit noierait le signal.
+- **`status.podCount` est rempli**, sans jamais confondre « lecture ratée » et « aucun pod » —
+  le piège est structurel, un `int` vaut 0 par défaut. Sur une lecture qui n'aboutit pas, la
+  dernière valeur connue reste.
+- **`ArgoCDReady` lit la Kustomization `argocd-<nom>`** en plus du client OIDC Keycloak, et
+  raffine la condition avec ce que le cluster montre. Le volet dépôt GitLab reste hors de
+  portée et le message le dit : `AppManifestsRepoExists` confond « dépôt absent » et « API en
+  échec », le câbler ferait lire « ArgoCD est cassé » sur un hoquet.
+- **Une `ValidatingAdmissionPolicy`** borne le `delete` cluster-wide de l'opérateur aux
+  namespaces `vcluster-*` porteurs du label que `hostNamespace()` pose. Validation sur
+  `oldObject` — sinon l'attaque se rejoue en deux temps via le SSA du provisionnement — et
+  binding en `Warn`/`Audit` d'abord, la flotte vivante n'ayant pas encore le label. Une seconde
+  VAP contraint `metadata.name` à la création d'un `VCluster`.
+- **Règle CEL sur le nom du `VCluster`** (`^[a-z][a-z0-9-]{0,53}$`) : appliquée par l'API
+  server, avec un message lisible, au lieu d'un `Accepted=False` posé après coup. Le 54 est la
+  limite physique — `vcluster-` + le nom dans les 63 caractères d'un nom de namespace.
+  `service.ValidName` gagne le même plafond, qui lui manquait.
+
 ### Fixed
+- **Opérateur — le ClusterRole autorise la lecture des quotas de la cell.** Sans `list` sur les
+  `resourcequotas`, l'étape budget échoue et **aucun `VCluster` n'est réconcilié** : ni
+  provisionnement, ni status, ni finalizer. Trouvé à la première minute de la recette réelle, et
+  invisible en test — **envtest n'applique pas le RBAC**, donc les 41 fichiers de test étaient
+  verts sur un opérateur inopérant en production.
+- **Opérateur — la borne de dix minutes fuyait d'un échec à l'autre.** `NamespaceRemoved=False`
+  était écrite par l'attente *et* par le refus, et `SetStatusCondition` ne remet
+  `LastTransitionTime` à zéro que si le *statut* change, pas la raison. Après un `forbidden`
+  prolongé — le ClusterRole non redéployé — la borne était déjà dépassée : au premier tour
+  réussi, le CR partait **sans observer**, en accusant un finalizer tiers. Reproduit sur cluster
+  réel (CR lâché 17 s après la remise du droit, sur un namespace jamais disparu), puis fermé et
+  revérifié sur le même scénario.
+- **L'audit ne journalise plus une suppression par tour** sur un namespace déjà en Terminating :
+  une vingtaine de lignes identiques noyaient la seule qui comptait.
+- **« Inconnu n'est pas faux » tenu jusqu'à l'écran** : le fragment HTMX de protection rendait du
+  vide sur une lecture ratée — le « Chargement... » était remplacé par rien, définitivement. Il
+  affiche désormais « état non lisible » avec sa cause.
+
 - **Opérateur — la suppression supprime enfin le namespace** (arbitrage N6). L'étape
   `Destroying` du finalizer retirait les finalizers Flux « pour que le namespace puisse être
   supprimé », puis annonçait « séquence de suppression terminée » : la suppression réelle était

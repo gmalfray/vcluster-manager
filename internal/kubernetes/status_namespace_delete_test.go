@@ -46,13 +46,8 @@ func namespaceExists(t *testing.T, s *StatusClient, name string) bool {
 func TestDeleteHostNamespacePrefixesTheName(t *testing.T) {
 	s := NewTestStatusClient(namespaceObj("vcluster-demo"), namespaceObj("demo"))
 
-	requested, err := s.DeleteHostNamespace(context.Background(), "demo")
-	if err != nil {
+	if err := s.DeleteHostNamespace(context.Background(), "demo"); err != nil {
 		t.Fatalf("suppression : %v", err)
-	}
-	if !requested {
-		t.Fatal("requested=false alors que le namespace était bien là : l'audit ne dira " +
-			"jamais qu'un namespace a été supprimé")
 	}
 	if namespaceExists(t, s, "vcluster-demo") {
 		t.Fatal("vcluster-demo est toujours là : la suppression n'a pas porté")
@@ -63,44 +58,18 @@ func TestDeleteHostNamespacePrefixesTheName(t *testing.T) {
 	}
 }
 
-// Un namespace déjà absent n'est pas une erreur, et ne se journalise pas.
+// Un namespace déjà absent n'est pas une erreur.
 //
-// Les deux moitiés comptent. Si l'absence remontait en erreur, le finalizer —
-// qui rejoue cette étape à chaque tour — repartirait en boucle d'échecs sur une
-// suppression qui a réussi. Et si `requested` valait true, chaque tour
-// écrirait une ligne d'audit « namespace supprimé » pour un namespace qui
-// n'était plus là depuis longtemps.
-func TestDeleteHostNamespaceAbsentIsNeitherAnErrorNorAnAuditLine(t *testing.T) {
+// La méthode n'a plus à filtrer une redemande sur un namespace déjà en
+// Terminating — c'est désormais l'affaire de l'appelant, qui observe avant
+// d'appeler (voir HostNamespaceState). Ce qui reste ici, en défense, c'est le
+// cas où le namespace a disparu entre l'observation de l'appelant et cet
+// appel : ni erreur, ni panique.
+func TestDeleteHostNamespaceAbsentIsNotAnError(t *testing.T) {
 	s := NewTestStatusClient()
 
-	requested, err := s.DeleteHostNamespace(context.Background(), "jamais-monte")
-	if err != nil {
-		t.Fatalf("un namespace absent doit rendre (false, nil), pas une erreur : %v", err)
-	}
-	if requested {
-		t.Fatal("requested=true sur un namespace qui n'existait pas : l'audit annoncerait " +
-			"une suppression qui n'a rien supprimé")
-	}
-}
-
-// L'appel est rejoué à chaque tour du finalizer tant que la disparition n'est
-// pas constatée. Le deuxième appel doit donc être aussi calme que le premier :
-// pas d'erreur, et plus rien à journaliser.
-func TestDeleteHostNamespaceIsReplayable(t *testing.T) {
-	ctx := context.Background()
-	s := NewTestStatusClient(namespaceObj("vcluster-demo"))
-
-	if _, err := s.DeleteHostNamespace(ctx, "demo"); err != nil {
-		t.Fatalf("premier appel : %v", err)
-	}
-	requested, err := s.DeleteHostNamespace(ctx, "demo")
-	if err != nil {
-		t.Fatalf("rejouer la suppression doit rester sans erreur, sinon le finalizer boucle "+
-			"sur un échec permanent : %v", err)
-	}
-	if requested {
-		t.Fatal("requested=true au deuxième appel : une ligne d'audit par tour de reconcile " +
-			"pour une seule suppression réelle")
+	if err := s.DeleteHostNamespace(context.Background(), "jamais-monte"); err != nil {
+		t.Fatalf("un namespace absent doit rendre nil, pas une erreur : %v", err)
 	}
 }
 
@@ -122,50 +91,14 @@ func TestDeleteHostNamespaceRefusalIsAnError(t *testing.T) {
 		return false, nil, nil
 	}, namespaceObj("vcluster-demo"))
 
-	requested, err := s.DeleteHostNamespace(context.Background(), "demo")
+	err := s.DeleteHostNamespace(context.Background(), "demo")
 	if err == nil {
-		t.Fatal("un refus de l'API server rendu (false, nil) : la séquence de suppression " +
+		t.Fatal("un refus de l'API server rendu nil : la séquence de suppression " +
 			"continuerait comme si la demande était partie")
-	}
-	if requested {
-		t.Fatal("requested=true sur un refus : l'audit annoncerait une suppression refusée")
 	}
 	// Le message est ce qu'un exploitant lit dans la condition NamespaceRemoved
 	// quand le CR reste coincé. S'il ne nomme pas le namespace, la condition ne
 	// dit pas sur quoi le droit manque.
-	if !strings.Contains(err.Error(), "vcluster-demo") {
-		t.Fatalf("l'erreur ne nomme pas le namespace concerné : %q", err)
-	}
-}
-
-// Le refus peut tomber sur la LECTURE, pas seulement sur la suppression — c'est
-// même le cas le plus probable d'un RBAC incomplet, `get` et `delete` étant deux
-// verbes distincts.
-//
-// Cette lecture existe pour distinguer « je viens de le condamner » de « il
-// l'était déjà ». Quand elle échoue, on ne sait ni l'un ni l'autre : rendre
-// (false, nil) dirait « il n'y avait rien à supprimer » sur un hoquet d'API, et
-// le finalizer conclurait la séquence sur cette phrase-là.
-func TestDeleteHostNamespaceReadRefusalIsAnError(t *testing.T) {
-	refus := apierrors.NewForbidden(
-		namespaceGVR.GroupResource(), "vcluster-demo",
-		errors.New(`namespaces "vcluster-demo" is forbidden: User "system:serviceaccount:vcluster-manager:operator" cannot get resource "namespaces"`))
-
-	s := NewTestStatusClientWithReactor(func(action clienttesting.Action) (bool, runtime.Object, error) {
-		if action.GetVerb() == "get" && action.GetResource().Resource == "namespaces" {
-			return true, nil, refus
-		}
-		return false, nil, nil
-	}, namespaceObj("vcluster-demo"))
-
-	requested, err := s.DeleteHostNamespace(context.Background(), "demo")
-	if err == nil {
-		t.Fatal("lecture refusée rendue (false, nil) : « je n'ai pas pu regarder » " +
-			"passerait pour « il n'y avait rien à supprimer »")
-	}
-	if requested {
-		t.Fatal("requested=true alors que rien n'a pu être lu ni supprimé")
-	}
 	if !strings.Contains(err.Error(), "vcluster-demo") {
 		t.Fatalf("l'erreur ne nomme pas le namespace concerné : %q", err)
 	}

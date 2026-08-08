@@ -449,54 +449,26 @@ func (s *StatusClient) CleanupNamespace(ctx context.Context, name string) error 
 
 // DeleteHostNamespace demande la suppression du namespace hôte du vcluster.
 //
-// Idempotente au sens qui compte ici : un namespace déjà absent, ou déjà en
-// Terminating, n'est pas une erreur. Le finalizer la rejoue à chaque tour tant
-// qu'il n'a pas CONSTATÉ la disparition — c'est l'observation qui conclut, pas
-// le succès de cet appel. Un `delete` sur un objet en Terminating ne fait rien
-// et rend 200, donc rejouer ne prolonge ni ne relance rien.
+// Pas de Get préalable : c'est désormais l'affaire de l'appelant. Le
+// finalizer observe d'abord avec HostNamespaceState — un seul Get, qui donne
+// aussi le deletionTimestamp — et n'appelle cette méthode QUE quand cette
+// observation vient de montrer un namespace vivant, pas encore condamné.
+// Chaque appel ici est donc une suppression réelle, jamais une redemande sur
+// un objet déjà en Terminating : plus besoin de relire l'objet une seconde
+// fois pour le savoir.
 //
-// `requested` dit si CET appel a déclenché quelque chose de neuf. Il ne sert pas
-// à décider — c'est l'observation qui conclut — mais à ne pas écrire une ligne
-// d'audit « namespace supprimé » qui n'aurait rien supprimé.
-//
-// D'où la lecture préalable, qui n'est pas une précaution mais la seule façon de
-// répondre à cette question. L'API server accepte un `DELETE` sur un namespace
-// déjà en Terminating : il rend 200, donc le code retour ne distingue pas
-// « je viens de le condamner » de « il l'était déjà ». Sans ce Get, un namespace
-// qu'un finalizer tiers retient dix minutes produisait une vingtaine de lignes
-// d'audit identiques pour une seule suppression réelle — et noyait la seule qui
-// compte.
-//
-// Une lecture ratée n'est pas une absence : on ne conclut pas, on remonte
-// l'erreur, et le finalizer réessaiera. Ne pas rendre `(false, nil)` ici, ce
-// serait dire « il n'y avait rien à supprimer » sur un hoquet d'API.
+// Idempotente quand même, en défense : un namespace parti entre l'observation
+// de l'appelant et cet appel n'est pas une erreur — le Delete rend NotFound,
+// et on le traite comme un succès sans rien de plus à faire.
 //
 // L'appelant doit avoir validé le nom : tout ce qui suit le concatène dans un
 // namespace, et ce qui est supprimé ici l'est pour de bon.
-func (s *StatusClient) DeleteHostNamespace(ctx context.Context, name string) (requested bool, err error) {
-	ns, err := s.client.Resource(namespaceGVR).Get(ctx, "vcluster-"+name, metav1.GetOptions{})
-	switch {
-	case apierrors.IsNotFound(err):
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("lecture du namespace vcluster-%s avant suppression : %w", name, err)
-	case ns.GetDeletionTimestamp() != nil:
-		// Déjà condamné. Redemander ne l'accélère pas et ne le prolonge pas ; ce
-		// qui reste à faire est de constater, et c'est l'affaire de l'appelant.
-		return false, nil
+func (s *StatusClient) DeleteHostNamespace(ctx context.Context, name string) error {
+	err := s.client.Resource(namespaceGVR).Delete(ctx, "vcluster-"+name, metav1.DeleteOptions{})
+	if err == nil || apierrors.IsNotFound(err) {
+		return nil
 	}
-
-	err = s.client.Resource(namespaceGVR).Delete(ctx, "vcluster-"+name, metav1.DeleteOptions{})
-	switch {
-	case err == nil:
-		return true, nil
-	case apierrors.IsNotFound(err):
-		// Parti entre le Get et le Delete. Rien à journaliser : ce n'est pas cet
-		// appel qui l'a emporté.
-		return false, nil
-	default:
-		return false, fmt.Errorf("suppression du namespace vcluster-%s : %w", name, err)
-	}
+	return fmt.Errorf("suppression du namespace vcluster-%s : %w", name, err)
 }
 
 // CountVClusterPods reports how many pods are running in a vcluster's host
