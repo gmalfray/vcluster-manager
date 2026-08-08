@@ -321,7 +321,7 @@ func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
 		// cleaning state. The wait-for-job-then-delete goroutine is an async
 		// concern, so it's launched here, not inside the service.
 		k8s := h.k8sForEnv(res.CleaningEnv)
-		go h.runCleanupAndDelete(name, res.CleaningEnv, k8s, res.DeletePreprod, res.DeleteProd, res.DeleteGitlab, res.DeleteKeycloak)
+		go h.runCleanupAndDelete(name, res.CleaningEnv, cleanupClient(k8s), res.DeletePreprod, res.DeleteProd, res.DeleteGitlab, res.DeleteKeycloak)
 		h.redirectWithFlash(w, "/", "info", fmt.Sprintf("Dépairage Rancher en cours — la suppression de %s sera lancée automatiquement", name))
 		return
 	}
@@ -360,10 +360,7 @@ func (h *Handlers) handleDeleteError(w http.ResponseWriter, err error) {
 // It is used both inline (initial delete request) and by startCleaningReconciler
 // (restart recovery). Stays in the handler: it's an async polling wait, not
 // business logic.
-func (h *Handlers) runCleanupAndDelete(name, env string, k8s interface {
-	ApplyManifestToVClusterViaPortForward(context.Context, string, []byte) error
-	WaitForJobComplete(context.Context, string, string, string, time.Duration) error
-}, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak bool) {
+func (h *Handlers) runCleanupAndDelete(name, env string, k8s rancherCleanupClient, deletePreprod, deleteProd, deleteGitlab, deleteKeycloak bool) {
 	ctx := context.Background()
 	if k8s != nil {
 		if err := k8s.ApplyManifestToVClusterViaPortForward(ctx, name, []byte(service.RancherCleanupManifest)); err != nil {
@@ -386,7 +383,7 @@ func (h *Handlers) startCleaningReconciler() {
 	for _, entry := range entries {
 		slog.Info("cleaning startup: resuming cleanup+deletion", "vcluster", entry.Name, "env", entry.Env)
 		k8s := h.k8sForEnv(entry.Env)
-		go h.runCleanupAndDelete(entry.Name, entry.Env, k8s,
+		go h.runCleanupAndDelete(entry.Name, entry.Env, cleanupClient(k8s),
 			entry.DeletePreprod, entry.DeleteProd, entry.DeleteGitlab, entry.DeleteKeycloak)
 	}
 }

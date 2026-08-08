@@ -42,20 +42,61 @@ func (u *Updater) GetGlobalVersion(ctx context.Context, branch string) (string, 
 	return extractImageTag(content, argocdImageName)
 }
 
-// UpdateGlobalVersion updates the ArgoCD image tag on preprod and creates a MR to master.
-func (u *Updater) UpdateGlobalVersion(ctx context.Context, tag string) (string, error) {
-	actions, err := u.buildUpdateActions(ctx, gitops.SourceBranch, tag)
+// UpdateResult reports what an UpdateGlobalVersion call actually did.
+//
+// The method used to return a bare (string, error), which conflated two very
+// different outcomes: "the ArgoCD version never reached preprod" and "it did,
+// but the MR to master could not be opened". Only the first means nothing
+// happened. Reporting the second as a plain error told the operator that the
+// update had failed while preprod had, in fact, already moved — and it invited
+// a retry, which then produced a second, redundant commit.
+//
+// This mirrors helmcharts.UpdateResult deliberately: the two updaters do the
+// same thing to the same repo, and had the same defect. Fixing one and not the
+// other would leave the trap in place on the path nobody looked at.
+type UpdateResult struct {
+	// AlreadyApplied is true when preprod already carried the target version
+	// before this call: the commit step was skipped, only the MR step ran.
+	AlreadyApplied bool
+	// MRURL is set once a preprod→master MR exists for this update, whether
+	// this call created it or found one already open.
+	MRURL string
+	// MRErr is set when preprod was updated but the MR could not be created
+	// or found. Kept out of the method's error return so a caller checking
+	// only that return never reads "the MR failed" as "nothing happened".
+	MRErr error
+}
+
+// UpdateGlobalVersion updates the ArgoCD image tag on preprod and opens a MR to
+// master. Calling it twice with the same tag is safe: once preprod is at the
+// target version the commit is skipped and only the MR step is retried.
+func (u *Updater) UpdateGlobalVersion(ctx context.Context, tag string) (UpdateResult, error) {
+	current, err := u.GetGlobalVersion(ctx, gitops.SourceBranch)
 	if err != nil {
-		return "", fmt.Errorf("building actions: %w", err)
+		return UpdateResult{}, fmt.Errorf("reading current ArgoCD version: %w", err)
 	}
 
 	commitMsg := fmt.Sprintf("feat: update ArgoCD to %s", tag)
-	if err := u.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
-		return "", fmt.Errorf("committing to preprod: %w", err)
+
+	result := UpdateResult{}
+	if current == tag {
+		result.AlreadyApplied = true
+	} else {
+		actions, err := u.buildUpdateActions(ctx, gitops.SourceBranch, tag)
+		if err != nil {
+			return UpdateResult{}, fmt.Errorf("building actions: %w", err)
+		}
+		if err := u.gitlab.Commit(ctx, gitops.SourceBranch, commitMsg, actions); err != nil {
+			return UpdateResult{}, fmt.Errorf("committing to preprod: %w", err)
+		}
 	}
 
+	// Past this point preprod carries the target version, whether this call
+	// put it there or found it already there. An MR failure below can no
+	// longer be mistaken for the version change itself having failed.
 	if mr := u.GetPendingMR(); mr != nil {
-		return mr.WebURL, nil
+		result.MRURL = mr.WebURL
+		return result, nil
 	}
 
 	mrURL, err := u.gitlab.CreateMergeRequest(
@@ -65,10 +106,12 @@ func (u *Updater) UpdateGlobalVersion(ctx context.Context, tag string) (string, 
 		fmt.Sprintf("Mise a jour d'ArgoCD vers %s en production.", tag),
 	)
 	if err != nil {
-		return "", fmt.Errorf("creating merge request: %w", err)
+		result.MRErr = fmt.Errorf("creating merge request: %w", err)
+		return result, nil
 	}
+	result.MRURL = mrURL
 
-	return mrURL, nil
+	return result, nil
 }
 
 // GetPendingMR returns any open MR for ArgoCD updates.

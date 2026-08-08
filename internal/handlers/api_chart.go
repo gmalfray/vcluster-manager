@@ -101,12 +101,25 @@ func (h *Handlers) UpdateArgoCDVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mrURL, err := h.argocdUpdater.UpdateGlobalVersion(r.Context(), version)
+	result, err := h.argocdUpdater.UpdateGlobalVersion(r.Context(), version)
 	if err != nil {
 		h.renderToast(w, "error", fmt.Sprintf("Erreur lors de la mise a jour ArgoCD : %v", err))
 		return
 	}
 
 	audit.Log(r, "update-argocd-version", "", "global", "version="+r.FormValue("version"))
-	h.redirectWithFlash(w, "/", "success", fmt.Sprintf("ArgoCD mis a jour sur preprod. MR prod : %s", mrURL))
+
+	switch {
+	case result.MRErr != nil:
+		// Same distinction as the chart update above: preprod already carries
+		// the new version, only the MR to prod failed. Reporting a bare error
+		// here would claim the update never happened.
+		h.redirectWithFlash(w, "/", "warning", fmt.Sprintf(
+			"ArgoCD mis a jour sur preprod (%s), mais la creation de la MR prod a echoue : %v. Vous pouvez reessayer : la mise a jour ne sera pas rejouee, seule la MR le sera.",
+			version, result.MRErr))
+	case result.AlreadyApplied:
+		h.redirectWithFlash(w, "/", "success", fmt.Sprintf("ArgoCD deja a jour sur preprod (%s). MR prod : %s", version, result.MRURL))
+	default:
+		h.redirectWithFlash(w, "/", "success", fmt.Sprintf("ArgoCD mis a jour sur preprod (%s). MR prod : %s", version, result.MRURL))
+	}
 }
