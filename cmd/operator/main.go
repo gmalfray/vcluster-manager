@@ -1,19 +1,24 @@
 // Command operator runs the vcluster-manager Kubernetes operator: it reconciles
-// VClusterVeleroOps markers, turning backup/restore trigger annotations into
-// Velero work by calling internal/service — the same business logic the web UI
-// calls, consumed by a third adapter (design §7).
+// VCluster et VClusterVeleroOps en appelant internal/service — la même
+// logique métier que l'UI web, consommée par un troisième adaptateur (design
+// §7).
 //
-// It is a separate binary from cmd/server on purpose. The server serves humans
-// and holds the integrations (Keycloak, GitLab, Rancher, Vault); the operator
-// runs in the cluster it reconciles and needs none of that — only a Kubernetes
-// client and the Velero half of the service.
+// C'est un binaire séparé de cmd/server, mais plus totalement étranger à ses
+// intégrations : il porte désormais ses propres clients Vault, Keycloak et
+// Rancher (voir wireIntegrations, integrations.go), parce que
+// reconcileIntegrations (internal/controller/vcluster_integrations.go) en a
+// besoin pour faire autre chose que rendre Unknown/NotConfigured. GitLab
+// reste absent : aucune étape du reconcile n'appelle de client GitLab
+// aujourd'hui — voir integrations.go pour la raison précise.
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -92,6 +97,23 @@ func main() {
 		log.Error(err, "configuration")
 		os.Exit(1)
 	}
+
+	// Vault, Keycloak, Rancher : configuration absente = Unknown/NotConfigured
+	// plus loin dans le reconcile, c'est un état légitime. Configuration
+	// incohérente (une URL sans les identifiants qui vont avec) = échec ici,
+	// tout de suite — voir integrations.go pour le détail de la règle et la
+	// divergence assumée avec cmd/server sur ce point précis.
+	wireCtx, cancelWire := context.WithTimeout(context.Background(), 30*time.Second)
+	integrations, err := wireIntegrations(wireCtx, cfg)
+	cancelWire()
+	if err != nil {
+		log.Error(err, "configuration des intégrations Vault/Keycloak/Rancher")
+		os.Exit(1)
+	}
+	logIntegrationOutcome(log, "Vault", integrations.vault != nil, cfg.VaultAddr)
+	logIntegrationOutcome(log, "Keycloak", integrations.keycloak != nil, cfg.KeycloakURL)
+	logIntegrationOutcome(log, "Rancher", integrations.rancher != nil, cfg.RancherURL)
+
 	svc := service.New(service.Deps{
 		Cfg: cfg,
 		// Le générateur ne parle à personne : il dérive des valeurs depuis le nom,
@@ -113,13 +135,15 @@ func main() {
 			VClusterPodSecurity: cfg.VClusterPodSecurity,
 			ArgoCDDefaultPolicy: cfg.ArgoCDDefaultPolicy,
 		}),
+		Keycloak:     integrations.keycloak,
+		Rancher:      integrations.rancher,
+		Vault:        integrations.vault,
 		K8sClients:   map[string]*kubernetes.StatusClient{cell: k8sClient},
 		K8sClientsMu: &sync.RWMutex{},
 	})
-	// Everything the Velero domain of the service needs is above. The other Deps
-	// (GitLab, Keycloak, Rancher, Vault…) belong to vcluster lifecycle methods
-	// this operator does not call — leaving them nil is deliberate, and a call
-	// that needed one would panic loudly rather than misbehave quietly.
+	// GitLab reste à nil : aucune étape du reconcile n'en appelle un
+	// aujourd'hui (integrations.go détaille pourquoi), donc il n'y a rien à
+	// câbler — pas un oubli.
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,

@@ -36,11 +36,45 @@ spec:
               name: probes
           # Même ConfigMap que le serveur : l'opérateur n'a besoin que de
           # VELERO_NAMESPACE et VELERO_DEFAULT_TTL, mais partager la source évite
-          # deux endroits où régler la même chose. Pas de secretRef : il ne parle
-          # ni à Keycloak, ni à GitLab, ni à Vault.
+          # deux endroits où régler la même chose. Elle porte aussi VAULT_ADDR,
+          # KEYCLOAK_URL/REALM/CLIENT_ID et RANCHER_URL, qui ne sont pas des
+          # secrets — ce sont des adresses, pas des identifiants.
           envFrom:
             - configMapRef:
                 name: vcluster-manager-config
+          # Quatre clés nommées, jamais `secretRef` sur les Secrets entiers de
+          # l'app : vcluster-manager-secrets et vcluster-manager-auth portent
+          # aussi GITLAB_TOKEN, SESSION_SECRET, ADMIN_PASSWORD, JWT_SECRET et
+          # OIDC_CLIENT_SECRET — dont wireIntegrations (cmd/operator/
+          # integrations.go) n'a rien à faire. Prendre le Secret en entier
+          # élargirait ce que la compromission de ce pod emporte bien au-delà
+          # des trois intégrations que le reconcile pilote réellement (voir
+          # docs/etat-brique-operateur.md, l'arbitrage du 2026-08-07).
+          env:
+            - name: VAULT_ROLE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: vcluster-manager-secrets
+                  key: VAULT_ROLE_ID
+                  optional: true
+            - name: VAULT_SECRET_ID
+              valueFrom:
+                secretKeyRef:
+                  name: vcluster-manager-secrets
+                  key: VAULT_SECRET_ID
+                  optional: true
+            - name: RANCHER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vcluster-manager-secrets
+                  key: RANCHER_TOKEN
+                  optional: true
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: vcluster-manager-auth
+                  key: KEYCLOAK_CLIENT_SECRET
+                  optional: true
           resources:
             requests:
               cpu: 25m
