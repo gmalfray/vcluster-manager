@@ -98,13 +98,15 @@ func (h *Handlers) renderRancher(w http.ResponseWriter, st service.RancherStatus
 		return
 	}
 	h.renderPartial(w, "rancher_status.html", map[string]interface{}{
-		"Enabled":        true,
-		"Paired":         st.Paired,
-		"Pairing":        st.Pairing,
-		"Unknown":        st.Unknown,
-		"ManuallyPaired": st.ManuallyPaired,
-		"Cleaning":       st.Cleaning,
-		"Name":           st.Name,
-		"Env":            st.Env,
+		"Enabled":            true,
+		"Paired":             st.Paired,
+		"Pairing":            st.Pairing,
+		"Unknown":            st.Unknown,
+		"ManuallyPaired":     st.ManuallyPaired,
+		"Cleaning":           st.Cleaning,
+		"Name":               st.Name,
+		"Env":                st.Env,
+		"LastPairingError":   st.LastPairingError,
+		"LastPairingErrorAt": st.LastPairingErrorAt,
 	})
 }

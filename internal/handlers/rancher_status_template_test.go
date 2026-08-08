@@ -3,10 +3,12 @@ package handlers
 import (
 	"bytes"
 	"html/template"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gmalfray/vcluster-manager/internal/config"
 	"github.com/gmalfray/vcluster-manager/internal/service"
 )
 
@@ -100,5 +102,61 @@ func TestRancherStatus_NominalPathsUnchanged(t *testing.T) {
 	})
 	if !strings.Contains(libre, "/pair-rancher") {
 		t.Error("un vcluster non appairé ne propose pas de l'appairer")
+	}
+}
+
+// TestRancherStatus_LastPairingError verrouille l'affichage du dernier échec
+// d'appairage : PairRancher tourne dans une goroutine détachée du processus
+// HTTP, donc son échec ne remontait jusqu'ici que dans les logs du pod — un
+// "en cours" qui n'aboutit jamais et un simple échec passé étaient
+// indiscernables depuis l'IHM. Le message doit apparaître quand il est
+// présent, et ne rien ajouter au repos quand il ne l'est pas — sinon toute
+// carte Rancher porterait un indicateur d'avertissement en permanence.
+func TestRancherStatus_LastPairingError(t *testing.T) {
+	avecEchec := renderRancherStatus(t, service.RancherStatus{
+		Enabled:            true,
+		Pairing:            true,
+		Name:               "demo",
+		Env:                "preprod",
+		LastPairingError:   "le cluster est resté en pending plus de 5 minutes",
+		LastPairingErrorAt: "2026-08-08T10:00:00Z",
+	})
+	if !strings.Contains(avecEchec, "le cluster est resté en pending plus de 5 minutes") {
+		t.Error("le message du dernier échec d'appairage n'apparaît pas dans le fragment")
+	}
+
+	sansEchec := renderRancherStatus(t, service.RancherStatus{
+		Enabled: true, Pairing: true, Name: "demo", Env: "preprod",
+	})
+	if strings.Contains(sansEchec, "Dernier echec") {
+		t.Error("un avertissement de dernier échec apparaît alors qu'aucun échec n'est enregistré")
+	}
+}
+
+// TestRenderRancher_ForwardsLastPairingError verrouille le cablage entre
+// service.RancherStatus et le fragment HTML tel que le serveur le fait
+// vraiment — via h.renderRancher, pas en passant directement une struct au
+// template comme renderRancherStatus ci-dessus. C'est cette conversion en
+// map[string]interface{} qui a le plus de chances de perdre un champ en cours
+// de route.
+func TestRenderRancher_ForwardsLastPairingError(t *testing.T) {
+	h := New(Deps{
+		Config:      &config.Config{},
+		TemplateDir: filepath.Join("..", "..", "web", "templates"),
+	})
+
+	rec := httptest.NewRecorder()
+	h.renderRancher(rec, service.RancherStatus{
+		Enabled:            true,
+		Pairing:            true,
+		Name:               "demo",
+		Env:                "preprod",
+		LastPairingError:   "le cluster est resté en pending plus de 5 minutes",
+		LastPairingErrorAt: "2026-08-08T10:00:00Z",
+	})
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "le cluster est resté en pending plus de 5 minutes") {
+		t.Error("renderRancher ne transmet pas LastPairingError au fragment")
 	}
 }
