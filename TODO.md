@@ -50,6 +50,23 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 > Issus de la recette fonctionnelle réelle. Détail + preuves : [`docs/recette-1.4-findings.md`](docs/recette-1.4-findings.md).
 
 - [ ] 🔴 **Restore Velero — RBAC SA** : `deploy/base/rbac.yaml` — `patch` sur `helmreleases`/`statefulsets`/`deployments` dans les ns tenant (suspend/scale/resume échouent en `forbidden`).
+      ⚠️ **Même famille que le `list resourcequotas` manquant du ClusterRole opérateur**, trouvé
+      à la première minute de la recette du 2026-08-08 : il rendait l'opérateur incapable de
+      réconcilier quoi que ce soit, et **aucun test ne pouvait le voir — envtest n'applique pas
+      le RBAC**. Les deux ClusterRoles (app et opérateur) ne couvrent pas les mêmes appels et
+      rien ne le vérifie. Le vrai correctif est en dessous, pas ici.
+
+- [ ] 🔴 **Vérifier le RBAC contre les appels réellement émis** (issu de la recette). Ces deux
+      trous ont la même cause : les ClusterRoles sont écrits à la main en dérivant « ce que
+      telle fonctionnalité touche », donc ils dérivent dès qu'un chemin de code change, et la
+      campagne de tests est structurellement aveugle. Trois pistes, à arbitrer :
+      1. un test qui liste les verbes/ressources attendus et les compare aux ClusterRoles
+         commités — attrape la dérive, pas l'oubli initial ;
+      2. faire tourner l'opérateur en recette avec un ServiceAccount et lire les `Forbidden`
+         dans les logs — attrape tout, mais seulement ce qui est exercé ;
+      3. un `kubectl auth can-i --list` dans le plan de recette, comparé à une liste de
+         référence — le moins cher, à mettre en précondition.
+      Ce qui n'est pas une option : continuer à découvrir ces trous en production.
 - [ ] 🟠 **Restore Velero — topologie** : `internal/kubernetes/velero.go` — cibler l'etcd StatefulSet `vcluster-<name>-etcd` + PVC `data-vcluster-<name>-etcd-0` (control-plane = Deployment, pas StatefulSet).
 - [ ] 🟠 **Restore Velero — remontée d'échec** : `handlers/api_velero.go` + `velero_restore_status.html` — ne pas afficher « terminé / Flux repris » quand les étapes ont échoué.
 - [ ] 🟠 **UI — bouton « Contenu » backup** : `velero_backups.html` l.68 — envelopper dans `{{if $.User.isAdmin}}` (comme « Restaurer »).
