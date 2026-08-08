@@ -1,0 +1,72 @@
+# Rend réelle la protection de suppression que l'application propose déjà.
+#
+# vcluster-manager expose un interrupteur « Protection namespace » qui pose
+# l'annotation `protect-deletion: "true"` sur le namespace hôte. Avant cette
+# policy, cette annotation ne protégeait de rien : aucun contrôle d'admission ne
+# la lisait, et un `kubectl delete ns` sur un namespace protégé passait sans
+# résistance. Vérifié par l'exécution — namespace annoté, suppression demandée,
+# « namespace deleted ». Le commentaire de `internal/service/vcluster.go` le
+# disait déjà : « no policy here enforces protect-deletion […] the annotation was
+# never a safeguard to begin with ».
+#
+# C'était la pire forme de faux vert : une fonctionnalité de sûreté qui affiche
+# « actif » et ne retient rien. Un opérateur qui l'active croit avoir posé un
+# verrou, et cette croyance est exactement ce qui rend une suppression
+# accidentelle possible.
+#
+# Contrairement aux policies de operator-admission-policy.yaml, celle-ci ne
+# filtre PAS par identité. Là-bas, borner le seul ServiceAccount de l'opérateur
+# est le but : un humain en cluster-admin venu dépanner ne doit pas être gêné.
+# Ici c'est l'inverse — une protection qui ne vaut que pour un compte de service
+# ne protège de rien, puisque les suppressions accidentelles viennent justement
+# des humains et de leurs automatismes. Le verrou vaut donc pour tout le monde,
+# et se retire comme un verrou : en enlevant l'annotation, geste explicite et
+# distinct de la suppression.
+#
+# Le parcours de suppression de l'application reste compatible sans changement :
+# il retire déjà la protection (SetNamespaceProtection(false)) avant de demander
+# la destruction. C'est précisément la séquence en deux temps que cette policy
+# exige de tout le monde.
+#
+# Une ValidatingAdmissionPolicy sans son Binding ne s'applique à personne : les
+# deux vont par paire, comme dans operator-admission-policy.yaml.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: vcluster-manager-namespace-deletion-protection
+spec:
+  # Fail : si la policy ne peut pas être évaluée, la suppression est refusée.
+  # Le sens du refus est celui d'un verrou — en cas de doute, on ne détruit pas.
+  # La conséquence est réelle et assumée : une panne de l'évaluation bloque la
+  # suppression des namespaces, ce qui se répare en retirant la policy, alors
+  # qu'un namespace détruit à tort ne se répare pas.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["namespaces"]
+  validations:
+    # oldObject, parce que sur un DELETE c'est le seul objet qui existe :
+    # `object` est null. L'annotation lue est donc celle qui était en place
+    # avant la requête — on ne peut pas la contourner dans le même appel.
+    - expression: >-
+        !has(oldObject.metadata.annotations) ||
+        !('protect-deletion' in oldObject.metadata.annotations) ||
+        oldObject.metadata.annotations['protect-deletion'] != 'true'
+      message: >-
+        Ce namespace porte protect-deletion="true" : sa suppression est refusée.
+        Retirez la protection d'abord (interrupteur « Protection namespace » de
+        vcluster-manager, ou `kubectl annotate ns <nom> protect-deletion-`),
+        puis relancez la suppression.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: vcluster-manager-namespace-deletion-protection
+spec:
+  policyName: vcluster-manager-namespace-deletion-protection
+  # Deny et pas Warn : un avertissement sur une suppression de namespace arrive
+  # trop tard, la ressource est déjà partie.
+  validationActions: [Deny]
