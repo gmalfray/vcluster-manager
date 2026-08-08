@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/service"
@@ -189,7 +191,17 @@ func (h *Handlers) CreateAppManifestsRepo(w http.ResponseWriter, r *http.Request
 	h.redirectWithFlash(w, fmt.Sprintf("/vclusters/%s?env=%s", name, env), "success", fmt.Sprintf("Repo app-manifests-%s cree avec succes", name))
 }
 
-// CreateProdMR creates (or returns existing) the preprod→master MR for a pending vcluster.
+// CreateProdMR creates (or returns existing) the preprod→master MR. Despite
+// being triggered from one vcluster's page, this MR is NOT scoped to that
+// vcluster: preprod is the single source of truth branch for every
+// environment, so the MR carries every vcluster's pending preprod changes,
+// not just this one's. Clicking "promouvoir" on a shared platform can ship
+// someone else's unreviewed work — see docs/recette-restauration.md, cas G
+// (D8). There is no clean way to scope a GitLab MR to one subtree of a
+// branch-based promotion without cherry-picking files, which would be its
+// own source of drift between preprod and what actually reaches master, so
+// the fix here is telling the truth about what the MR does rather than
+// pretending it's a per-vcluster promotion.
 func (h *Handlers) CreateProdMR(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAdmin(w, r) {
 		return
@@ -200,12 +212,15 @@ func (h *Handlers) CreateProdMR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mrDescription := fmt.Sprintf(
-		"Promotion des changements de preprod vers la production (vcluster %s).\n\n"+
+		"Promotion des changements de preprod vers la production (demandee depuis le vcluster %s).\n\n"+
 			"Créé automatiquement par vcluster-manager.\n\n---\n\n"+
+			"> ⚠️ **Cette MR est globale, pas limitee a %s** : preprod est la branche source de verite pour tous "+
+			"les environnements, donc cette MR promeut TOUS les vclusters prod ayant des changements en attente "+
+			"sur preprod. Relisez le diff avant de fusionner.\n\n"+
 			"> ℹ️ **Note sur le diff** : Ce MR contient des fichiers sous `clusters/preprod/` **et** `clusters/prod/`.\n"+
 			"> Seuls les fichiers sous **`clusters/prod/`** ont un impact sur la production.\n"+
 			"> Les fichiers `clusters/preprod/` sont présents car la branche **preprod est la source de vérité** pour les deux environnements.",
-		name,
+		name, name,
 	)
 	mrURL, err := h.gitlab.GetOrCreateMergeRequest(
 		"preprod", "master",
@@ -217,7 +232,25 @@ func (h *Handlers) CreateProdMR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit.Log(r, "create-prod-mr", name, "prod", "mr_url="+mrURL)
-	h.redirectWithFlash(w, fmt.Sprintf("/vclusters/%s?env=prod", name), "success", fmt.Sprintf("MR créée : %s", mrURL))
+
+	// Name the other vclusters riding along in this MR, so a click on
+	// "promouvoir" doesn't silently ship changes nobody asked for on this
+	// page. Best-effort: a diff-listing failure still leaves the MR created
+	// and the toast informative, just without the extra names.
+	msg := fmt.Sprintf("MR créée (globale, preprod → prod) : %s", mrURL)
+	if _, changed, diffErr := h.gitlab.GetOpenPreprodMRInfo(); diffErr == nil {
+		var others []string
+		for n := range changed {
+			if n != name {
+				others = append(others, n)
+			}
+		}
+		if len(others) > 0 {
+			sort.Strings(others)
+			msg = fmt.Sprintf("MR créée : %s — elle promeut aussi %s, deja en attente sur preprod.", mrURL, strings.Join(others, ", "))
+		}
+	}
+	h.redirectWithFlash(w, fmt.Sprintf("/vclusters/%s?env=prod", name), "success", msg)
 }
 
 // QuotaForm returns the quota editing form fragment.

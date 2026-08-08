@@ -41,7 +41,36 @@ data:
   # Interrupteur de migration : il disparaît avec le chemin direct une fois
   # l'opérateur en charge. Basculer sur preprod avant la prod.
   VELERO_TRIGGER_MODE: "direct"
-  VCLUSTER_POD_SECURITY: "privileged"
+  # Le Pod Security Standard appliqué DANS chaque vcluster, propagé en
+  # `policies.podSecurityStandard` par internal/gitops/templates/values.yaml.tmpl.
+  #
+  # Valait `privileged`, c'est-à-dire « tout est permis ». Conséquence prouvée par
+  # exécution le 2026-08-08, pas déduite : un pod `privileged: true` + `hostPID:
+  # true` + `hostPath: /`, créé par un tenant DANS SON PROPRE vcluster, était
+  # synchronisé tel quel dans le namespace hôte et y démarrait avec ses
+  # privilèges — 453 processus du nœud visibles depuis le conteneur, uid=0.
+  #
+  # Sur un nœud unique, root sur le nœud vaut root sur le control-plane, donc
+  # tous les tenants, le bucket de sauvegardes et les secrets de plateforme.
+  # L'isolation multi-tenant, qui est la promesse de ce produit, ne reposait
+  # alors sur rien d'appliqué : aucun label PSA sur les namespaces hôtes, aucun
+  # webhook filtrant les pods, aucune ValidatingAdmissionPolicy les visant. Les
+  # quatre verrous possibles étaient absents, vérifiés un par un.
+  #
+  # `baseline` refuse privileged, hostPID/hostNetwork/hostIPC, les hostPath et
+  # les capabilities dangereuses — sans imposer les contraintes de `restricted`
+  # (utilisateur non-root obligatoire, seccomp), qui casseraient beaucoup
+  # d'images ordinaires.
+  #
+  # Le moment est choisi : aucun tenant vivant n'utilisait de pod privilégié au
+  # moment du changement (les quatre namespaces tenants balayés, rien de
+  # privileged/hostPath/hostPID), et les control-plane des vclusters passent
+  # déjà `baseline`. Le coût est donc théorique aujourd'hui — il ne le restera
+  # pas : un tenant qui a besoin d'un CSI ou d'un agent privilégié devra
+  # obtenir une exception, et il n'existe pas de mécanisme pour ça. Le jour où
+  # ce cas se présente, c'est une VAP ciblée qu'il faudra écrire, pas un retour
+  # à `privileged`.
+  VCLUSTER_POD_SECURITY: "baseline"
 
   # Plafond de ressources de la cell, vérifié par l'opérateur avant tout
   # provisionnement (crd-vcluster.md §5.2). Une marge délibérée, pas la capacité

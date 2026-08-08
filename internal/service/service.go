@@ -115,19 +115,29 @@ func New(d Deps) *Service {
 	}
 }
 
-// k8sForEnv returns the StatusClient for the given environment, falling back
-// to any available client (backward compatibility). Mirrors Handlers.k8sForEnv.
+// k8sForEnv returns the StatusClient registered for the given environment,
+// or nil if none is.
+//
+// This used to fall back to "any client in the map" when the exact env key
+// was missing, meant to cover a single-cluster install where preprod and
+// prod are the same cluster. That case doesn't need a fallback here: on a
+// single-cluster install cmd/server/main.go already registers the one
+// client under both the "preprod" and "prod" keys explicitly (see its
+// "single-cluster-both-envs" log line). So the only thing the fallback ever
+// did was hide a genuinely missing client behind whichever other one
+// happened to be in the map — silently, since a map has no defined
+// iteration order. rancher.go's PairRancher hardcodes k8sForEnv("prod") to
+// apply the Rancher registration manifest, with a dedicated
+// ErrRancherK8sProdUnavailable for "no prod client configured" — a sentinel
+// the fallback made unreachable in practice. On a two-cluster install
+// missing the prod client, PairRancher for a preprod vcluster would have
+// applied the manifest through the preprod client instead, with nothing in
+// the logs to say so.
 func (s *Service) k8sForEnv(env string) *kubernetes.StatusClient {
 	s.k8sClientsMu.RLock()
 	defer s.k8sClientsMu.RUnlock()
 
-	if c, ok := s.k8sClients[env]; ok {
-		return c
-	}
-	for _, c := range s.k8sClients {
-		return c
-	}
-	return nil
+	return s.k8sClients[env]
 }
 
 // envOrDefault normalizes an empty environment to "preprod", the historical

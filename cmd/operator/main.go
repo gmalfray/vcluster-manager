@@ -1,15 +1,24 @@
-// Command operator runs the vcluster-manager Kubernetes operator: it reconciles
-// VCluster et VClusterVeleroOps en appelant internal/service — la même
-// logique métier que l'UI web, consommée par un troisième adaptateur (design
-// §7).
+// Command operator réconcilie la CRD VCluster en appelant internal/service —
+// la même logique métier que l'UI web, consommée par un troisième adaptateur
+// (design §7).
 //
 // C'est un binaire séparé de cmd/server, mais plus totalement étranger à ses
-// intégrations : il porte désormais ses propres clients Vault, Keycloak et
-// Rancher (voir wireIntegrations, integrations.go), parce que
-// reconcileIntegrations (internal/controller/vcluster_integrations.go) en a
-// besoin pour faire autre chose que rendre Unknown/NotConfigured. GitLab
-// reste absent : aucune étape du reconcile n'appelle de client GitLab
-// aujourd'hui — voir integrations.go pour la raison précise.
+// intégrations : il porte ses propres clients Vault, Keycloak et Rancher
+// (voir wireIntegrations, integrations.go), parce que reconcileIntegrations
+// (internal/controller/vcluster_integrations.go) en a besoin pour faire
+// autre chose que rendre Unknown/NotConfigured. GitLab reste absent : aucune
+// étape du reconcile n'appelle de client GitLab aujourd'hui — voir
+// integrations.go pour la raison précise.
+//
+// Le reconciler VClusterVeleroOps (sauvegarde/restauration Velero) est un
+// AUTRE binaire, cmd/veleroops-operator : les deux tournaient dans le même
+// manager, donc dans le même pod, donc avec le même ClusterRole — celui
+// qui porte `delete namespaces` cluster-wide ET les trois secrets Vault/
+// Keycloak/Rancher. Un pod qui exécute des restaurations Velero n'a besoin
+// d'aucun des deux. Les séparer resserre chaque ClusterRole à ce que son
+// propre reconciler touche — voir deploy/base/operator-rbac.yaml et
+// deploy/base/veleroops-operator-rbac.yaml, et
+// docs/etat-brique-operateur.md pour l'historique de la bascule.
 package main
 
 import (
@@ -154,15 +163,6 @@ func main() {
 	})
 	if err != nil {
 		log.Error(err, "manager")
-		os.Exit(1)
-	}
-
-	if err := (&controller.VeleroOpsReconciler{
-		Client: mgr.GetClient(),
-		Ops:    svc,
-		Cell:   cell,
-	}).SetupWithManager(mgr); err != nil {
-		log.Error(err, "câblage du reconciler VClusterVeleroOps")
 		os.Exit(1)
 	}
 

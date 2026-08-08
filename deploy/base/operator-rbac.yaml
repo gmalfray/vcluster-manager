@@ -1,5 +1,34 @@
-# RBAC de l'opérateur, dérivé de ce que internal/service touche réellement sur le
-# chemin backup/restore — pas un cluster-admin de confort.
+# RBAC de l'opérateur VCluster, dérivé de ce que VClusterReconciler touche
+# réellement (internal/controller/vcluster_*.go) — pas un cluster-admin de
+# confort.
+#
+# Ce ClusterRole ne couvre QUE le cycle de vie du CR VCluster : sommeil,
+# budget, provisionnement, intégrations, status, suppression. La sauvegarde
+# et la restauration Velero à la demande (VClusterVeleroOps) sont un AUTRE
+# binaire, cmd/veleroops-operator, avec son propre ClusterRole
+# (veleroops-operator-rbac.yaml) — voir cmd/operator/main.go pour pourquoi
+# les deux ont été séparés. Une conséquence directe : ce ClusterRole ne porte
+# ni `restores`, ni `persistentvolumeclaims`, ni `vclusterveleroops` —
+# VClusterReconciler n'appelle jamais ces chemins.
+#
+# `helmreleases`/`kustomizations`/`statefulsets`/`deployments` restent un
+# recoupement réel avec cmd/veleroops-operator, pas un oubli de cette
+# séparation : `spec.suspend` (SuspendVCluster/ResumeVCluster,
+# internal/service/vcluster_lifecycle.go, l'étape « sommeil » du reconcile)
+# suspend Flux et scale le vcluster à zéro réplique EXACTEMENT comme le fait
+# la restauration in-place — même deux appels de kubernetes.StatusClient
+# (SetFluxSuspend, ScaleVClusterWorkloads), pour une raison différente. Les
+# deux binaires ont donc chacun leur propre motif d'accès à ces quatre
+# ressources ; aucun des deux ne peut faire le travail complet de l'autre pour
+# autant (voir TestOperatorRBACCannotDoVeleroOpsWork : ce ClusterRole n'a
+# toujours pas `create`/`list` sur les `restores`, ni `delete` sur les
+# `persistentvolumeclaims`).
+#
+# Reste un recoupement réel, pas un oubli : `backups` (get/list/create). Le
+# finalizer déclenche lui-même la sauvegarde d'avant destruction et vérifie
+# qu'elle a abouti (vcluster_finalizer.go, InspectDeletionBackup/
+# TriggerVeleroBackup) — c'est le filet de §4.4, indépendant de ce que
+# l'opérateur VeleroOps réconcilie par ailleurs.
 #
 # Les droits sur les ressources d'un vcluster sont volontairement cluster-wide :
 # les namespaces vcluster-* apparaissent et disparaissent, on ne peut pas lister
@@ -11,19 +40,8 @@ kind: ClusterRole
 metadata:
   name: vcluster-manager-operator
 rules:
-  # Le marqueur lui-même. Pas de `create` : l'opérateur ne fabrique pas de
-  # marqueur, il réconcilie ceux que l'app pose (séparation des rôles du
-  # design §6). Pas de `patch` sur l'objet entier non plus — le status a sa
-  # propre règle ci-dessous.
-  - apiGroups: ["vcluster.rebuild-it.fr"]
-    resources: ["vclusterveleroops"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["vcluster.rebuild-it.fr"]
-    resources: ["vclusterveleroops/status"]
-    verbs: ["get", "update", "patch"]
-
-  # La CRD VCluster. Même découpage : l'opérateur réconcilie ce que Flux applique
-  # depuis fluxprod, il ne crée pas de vcluster lui-même — donc pas de `create`.
+  # La CRD VCluster. L'opérateur réconcilie ce que Flux applique depuis
+  # fluxprod, il ne crée pas de vcluster lui-même — donc pas de `create`.
   # `update` est là pour le finalizer, et pour lui seul : le poser et le retirer
   # sont des écritures dans metadata, hors sous-ressource status. Tout le reste
   # de ce que l'opérateur écrit passe par vclusters/status.
@@ -103,24 +121,31 @@ rules:
   #
   # Le ClusterRole de l'app la portait déjà (rbac.yaml). C'est en dérivant celui
   # de l'opérateur de ce que le chemin backup/restore touche qu'on a perdu ce que
-  # touche le chemin d'admission — les deux ClusterRoles ne couvrent pas les
+  # touche le chemin d'admission — les deux ClusterRoles ne couvraient pas les
   # mêmes appels, et rien ne le vérifiait.
   - apiGroups: [""]
     resources: ["resourcequotas"]
     verbs: ["get", "list", "watch"]
 
-  # Velero : créer un backup/restore et suivre leur phase.
-  # `delete` sur les backups sert à DeleteVeleroBackup, appelé par l'app et non
-  # par l'opérateur — retiré ici volontairement.
+  # La sauvegarde d'avant destruction (§4.4 étape 2, vcluster_finalizer.go) :
+  # InspectDeletionBackup RETROUVE la sauvegarde qui couvre cette suppression
+  # en LISTANT (elle n'est notée nulle part), TriggerVeleroBackup en CRÉE une.
+  # Pas de `get` : ce reconciler ne lit jamais un backup par son nom — c'est
+  # GetVeleroBackupPhase qui ferait ça, et seul cmd/veleroops-operator
+  # l'appelle. Pas de `watch` : le finalizer interroge Velero à chaque tour de
+  # reconcile, il n'ouvre pas d'informer. Pas de `restores` : cet opérateur
+  # n'en crée jamais — la restauration est le domaine de cmd/veleroops-operator.
   - apiGroups: ["velero.io"]
-    resources: ["backups", "restores"]
-    verbs: ["get", "list", "watch", "create"]
+    resources: ["backups"]
+    verbs: ["list", "create"]
 
-  # Suspendre/reprendre Flux pendant une restauration in-place
-  # (SetFluxSuspend patche le HelmRelease et la Kustomization du tenant).
-  # `update` en plus pour la fin de la séquence de suppression : CleanupNamespace
-  # retire les finalizers Flux, sans quoi le namespace reste en Terminating et le
-  # CR avec lui.
+  # Le status affiché (GetVClusterStatus, GetArgoCDKustomizationStatus) lit le
+  # HelmRelease et la Kustomization du tenant ; le teardown (CleanupNamespace,
+  # appelé par TeardownVCluster) retire leurs finalizers Flux pour que le
+  # namespace puisse vraiment se terminer ; `spec.suspend` les suspend et les
+  # reprend (SetFluxSuspend, appelé par SuspendVCluster ET ResumeVCluster) —
+  # c'est ce dernier usage qui a besoin de `patch`, absent avant que la
+  # réconciliation du sommeil ne soit vérifiée par ce test.
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
     verbs: ["get", "list", "patch", "update"]
@@ -128,10 +153,21 @@ rules:
     resources: ["kustomizations"]
     verbs: ["get", "list", "patch", "update"]
 
-  # Parler à l'API interne d'un vcluster (déposer le job rancher-cleanup, lire
-  # son état) : le kubeconfig interne vit dans un Secret du namespace hôte, et
-  # l'accès passe par un port-forward SPDY vers le pod du plan de contrôle —
-  # jamais par un kubeconfig brut.
+  # `spec.suspend` descend le vcluster à zéro réplique (SuspendVCluster
+  # appelle ScaleVClusterWorkloads, qui détecte d'abord la topologie par un
+  # `get` sur le StatefulSet etcd — ou son absence — avant de patcher le bon
+  # objet, StatefulSet ou Deployment selon le cas). ResumeVCluster ne fait PAS
+  # l'inverse : « reprendre Flux suffit, c'est lui qui remonte les répliques »
+  # — donc pas de `get` séparé pour la remontée, un seul `get` suffit pour les
+  # deux sens.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "patch"]
+
+  # Parler à l'API interne d'un vcluster (backend d'auth Vault, appairage
+  # Rancher, statut ArgoCD/version K8s) : le kubeconfig interne vit dans un
+  # Secret du namespace hôte, et l'accès passe par un port-forward SPDY vers
+  # le pod du plan de contrôle — jamais par un kubeconfig brut.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
@@ -139,22 +175,13 @@ rules:
     resources: ["pods/portforward"]
     verbs: ["create"]
 
-  # Descendre le vcluster à zéro réplique, puis constater que ses pods sont
-  # bien partis (detectVClusterTopology lit les deux formes de plan de contrôle,
-  # StatefulSet en etcd embarqué ou Deployment en etcd externe).
-  - apiGroups: ["apps"]
-    resources: ["statefulsets", "deployments"]
-    verbs: ["get", "list", "patch"]
+  # Le comptage des pods d'un vcluster pour le status (CountVClusterPods), et
+  # la détection d'agents Rancher déjà appairés (HasRancherAgents). Pas de
+  # `get` : aucun des deux chemins ne lit un pod par son nom, seulement des
+  # listes filtrées par label.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list"]
-
-  # Le volume : lire son état pour savoir de quel côté du point de non-retour on
-  # se trouve à la reprise (GetVClusterPVCState), et le supprimer pendant la
-  # séquence pour que Velero puisse le recréer depuis le backup.
-  - apiGroups: [""]
-    resources: ["persistentvolumeclaims"]
-    verbs: ["get", "list", "delete"]
+    verbs: ["list"]
 
   # Élection de leader : deux pods qui se chevauchent pendant un rolling update
   # ne doivent pas piloter la même séquence destructrice.

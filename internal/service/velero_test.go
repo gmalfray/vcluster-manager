@@ -201,6 +201,29 @@ func TestCreateVeleroRestore_RejectsInvalidTargetName(t *testing.T) {
 	}
 }
 
+// D4 (docs/recette-restauration.md): a cross-vcluster restore doesn't migrate
+// data — it clones the source's control-plane into the target's namespace.
+// Refused before it ever touches k8s (no client configured here, so a client
+// call would surface as ErrK8sUnavailable instead).
+func TestCreateVeleroRestore_RejectsCrossVClusterTarget(t *testing.T) {
+	s := newVeleroTestService(nil)
+	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "source", "preprod", "manual-source-1", "cible")
+	if !errors.Is(err, ErrCrossVClusterRestoreUnsupported) {
+		t.Fatalf("expected ErrCrossVClusterRestoreUnsupported, got %v", err)
+	}
+}
+
+func TestCreateVeleroRestore_RejectsCrossVClusterTargetCheckedBeforeTargetValidity(t *testing.T) {
+	// A valid-looking but different target name must still be refused — this
+	// is not a name-validation gap, it's a "this feature clones instead of
+	// migrating" gap that applies regardless of how well-formed the name is.
+	s := newVeleroTestService(nil)
+	_, err := s.CreateVeleroRestore(context.Background(), adminActor(), "source", "preprod", "manual-source-1", "valid-name")
+	if !errors.Is(err, ErrCrossVClusterRestoreUnsupported) {
+		t.Fatalf("expected ErrCrossVClusterRestoreUnsupported, got %v", err)
+	}
+}
+
 func TestCreateVeleroRestore_AllowsEmptyTargetName(t *testing.T) {
 	// Empty target means "in-place restore of the same vcluster" — not a name
 	// to validate, so it must fall through to the next guard (no k8s client
@@ -367,12 +390,45 @@ func TestCreateVeleroRestore_AbortsWhenSuspendFluxFails(t *testing.T) {
 	}
 }
 
-func TestCreateVeleroRestore_AbortsWhenScaleDownFails(t *testing.T) {
-	// Flux suspend succeeds, but there's no control-plane workload to scale.
+// The control-plane workload is deleted, not scaled to 0 (D2/D3): a workload
+// that doesn't exist yet is not itself a failure — QuiesceVClusterForInPlaceRestore
+// treats a missing/already-gone workload as nothing left to do, same as the
+// PVC deletion further down the sequence already did. What DOES have to abort
+// the sequence is the delete call itself failing for a real reason.
+func TestCreateVeleroRestore_MissingControlPlaneWorkloadIsNotAFailure(t *testing.T) {
+	// Flux suspend succeeds; there's no control-plane workload at all to
+	// delete. Deleting nothing is not an error, so the sequence must proceed
+	// all the way to a created Restore.
 	k8s := kubernetes.NewTestStatusClient(
 		newBackupObj("manual-demo-1", "velero-system", "Completed"),
 		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
 		newKustomizationObj("tenant-demo", "flux-system"),
+	)
+	s := newVeleroTestService(k8s)
+
+	view, err := s.CreateVeleroRestore(context.Background(), adminActor(), "demo", "preprod", "manual-demo-1", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if view.RestoreName == "" {
+		t.Error("expected a restore to still be created")
+	}
+}
+
+func TestCreateVeleroRestore_AbortsWhenControlPlaneDeleteFails(t *testing.T) {
+	refus := func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "delete" && action.GetResource().Resource == "statefulsets" {
+			return true, nil, apierrors.NewForbidden(
+				schema.GroupResource{Resource: "statefulsets"}, "vcluster-demo",
+				fmt.Errorf("refusé par un webhook"))
+		}
+		return false, nil, nil
+	}
+	k8s := kubernetes.NewTestStatusClientWithReactor(refus,
+		newBackupObj("manual-demo-1", "velero-system", "Completed"),
+		newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
+		newKustomizationObj("tenant-demo", "flux-system"),
+		newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
 	)
 	s := newVeleroTestService(k8s)
 
@@ -381,7 +437,7 @@ func TestCreateVeleroRestore_AbortsWhenScaleDownFails(t *testing.T) {
 	if !errors.Is(err, ErrRestoreStageFailed) {
 		t.Fatalf("expected ErrRestoreStageFailed, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "échelle") {
+	if !strings.Contains(err.Error(), "plan de contrôle") {
 		t.Errorf("expected the error to name the failed stage, got %q", err.Error())
 	}
 }
@@ -489,22 +545,24 @@ func TestCreateVeleroRestore_SucceedsWhenAllStagesSucceed(t *testing.T) {
 
 func TestCreateVeleroRestore_AbortResumesFluxOnlyBeforeThePVCIsGone(t *testing.T) {
 	tests := []struct {
-		name              string
-		objs              []runtime.Object
-		failRestoreCreate bool
-		wantErr           error
-		wantFluxResumed   bool
+		name                   string
+		objs                   []runtime.Object
+		failControlPlaneDelete bool
+		failRestoreCreate      bool
+		wantErr                error
+		wantFluxResumed        bool
 	}{
 		{
-			name: "scale-down fails before the PVC is touched: flux is resumed",
+			name: "control-plane delete fails before the PVC is touched: flux is resumed",
 			objs: []runtime.Object{
 				newBackupObj("manual-demo-1", "velero-system", "Completed"),
 				newHelmReleaseObj("vcluster-demo", "vcluster-demo"),
 				newKustomizationObj("tenant-demo", "flux-system"),
-				// no StatefulSet: ScaleVClusterWorkloads fails
+				newStatefulSetObj("vcluster-demo", "vcluster-demo", 1),
 			},
-			wantErr:         ErrRestoreStageFailed,
-			wantFluxResumed: true,
+			failControlPlaneDelete: true,
+			wantErr:                ErrRestoreStageFailed,
+			wantFluxResumed:        true,
 		},
 		{
 			name: "restore creation fails after the PVC is already gone: flux stays suspended",
@@ -527,6 +585,11 @@ func TestCreateVeleroRestore_AbortResumesFluxOnlyBeforeThePVCIsGone(t *testing.T
 			reactor := func(action clienttesting.Action) (bool, runtime.Object, error) {
 				if action.GetVerb() == "patch" && action.GetResource().Resource == "helmreleases" {
 					helmReleasePatches++
+				}
+				if tt.failControlPlaneDelete && action.GetVerb() == "delete" && action.GetResource().Resource == "statefulsets" {
+					return true, nil, apierrors.NewForbidden(
+						schema.GroupResource{Resource: "statefulsets"}, "vcluster-demo",
+						fmt.Errorf("refusé par un webhook"))
 				}
 				if tt.failRestoreCreate && action.GetVerb() == "create" && action.GetResource().Resource == "restores" {
 					return true, nil, fmt.Errorf("simulated failure creating restore")

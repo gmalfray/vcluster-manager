@@ -85,10 +85,13 @@
         {{else if .User.isAdmin}}
         <button hx-post="/api/vclusters/{{.VCluster.Name}}/create-prod-mr"
                 hx-target="#toast-container" hx-swap="beforeend"
-                hx-confirm="Créer la MR preprod → master pour déployer {{.VCluster.Name}} en production ?"
+                hx-confirm="Créer la MR preprod → master ? Cette MR est globale : elle inclut TOUS les vclusters preprod ayant des changements en attente, pas seulement {{.VCluster.Name}}."
                 class="btn btn-sm" style="background:var(--amber-dim);color:var(--amber);border:1px solid rgba(251,191,36,0.3);width:fit-content;">
-            Créer la MR prod &rarr;
+            Créer la MR prod (globale) &rarr;
         </button>
+        <span class="text-xs" style="color:var(--text-muted);">
+            Cette MR promeut tout ce qui est en attente sur preprod, pas seulement {{.VCluster.Name}}.
+        </span>
         {{end}}
     </div>
 </div>

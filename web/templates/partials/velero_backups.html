@@ -114,7 +114,7 @@
                             class="text-xs px-2 py-1 rounded font-mono"
                             style="background:var(--surface);border:1px solid var(--border-subtle);color:var(--text-primary);width:160px;" />
                     </div>
-                    <span class="text-xs" style="color:var(--text-muted);">— même nom = restauration in-place, nouveau nom = nouveau namespace</span>
+                    <span class="text-xs" style="color:var(--text-muted);">— seul le nom du vcluster source est accepté (restauration in-place) ; un autre nom sera refusé, la restauration croisée ne migre pas les données (D4)</span>
                     <button type="button"
                         onclick="submitRestore('{{.Name}}', '{{$.Name}}', '{{$.Env}}')"
                         class="btn btn-xs" style="background:var(--amber);color:#fff;border-color:var(--amber);">

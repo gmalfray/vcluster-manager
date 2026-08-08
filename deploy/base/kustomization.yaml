@@ -13,3 +13,5 @@ resources:
   - operator-rbac.yaml
   - operator-admission-policy.yaml
   - operator-deployment.yaml
+  - veleroops-operator-rbac.yaml
+  - veleroops-operator-deployment.yaml

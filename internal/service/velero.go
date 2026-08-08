@@ -62,6 +62,29 @@ func (e *ErrBackupNotRestorable) Error() string {
 	return fmt.Sprintf("backup not restorable (phase: %s)", e.Phase)
 }
 
+// ErrCrossVClusterRestoreUnsupported means an admin asked to restore a
+// backup taken from one vcluster INTO another vcluster's data.
+//
+// D4 (docs/recette-restauration.md): refused rather than attempted, because
+// what CreateVeleroRestore can actually ask Velero to do — a Restore with
+// namespaceMapping — does not do what the feature's own label promises.
+// Velero runs on the HOST cluster and has no notion of "inside vcluster B's
+// own etcd"; namespaceMapping only relocates HOST-level objects from one
+// namespace name to another. So instead of migrating the source's data into
+// the target, it deposits a SECOND, full clone of the source's control-plane
+// (Deployment/StatefulSet, PVC, Secrets, HelmRelease, a second ResourceQuota,
+// Flux Kustomizations) into the target's namespace. Confirmed on the recette
+// cell: 24 objects cloned into the target, its control-plane in
+// CrashLoopBackOff, two ResourceQuota fighting over one budget — and cleaning
+// up the clone's HelmRelease triggered a Helm uninstall that wiped the
+// SOURCE vcluster's own workloads in the process.
+//
+// A restore that actually migrates data between vclusters needs a different
+// mechanism: restore the source into a scratch namespace, bring it up on its
+// own, then move its data into the target namespace by namespace — a feature
+// to design and build, not a fix to this Restore spec.
+var ErrCrossVClusterRestoreUnsupported = errors.New("cross-vcluster restore is not supported: it clones the source's control-plane into the target's namespace instead of migrating its data (see docs/recette-restauration.md D4)")
+
 // stageErr pairs a domain sentinel with the underlying cause so an adapter can
 // both errors.Is() against the sentinel (to pick the right toast) and get the
 // original error text back via Error() — the k8s/HTTP message reaches the UI
@@ -285,6 +308,9 @@ func (s *Service) createVeleroRestore(ctx context.Context, actor models.Actor, n
 	if targetName != "" && !validName(targetName) {
 		return VeleroRestoreView{}, ErrInvalidName
 	}
+	if targetName != "" && targetName != name {
+		return VeleroRestoreView{}, ErrCrossVClusterRestoreUnsupported
+	}
 	env = envOrDefault(env)
 	k8s := s.k8sForEnv(env)
 	if k8s == nil {
@@ -294,9 +320,6 @@ func (s *Service) createVeleroRestore(ctx context.Context, actor models.Actor, n
 	sourceNS := "vcluster-" + name
 	targetNS := "vcluster-" + name
 	inPlace := targetName == "" || targetName == name
-	if !inPlace {
-		targetNS = "vcluster-" + targetName
-	}
 
 	// pvcDeleted marks the point of no return: once the PVC is gone, aborting
 	// by resuming Flux is the wrong move (see ErrRestoreStageFailedVolumeGone).
@@ -314,18 +337,22 @@ func (s *Service) createVeleroRestore(ctx context.Context, actor models.Actor, n
 		if err := k8s.SetFluxSuspend(ctx, name, true); err != nil {
 			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suspension de Flux : %w", err)}
 		}
-		if err := k8s.ScaleVClusterWorkloads(ctx, name, 0); err != nil {
+		// Delete — not scale to 0 — the control-plane and etcd workloads: a
+		// scaled-to-0-but-still-alive Deployment/StatefulSet races Velero's own
+		// restore of that same object (existingResourcePolicy: update patches
+		// its replica count back up) and recreates the pod itself, under a
+		// name/identity Velero's node-agent isn't tracking. That is D3 (the
+		// restore hangs forever waiting for a PodVolumeRestore that can never
+		// complete, and wedges the whole Velero controller with it) and D2
+		// (the volume comes back silently empty even from a backup that has
+		// real data) — see QuiesceVClusterForInPlaceRestore's own comment for
+		// how this was confirmed against a real Velero on the recette cell.
+		topo, err := k8s.QuiesceVClusterForInPlaceRestore(ctx, name, 30*time.Second)
+		if err != nil {
 			s.abortInPlaceRestore(k8s, name)
-			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("mise à l'échelle à 0 : %w", err)}
+			return VeleroRestoreView{}, &stageErr{ErrRestoreStageFailed, fmt.Errorf("suppression du plan de contrôle : %w", err)}
 		}
-		// Wait for the pods to really terminate: deleting a still-mounted PVC
-		// leaves it stuck Terminating. A timeout here isn't fatal on its own —
-		// we still attempt the delete, which is where a genuinely stuck pod
-		// would surface as an error.
-		if err := k8s.WaitForVClusterPodsGone(ctx, name, 30*time.Second); err != nil {
-			slog.Warn("pods didn't terminate in time, deleting PVC anyway", "vcluster", name, "err", err)
-		}
-		if err := k8s.DeleteVClusterPVC(ctx, name); err != nil {
+		if err := k8s.DeleteVClusterPVCNamed(ctx, name, topo.PVCName); err != nil {
 			// Volume déjà absent : on est DÉJÀ au-delà du point de non-retour, pas
 			// en échec. C'est le cas du rejeu après un ErrRestoreStageFailedVolumeGone,
 			// que le message d'erreur recommande justement. Le traiter comme un
