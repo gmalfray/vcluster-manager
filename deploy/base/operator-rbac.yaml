@@ -90,6 +90,25 @@ rules:
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "patch"]
 
+  # Le contrôle de budget (vcluster_budget.go) additionne les ResourceQuotas de
+  # toute la cell pour savoir si un CR de plus tient sous le plafond. Il lit donc
+  # à travers les namespaces : `list` cluster-wide, pas un `get` ciblé.
+  #
+  # Cette règle manquait, et son absence ne se voyait NULLE PART ailleurs qu'en
+  # vrai. envtest n'applique pas le RBAC, donc les 41 fichiers de test passaient
+  # au vert. Sur un cluster réel, le budget est la troisième étape du reconcile
+  # et rend une erreur : aucun `VCluster` n'était réconcilié, jamais — ni
+  # provisionnement, ni status, ni finalizer. Le CR restait sans phase pendant
+  # que l'opérateur rebouclait sur `resourcequotas is forbidden`.
+  #
+  # Le ClusterRole de l'app la portait déjà (rbac.yaml). C'est en dérivant celui
+  # de l'opérateur de ce que le chemin backup/restore touche qu'on a perdu ce que
+  # touche le chemin d'admission — les deux ClusterRoles ne couvrent pas les
+  # mêmes appels, et rien ne le vérifiait.
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list", "watch"]
+
   # Velero : créer un backup/restore et suivre leur phase.
   # `delete` sur les backups sert à DeleteVeleroBackup, appelé par l'app et non
   # par l'opérateur — retiré ici volontairement.
