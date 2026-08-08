@@ -671,3 +671,112 @@ Côté dépôts, lectures seules :
 `internal/controller/namespace_guard.go`,
 `internal/controller/rbac_probe_test.go`,
 `docs/design-backup-restore-annotation.md`, `docs/etat-brique-operateur.md`.
+
+### 4.6 Le test symétrique : `baseline` refuse-t-il vraiment ? — prouvé
+
+Le §4.4 laissait un point ouvert : le gain de R-PSA-1 était **déduit** du
+fonctionnement de vcluster, pas prouvé. R-PSA-1 ayant été retenue et
+`VCLUSTER_POD_SECURITY` passé à `baseline` dans `deploy/base/configmap.yaml`, ce
+point est maintenant tranché. Même manœuvre que le §4.2 : un second vcluster
+jetable `audit-baseline`, même chart 0.36.1, mêmes values, **une seule ligne
+changée** — `podSecurityStandard: baseline` au lieu de `privileged`. Puis le
+**manifeste de pod strictement identique**.
+
+**Résultat : oui, refusé, au bon endroit, avec un message utile.**
+
+```
+kubectl apply -f pod-priv.yaml          # identité: kubernetes-super-admin, groupe system:masters
+  → Error from server (Forbidden): pods "pod-priv-audit" is forbidden:
+    violates PodSecurity "baseline:latest": host namespaces (hostPID=true),
+    hostPath volumes (volume "hostroot"),
+    privileged (container "c" must not set securityContext.privileged=true)
+```
+
+Trois points comptent dans cette sortie :
+
+1. **Le refus a lieu à l'admission de l'API du vcluster**, pas à la synchro côté
+   hôte. Le pod n'existe nulle part : ni dans le vcluster, ni dans le namespace
+   hôte. Vérifié dans les deux.
+2. **Le message nomme les trois violations**, une par une, avec le nom du volume
+   et celui du conteneur. Un tenant sait quoi corriger sans aide.
+3. **`system:masters` n'y échappe pas.** C'est le point qui aurait pu tout ruiner :
+   l'identité que le produit distribue au tenant est admin plein du vcluster
+   (§4.2), et PSA sait exempter des utilisateurs. Ici il ne l'exempte pas. Le
+   refus s'applique bien à celui qu'on cherche à contenir.
+
+Le `--dry-run=server` renvoie la même erreur — le tenant peut valider son
+manifeste avant de l'appliquer. C'est le comportement inverse du §4.2, où le
+dry-run répondait `configured` sans un mot.
+
+**Nuance à documenter : via un contrôleur, le refus ne s'affiche pas au même
+endroit.** Le même pod privilégié déclaré dans un `Deployment` :
+
+```
+kubectl apply -f deploy-priv.yaml
+  → Warning: would violate PodSecurity "baseline:latest": host namespaces (hostPID=true),
+    privileged (container "c" must not set securityContext.privileged=true)
+    deployment.apps/deploy-priv-audit created        ← créé quand même
+```
+
+Le Deployment est **accepté**, avec un simple avertissement. Aucun pod ne naît
+jamais, et l'erreur réelle se lit deux niveaux plus bas :
+
+```
+kubectl get deploy deploy-priv-audit
+  → 0/1 READY   (indéfiniment)
+
+.status.conditions → ReplicaFailure=True FailedCreate:
+   pods "…-c25t9" is forbidden: violates PodSecurity "baseline:latest": …
+```
+
+C'est le comportement standard de PSA, pas un défaut de vcluster : l'admission
+porte sur les pods, pas sur les gabarits. Il reste sûr — **rien de privilégié
+n'atteint l'hôte** — mais un tenant qui déploie par Helm ou GitOps verra un
+`Deployment` bloqué à `0/1` sans erreur à l'apply, seulement un avertissement
+qu'un pipeline avale souvent. **À écrire dans la doc tenant** : en cas de
+`0/1` inexpliqué, lire `.status.conditions[ReplicaFailure]`.
+
+**`baseline` laisse-t-il passer le cas normal ? Oui.** Deux contrôles :
+
+| Cas testé | Résultat |
+|---|---|
+| Pod ordinaire, aucun `securityContext` | **Créé, `Running`, syncé sur l'hôte** (`pod-normal-audit-x-default-x-audit-baseline`) |
+| Pod avec `runAsUser: 0` (root), sans privilège | **Créé, `Running`, syncé** — `baseline` n'est pas `restricted`, il n'interdit pas de tourner en root |
+
+Ce second cas est celui qui aurait cassé la flotte si on avait visé `restricted` :
+beaucoup d'images courantes tournent en root sans rien demander de privilégié.
+`baseline` les laisse passer et ne bloque que ce qui sert à sortir du conteneur.
+Le control-plane du vcluster lui-même démarre normalement sous `baseline`
+(syncer, etcd, coredns syncé : tous `Running`), ce qui confirme la lecture du
+§4.4 faite alors sur la seule spec.
+
+**Conclusion sur R-PSA-1 : suffisante pour fermer le trou du §4.1, et sans dégât
+sur le cas normal.** Le pod qui donnait root sur le nœud est refusé avant
+d'exister. Ce qui était déduit est maintenant prouvé.
+
+Deux réserves, qui ne remettent pas en cause la décision :
+
+- **La protection vit dans la config de chaque vcluster.** Un vcluster provisionné
+  hors du chemin nominal, ou dont les values sont modifiées, repart sans filet —
+  et il n'y a rien côté hôte pour rattraper. C'est l'argument qui garde **R-PSA-2
+  (labels PSA sur les namespaces hôtes) utile en défense en profondeur**, pas en
+  remplacement. Priorité moindre, mais pas nulle.
+- **Les vclusters existants ne sont pas couverts par le changement de
+  `configmap.yaml` seul** : `demo`, `recette-restore-a` et `recette-restore-b`
+  portent toujours `podSecurityStandard: privileged` dans leur `vc-config-*`
+  déployé. Il faut régénérer et réappliquer chaque vcluster pour que la valeur
+  prenne effet. Tant que ce n'est pas fait, le §4.1 reste vrai sur la flotte.
+
+Ce qui reste **non testé** : le comportement d'un tenant ayant un besoin
+légitimement privilégié (CSI, agent). Aucun n'existe aujourd'hui (§4.4), donc rien
+à mesurer — mais la procédure d'exception reste à définir le jour où le cas se
+présente.
+
+### 4.7 État du cluster après le second test
+
+Rien ne subsiste. Les trois objets de test (pod privilégié refusé donc jamais
+créé, pod ordinaire, pod root, Deployment) supprimés, le chart `audit-baseline`
+désinstallé, le namespace supprimé, aucun PV résiduel, port-forward fermé.
+`demo` (5 pods), `recette-restore-a` (5), `recette-restore-b` (5),
+`vcluster-manager` (2) et `velero-system` (3) tournent comme avant. Aucun objet
+de plateforme touché. Seul fichier du dépôt modifié par moi : ce document.
