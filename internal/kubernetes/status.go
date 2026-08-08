@@ -499,6 +499,41 @@ func (s *StatusClient) DeleteHostNamespace(ctx context.Context, name string) (re
 	}
 }
 
+// CountVClusterPods reports how many pods are running in a vcluster's host
+// namespace: its control plane, and every workload pod the syncer has
+// projected down from inside the virtual cluster. known is false when the
+// list could not be read — a listing failure and "this namespace runs zero
+// pods right now" are different facts, and folding them together would let a
+// hiccup read as "this vcluster stopped everything".
+func (s *StatusClient) CountVClusterPods(ctx context.Context, name string) (count int, known bool) {
+	namespace := "vcluster-" + name
+	list, err := s.client.Resource(podGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, false
+	}
+	return len(list.Items), true
+}
+
+// GetArgoCDKustomizationStatus reads the Ready condition of the Kustomization
+// that installs ArgoCD inside a vcluster (argocd-<name>, in the vcluster's own
+// host namespace — see the generator's
+// tenant/argocd_kustomization.yaml.tmpl). It is a different object from the
+// tenant Kustomization GetVClusterStatus already reads: same kind, same
+// dynamic client, different name and namespace.
+//
+// "Unknown" covers both "not found yet" and "no Ready condition to read" —
+// the same vocabulary extractConditionStatus already uses for the HelmRelease
+// and the tenant Kustomization above: it means "nothing conclusive", not
+// "broken".
+func (s *StatusClient) GetArgoCDKustomizationStatus(ctx context.Context, name string) string {
+	namespace := "vcluster-" + name
+	ks, err := s.client.Resource(kustomizationGVR).Namespace(namespace).Get(ctx, "argocd-"+name, metav1.GetOptions{})
+	if err != nil {
+		return "Unknown"
+	}
+	return extractConditionStatus(ks, "Ready")
+}
+
 func extractConditionStatus(obj *unstructured.Unstructured, condType string) string {
 	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if err != nil || !found {

@@ -134,9 +134,15 @@ func (r *VClusterReconciler) reconcileVault(ctx context.Context, ops VClusterInt
 //
 // N'écrit que ce que ce pas vérifie réellement : la condition ArgoCDReady est
 // documentée (crd-vcluster.md §3.3) comme l'agrégat de Keycloak + GitLab +
-// Kustomization ArgoCD, mais seul le volet Keycloak est couvert ici — le dépôt
-// GitLab et la santé de la Kustomization ArgoCD restent un trou de couverture,
-// signalé dans le message plutôt que caché derrière un True optimiste.
+// Kustomization ArgoCD, mais seul le volet Keycloak est couvert ici. La
+// Kustomization argocd-<name> est ajoutée juste après, par
+// refineArgoCDReady (vcluster_status.go, appelée depuis l'étape d'observation
+// qui suit) : elle a le dernier mot sur ce que le cluster montre vraiment, sur
+// le même principe que provisionedFrom pour ResourcesProvisioned. Le dépôt
+// GitLab, lui, reste un trou de couverture assumé — voir refineArgoCDReady
+// pour pourquoi (pas de client GitLab sur cet opérateur aujourd'hui, et le
+// client existant ne distingue de toute façon pas "dépôt absent" de "API en
+// échec").
 func (r *VClusterReconciler) reconcileKeycloak(ops VClusterIntegrationOps, vc *v1alpha1.VCluster) (time.Duration, error) {
 	if vc.Spec.ArgoCD == nil || !vc.Spec.ArgoCD.Enabled {
 		setVClusterCond(vc, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "ArgoCDDisabled",

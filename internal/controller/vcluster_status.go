@@ -102,10 +102,16 @@ func applyObservation(vc *v1alpha1.VCluster, obs service.VClusterObservation) {
 		}
 	}
 
-	// status.podCount is deliberately never written. No reader populates
-	// models.StatusInfo.PodCount today, and writing 0 would claim "this vcluster
-	// runs no pods" — an assertion, where what we have is an absence.
-	//
+	// podCount only moves when the pod list actually came back. A failed list
+	// and "the host namespace runs zero pods right now" both leave PodCount at
+	// its zero value — PodCountKnown is the only thing telling them apart, same
+	// discipline as everywhere else in this function.
+	if obs.PodCountKnown {
+		vc.Status.PodCount = int32(obs.PodCount)
+	}
+
+	refineArgoCDReady(vc, obs)
+
 	// status.vault is left alone for the same kind of reason: the Vault setup
 	// state still lives in the handlers' in-memory map, and the reconcile loop
 	// that takes it over owns that field. Re-stamping "waiting" on every pass
@@ -225,6 +231,52 @@ func rancherPairedFrom(obs service.VClusterObservation) (metav1.ConditionStatus,
 		return metav1.ConditionFalse, "Cleaning", "job rancher-cleanup en cours"
 	default:
 		return metav1.ConditionFalse, "NotPaired", "cluster absent de Rancher"
+	}
+}
+
+// refineArgoCDReady adds what the cluster shows about the ArgoCD Kustomization
+// (argocd-<name>, the tenant graph the generator commits) on top of what
+// reconcileKeycloak (vcluster_integrations.go) already wrote this same pass.
+// Same ordering choice as provisionedFrom: the last word goes to what was
+// actually observed, not to what the integrations step believed it achieved.
+//
+// Only touches a condition that is currently True. Anything reconcileKeycloak
+// already marked False or Unknown (ArgoCD disabled, no Keycloak client, a
+// Keycloak failure) already names a cause more specific than anything this
+// function could add — piling a Kustomization detail on top of it would trade
+// a named reason for a vaguer one.
+//
+// Runs only when obs.Err == nil (the caller places it after that guard,
+// applyObservation): on an unreachable cluster obs.ArgoCDKustomization stays
+// at its zero value, and treating that as "Kustomization unreadable" would
+// flip a healthy ArgoCD to Unknown for a reason that has nothing to do with
+// ArgoCD — the same trap chartVersion and rancher.paired avoid a few lines
+// below by simply not being touched on a failed read.
+//
+// The GitLab volet stays out of this on purpose: the operator has no GitLab
+// client to check it with (main.go leaves Deps.GitLab nil for this binary —
+// crd-vcluster.md §3.2), and even the existing client
+// (internal/gitops/gitlab.go, AppManifestsRepoExists) folds "the repo is
+// missing" and "the GitLab API failed" into the same false. Wiring it here
+// today could turn a GitLab hiccup into a False that reads as "ArgoCD is
+// broken" — worse than the reserve staying in the message.
+func refineArgoCDReady(vc *v1alpha1.VCluster, obs service.VClusterObservation) {
+	current := apimeta.FindStatusCondition(vc.Status.Conditions, v1alpha1.CondArgoCDReady)
+	if current == nil || current.Status != metav1.ConditionTrue {
+		return
+	}
+
+	switch {
+	case obs.ArgoCDKustomization == "Ready":
+		setVClusterCond(vc, v1alpha1.CondArgoCDReady, metav1.ConditionTrue, "KeycloakAndKustomizationReady",
+			"client OIDC ArgoCD prêt dans Keycloak, Kustomization argocd-"+vc.Name+" saine — "+
+				"seul le dépôt GitLab app-manifests reste non vérifié : aucun client GitLab sur cet opérateur")
+	case explicitlyNotReady(obs.ArgoCDKustomization):
+		setVClusterCond(vc, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "ArgoCDKustomizationNotReady",
+			"client OIDC Keycloak prêt, mais la Kustomization argocd-"+vc.Name+" ne l'est pas : "+obs.ArgoCDKustomization)
+	default:
+		setVClusterCond(vc, v1alpha1.CondArgoCDReady, metav1.ConditionUnknown, "ArgoCDKustomizationNotReadable",
+			"client OIDC Keycloak prêt, mais la Kustomization argocd-"+vc.Name+" est illisible ou pas encore créée")
 	}
 }
 
