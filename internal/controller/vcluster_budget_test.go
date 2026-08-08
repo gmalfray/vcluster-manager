@@ -246,22 +246,29 @@ func TestBudgetBillsAnAbsentQuotaBlockAtTheGeneratorDefaults(t *testing.T) {
 	}
 }
 
-// Sans résolveur de quotas, le contrôle refuse au lieu de laisser passer.
+// Une résolution de quota qui échoue fait refuser le budget, pas passer.
 //
 // « Je ne peux pas savoir ce qui sera écrit » n'est pas « il n'y a rien à
 // imputer ». C'est la même règle que §5.3 sur le plafond absent, et pour la même
 // raison : une mauvaise configuration doit se voir tout de suite plutôt que
 // d'ouvrir un trou que personne ne remarque. Laisser passer ici rouvrirait N2 par
 // une autre porte — un quota provisionné et jamais compté.
-func TestBudgetRefusesWhenItCannotResolveTheQuotas(t *testing.T) {
+//
+// Ce test visait avant un seam absent (« Ops satisfait VClusterOps mais pas
+// QuotaResolver ») : impossible depuis que r.Ops est VClusterServiceOps, l'union
+// des six — un tel faux ne compile plus. Ce qui reste réellement à couvrir,
+// c'est le chemin `err != nil` d'effectiveQuotas quand EffectiveQuotas échoue
+// pour de vrai (le générateur, par exemple), et rien ne le testait jusqu'ici.
+func TestBudgetRefusesWhenEffectiveQuotasFails(t *testing.T) {
+	ops := budgetOps()
+	ops.quotaErr = errors.New("générateur non configuré")
 	r := &VClusterReconciler{
-		Cell: "cell1",
-		// Satisfait VClusterOps mais PAS QuotaResolver.
-		Ops:       &fakeVClusterOps{},
+		Cell:      "cell1",
+		Ops:       ops,
 		Budget:    BudgetLimits{CPU: "32"},
 		BudgetOps: &fakeBudgetReader{},
 	}
-	vc := newVCluster("sans-resolveur", withQuotas("8", "", ""))
+	vc := newVCluster("resolution-en-echec", withQuotas("8", "", ""))
 
 	ok, err := r.checkResourceBudget(context.Background(), vc)
 	if err == nil {

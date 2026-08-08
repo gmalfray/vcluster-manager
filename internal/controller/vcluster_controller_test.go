@@ -9,15 +9,39 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 )
 
 // fakeVClusterOps remplace *service.Service pour tout ce qui touche le cluster.
+//
+// Il implémente les six interfaces de VClusterServiceOps (vcluster_controller.go)
+// en entier, pas seulement Suspend/Resume : depuis que r.Ops porte ce type
+// fusionné, tout ce qu'on lui assigne doit compiler contre les six, faux de test
+// compris. Les tests qui embarquent fakeVClusterOps (fakeObserver,
+// fakeProvisioner, fakeIntegrationOps, fakeEndToEndOps...) héritent donc de ces
+// méthodes par défaut et n'écrivent que celles qu'ils testent réellement — comme
+// avant, sauf que l'oubli d'une des six ne compile plus.
+//
+// Les six méthodes qui ne comptent QUE Suspend/Resume paniquent si on les
+// appelle sans les avoir redéfinies : aucun test qui embarque ce type nu
+// n'atteint le provisionnement, l'observation ou la suppression (ils s'arrêtent
+// tous à `spec.suspend`, ou la garde de placement refuse l'objet avant), donc
+// une panne ici veut dire qu'un nouveau test compte dessus sans le savoir —
+// mieux vaut un plantage net qu'un zéro silencieux pris pour un résultat.
+//
+// Les intégrations (Vault/Keycloak/Rancher), elles, répondent « déjà configuré
+// et sain » par défaut, comme fullOps plus loin (interactions_test.go) : cette
+// étape-là tourne pour de vrai à chaque Reconile() d'un vcluster non suspendu,
+// donc un défaut « en échec » ferait échouer Ready sur tous les tests d'autres
+// chantiers qui ne portent pas ce seam, pour une raison qui n'a rien à voir
+// avec ce qu'ils mesurent — même raisonnement que newFullOps().
 type fakeVClusterOps struct {
 	mu           sync.Mutex
 	suspendCalls int
@@ -25,6 +49,8 @@ type fakeVClusterOps struct {
 	suspendErr   error
 	cellsSeen    []string
 }
+
+var _ VClusterServiceOps = (*fakeVClusterOps)(nil)
 
 func (f *fakeVClusterOps) SuspendVCluster(_ context.Context, _ models.Actor, _, env string) error {
 	f.mu.Lock()
@@ -46,6 +72,94 @@ func (f *fakeVClusterOps) counts() (suspend, resume int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.suspendCalls, f.resumeCalls
+}
+
+// unimplementedOnThisFake panique avec un message qui dit quoi faire, plutôt
+// que de rendre une valeur zéro qu'un test pourrait prendre pour un résultat.
+func unimplementedOnThisFake(method string) {
+	panic("fakeVClusterOps: " + method + " non implémenté sur ce faux minimal — " +
+		"utiliser un faux qui le couvre réellement (fakeProvisioner, fakeObserver, " +
+		"fakeDeletionOps, fullOps...)")
+}
+
+func (f *fakeVClusterOps) EffectiveQuotas(*models.CreateRequest, string) (string, string, string, bool, error) {
+	unimplementedOnThisFake("EffectiveQuotas")
+	return "", "", "", false, nil
+}
+
+func (f *fakeVClusterOps) ObserveVCluster(context.Context, string, string) service.VClusterObservation {
+	unimplementedOnThisFake("ObserveVCluster")
+	return service.VClusterObservation{}
+}
+
+func (f *fakeVClusterOps) RenderVClusterSubstitutions(*models.CreateRequest, string, string) ([]*unstructured.Unstructured, error) {
+	unimplementedOnThisFake("RenderVClusterSubstitutions")
+	return nil, nil
+}
+
+func (f *fakeVClusterOps) InspectRancherTeardown(context.Context, string, string) service.RancherTeardownState {
+	unimplementedOnThisFake("InspectRancherTeardown")
+	return service.RancherTeardownState{}
+}
+
+func (f *fakeVClusterOps) UnpairForDeletion(context.Context, models.Actor, string, string) error {
+	unimplementedOnThisFake("UnpairForDeletion")
+	return nil
+}
+
+func (f *fakeVClusterOps) InspectDeletionBackup(context.Context, string, string, time.Time) (service.DeletionBackupState, error) {
+	unimplementedOnThisFake("InspectDeletionBackup")
+	return service.DeletionBackupState{}, nil
+}
+
+func (f *fakeVClusterOps) TriggerVeleroBackup(context.Context, models.Actor, string, string) (service.VeleroBackupCreated, error) {
+	unimplementedOnThisFake("TriggerVeleroBackup")
+	return service.VeleroBackupCreated{}, nil
+}
+
+func (f *fakeVClusterOps) GetProtection(context.Context, string, string) service.ProtectionState {
+	unimplementedOnThisFake("GetProtection")
+	return service.ProtectionState{}
+}
+
+func (f *fakeVClusterOps) SetProtection(context.Context, models.Actor, string, string, bool) (service.ProtectionState, error) {
+	unimplementedOnThisFake("SetProtection")
+	return service.ProtectionState{}, nil
+}
+
+func (f *fakeVClusterOps) HostNamespaceState(context.Context, string, string) (bool, bool) {
+	unimplementedOnThisFake("HostNamespaceState")
+	return false, false
+}
+
+func (f *fakeVClusterOps) DeleteHostNamespace(context.Context, models.Actor, string, string) error {
+	unimplementedOnThisFake("DeleteHostNamespace")
+	return nil
+}
+
+func (f *fakeVClusterOps) TeardownVCluster(context.Context, models.Actor, string, string, service.TeardownOptions) ([]string, error) {
+	unimplementedOnThisFake("TeardownVCluster")
+	return nil, nil
+}
+
+func (f *fakeVClusterOps) VaultAuthConfigured(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeVClusterOps) VaultWebhookReady(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeVClusterOps) ConfigureVaultAuth(context.Context, string, string) error { return nil }
+
+func (f *fakeVClusterOps) EnsureKeycloakClient(string, string) error { return nil }
+
+func (f *fakeVClusterOps) GetRancherStatus(context.Context, string, string) service.RancherStatus {
+	return service.RancherStatus{Enabled: true, Paired: true}
+}
+
+func (f *fakeVClusterOps) PairRancher(context.Context, models.Actor, string, string) (service.RancherStatus, error) {
+	return service.RancherStatus{Enabled: true, Paired: true}, nil
 }
 
 func createVCluster(t *testing.T, ctx context.Context, name string, suspend bool) *v1alpha1.VCluster {
@@ -127,7 +241,12 @@ func TestSuspendIsIdempotent(t *testing.T) {
 // fenêtre. Laisser la fenêtre ouverte ferait croire à une suppression en cours.
 func TestUnsuspendResumesAndClearsTheWindow(t *testing.T) {
 	ctx := context.Background()
-	ops := &fakeVClusterOps{}
+	// newFakeProvisioner() et pas &fakeVClusterOps{} nu : le réveil ne s'arrête
+	// pas à reconcileSuspend comme l'endormissement, il enchaîne dans la même
+	// passe sur le budget puis le provisionnement (reconcileAll ne coupe qu'à
+	// `phase == Suspended`, jamais atteinte ici), donc ce faux doit vraiment
+	// savoir provisionner — pas seulement compiler contre le seam.
+	ops := newFakeProvisioner()
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
 	vc := createVCluster(t, ctx, "annulation", true)

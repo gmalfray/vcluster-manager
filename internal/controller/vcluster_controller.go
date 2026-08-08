@@ -35,6 +35,38 @@ type VClusterOps interface {
 
 var _ VClusterOps = (*service.Service)(nil)
 
+// VClusterServiceOps est tout ce que le reconciler tire du service : les six
+// seams (VClusterOps, VClusterObserver, VClusterProvisioner, VClusterDeletionOps,
+// QuotaResolver, VClusterIntegrationOps — déclarés chacun dans le fichier de
+// l'étape qui les consomme) fusionnés en un seul type.
+//
+// Avant, chaque étape faisait sa propre assertion `r.Ops.(X)` sur un champ
+// `Ops VClusterOps` trop étroit, et traitait le cas `!ok` — impossible en
+// production, où *service.Service implémente tout — comme un cas normal à
+// dégrader proprement. En test, ça a fait l'inverse : un faux qui n'implémentait
+// qu'une partie du seam faisait quand même passer `Ops: faux` à la compilation,
+// l'assertion échouait en silence à l'exécution, et la campagne mesurait le
+// comportement d'un opérateur amputé sans le savoir — ça a mordu une fois à la
+// fusion de plusieurs chantiers.
+//
+// Un champ de CE type ferme la porte : un faux qui n'implémente pas les six
+// interfaces ne compile plus du tout, il ne dégrade plus. Le coût est réel — les
+// faux de test qui ne couvraient qu'un seam doivent maintenant compiler contre
+// les six, quitte à ne réellement exercer qu'un seul d'entre eux — mais c'est le
+// prix pour que l'incomplétude soit une erreur de compilation et non un
+// comportement à débusquer en observant un test vert qui mesure autre chose que
+// ce qu'il prétend.
+type VClusterServiceOps interface {
+	VClusterOps
+	VClusterObserver
+	VClusterProvisioner
+	VClusterDeletionOps
+	QuotaResolver
+	VClusterIntegrationOps
+}
+
+var _ VClusterServiceOps = (*service.Service)(nil)
+
 // VClusterReconciler owns the lifecycle of a VCluster CR.
 //
 // Today it implements only the reversible half of deletion: reacting to
@@ -45,8 +77,10 @@ var _ VClusterOps = (*service.Service)(nil)
 type VClusterReconciler struct {
 	client.Client
 
-	// Ops is the service seam — *service.Service in production.
-	Ops VClusterOps
+	// Ops is the service seam — *service.Service in production. Typed as the
+	// union of every seam a reconcile step touches (VClusterServiceOps), pas
+	// juste VClusterOps : voir le commentaire de ce type pour pourquoi.
+	Ops VClusterServiceOps
 
 	// Cell names the host cluster this operator reconciles (ADR-002).
 	Cell string

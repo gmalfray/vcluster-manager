@@ -33,10 +33,10 @@ const (
 	ObserveIntervalSettled = 5 * time.Minute
 )
 
-// VClusterObserver is the read half of the service seam. It is kept apart from
-// VClusterOps because the reconciler struct is shared with other work in
-// progress and cannot grow a field for it: reconcileObservedState type-asserts
-// r.Ops instead. The assertion below is what stops that from rotting silently.
+// VClusterObserver is the read half of the service seam, kept as its own small
+// interface for readability. r.Ops (vcluster_controller.go) is typed as
+// VClusterServiceOps, which embeds this one along with the other five — so
+// reconcileObservedState below reads straight off r.Ops, no type assertion.
 type VClusterObserver interface {
 	ObserveVCluster(ctx context.Context, name, env string) service.VClusterObservation
 }
@@ -62,15 +62,7 @@ var _ VClusterObserver = (*service.Service)(nil)
 // retry the whole lifecycle because Rancher is down, and would drop the very
 // status update that says so. The retry is the requeue delay it returns.
 func (r *VClusterReconciler) reconcileObservedState(ctx context.Context, vc *v1alpha1.VCluster) (time.Duration, error) {
-	observer, ok := r.Ops.(VClusterObserver)
-	if !ok {
-		setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionUnknown, "NoObserver",
-			"cet opérateur n'a pas de quoi lire l'état du cluster : le status affiché date du passage précédent")
-		aggregateVClusterStatus(vc)
-		return ObserveIntervalMoving, nil
-	}
-
-	obs := observer.ObserveVCluster(ctx, vc.Name, r.Cell)
+	obs := r.Ops.ObserveVCluster(ctx, vc.Name, r.Cell)
 	applyObservation(vc, obs)
 	aggregateVClusterStatus(vc)
 	return observeInterval(vc, obs), nil

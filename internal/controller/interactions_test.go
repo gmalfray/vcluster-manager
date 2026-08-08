@@ -150,7 +150,7 @@ func budgetedReconciler(ops any) *VClusterReconciler {
 		Budget:    BudgetLimits{CPU: "100", Memory: "400Gi", Storage: "10Ti"},
 		BudgetOps: &fakeBudgetReader{},
 	}
-	r.Ops = ops.(VClusterOps)
+	r.Ops = ops.(VClusterServiceOps)
 	return r
 }
 
@@ -202,50 +202,47 @@ func TestARefusedProvisioningIsAggregatedIntoReady(t *testing.T) {
 	}
 }
 
-// Le même effacement pour un nom refusé — sauf que ce chemin-là est désormais
-// fermé en amont, et c'est le bon endroit.
+// Un nom invalide est maintenant refusé deux fois — et c'est devenu redondant
+// pour tout objet qui passe réellement par l'API server, ce qui mérite d'être
+// écrit noir sur blanc plutôt que découvert en relisant ce test.
 //
-// `1cluster` est un nom d'objet Kubernetes valide que nameRegex
-// (`^[a-z][a-z0-9-]*$`) refuse. Avant, le CR était admis, reconcileProvisioning
-// le refusait avec InvalidName, et l'observation effaçait le refus : le vcluster
-// restait en Provisioning sans que personne ne sache pourquoi. La garde de
-// placement valide maintenant le nom AVANT reconcileAll, donc reconcileProvisioning
-// ne le voit plus jamais.
+// `1cluster` est le nom que ce test visait : un nom d'objet Kubernetes valide
+// que nameRegex (`^[a-z][a-z0-9-]*$`) refuse. Il servait à prouver que la garde
+// de placement — qui appelle `service.ValidName` avant tout provisionnement —
+// rattrape un nom que Kubernetes, lui, aurait accepté. Ce n'est plus vrai : la
+// règle CEL de la CRD (vcluster_name_validation_test.go,
+// `TestSchemaRefusesNameStartingWithADigit`) refuse maintenant `1cluster` à
+// l'admission, avant même que le CR n'existe.
 //
-// La garde refuse avant même le provisionnement, donc la branche InvalidName de
-// reconcileProvisioning n'est plus atteignable par le reconcile. On vérifie
-// quand même qu'elle refuse pour de bon si on l'appelle directement : c'est la
-// défense en profondeur, et elle ne doit pas se contenter de poser une condition
-// que l'observation effacerait.
-func TestAnInvalidNameIsStoppedByTheGuardBeforeProvisioning(t *testing.T) {
+// Le recouvrement est total, pas partiel, et il vaut la peine d'être vérifié
+// plutôt que supposé : la garde n'appelle que `service.ValidName` (même charset
+// que la CEL, même refus du nom réservé « manager »), et la CEL ajoute
+// uniquement un plafond de longueur — un nom que la CEL admet est donc TOUJOURS
+// un nom que la garde admet aussi. Il n'existe pas de nom qui passerait
+// l'admission et que la garde rattraperait encore. C'est le même constat que
+// TestVClusterNamedAfterTheOperatorNamespaceIsRefusedAtAdmission /
+// TestGuardRefusesTheReservedNameOnItsOwn (namespace_guard_test.go) ont déjà
+// fait pour le nom réservé « manager » — même patron ici, généralisé à la forme
+// du nom.
+//
+// Ce qui reste à couvrir, et que l'admission ne peut PAS couvrir : un CR dont le
+// nom est invalide mais déjà dans etcd — créé avant que la règle CEL n'existe,
+// ou sur une CRD pas encore redéployée. La garde doit continuer à le rattraper
+// SEULE, sans dépendre de l'admission : on l'appelle donc directement, comme
+// TestGuardRefusesTheReservedNameOnItsOwn, plutôt que de faire passer l'objet
+// par un k8sClient.Create() que la CEL refuserait désormais.
+func TestTheGuardStillRefusesAnInvalidNameEvenThoughAdmissionCatchesItToo(t *testing.T) {
+	vc := &v1alpha1.VCluster{ObjectMeta: metav1.ObjectMeta{Name: "1cluster", Namespace: "default"}}
+	if reason := vclusterMisplaced(vc, "default"); reason == "" {
+		t.Fatal("la garde accepte un nom invalide : un CR déjà en etcd avant la règle CEL, ou sur " +
+			"une CRD pas encore redéployée, ne serait plus rattrapé")
+	}
+
 	ctx := context.Background()
-	ops := newFakeProvisioner()
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
 
-	vc := &v1alpha1.VCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "1cluster", Namespace: "default"},
-		Spec:       v1alpha1.VClusterSpec{Owner: "greg"},
-	}
-	if err := k8sClient.Create(ctx, vc); err != nil {
-		t.Fatalf("préalable : Kubernetes devait accepter ce nom : %v", err)
-	}
-	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), vc) })
-
-	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	got := fetchVCluster(t, ctx, vc)
-	requireVCCond(t, got, v1alpha1.CondAccepted, metav1.ConditionFalse, "NamespaceMismatch")
-	if ops.renderCall != 0 {
-		t.Fatal("le nom refusé a été transmis au rendu")
-	}
-	if c := vcCondition(got, v1alpha1.CondResourcesProvisioned); c != nil {
-		t.Fatalf("ResourcesProvisioned = %s/%s : le reconcile est allé plus loin que la garde",
-			c.Status, c.Reason)
-	}
-
-	// L'autre moitié : si la branche InvalidName était atteinte, l'observation
-	// l'effacerait toujours. Appel direct, puisque plus rien n'y mène.
+	// L'autre moitié : si la garde était contournée (bug, CRD non redéployée), le
+	// refus du provisionnement ne doit pas être effacé par l'observation qui suit.
+	// Appel direct à reconcileAll, puisque plus rien de vivant n'y mène.
 	direct := &v1alpha1.VCluster{ObjectMeta: metav1.ObjectMeta{Name: "1direct", Namespace: "default"}}
 	blind := &observerOverride{fakeProvisioner: newFakeProvisioner(), obs: service.VClusterObservation{}}
 	r2 := budgetedReconciler(blind)
@@ -272,21 +269,24 @@ func (o *observerOverride) ObserveVCluster(_ context.Context, name, env string) 
 	return got
 }
 
-// Un faux qui n'implémente pas VClusterProvisioner ne provisionne rien, et
-// l'observation qui suit annonce ResourcesProvisioned/Healthy.
+// Un provisionneur qui ne rend AUCUN objet (fakeObserver simule ce cas plutôt
+// qu'un seam manquant : voir plus bas) n'applique rien, et l'observation qui
+// suit annonce quand même ResourcesProvisioned/Healthy — ce n'est pas une
+// panne, c'est le cluster qui répond que tout va bien pour ce qu'on lui a
+// demandé de surveiller.
 //
-// C'est la forme la plus pure de « une absence se lit comme un succès » : le
-// seam manque, personne n'a appliqué le namespace ni le ConfigMap de
-// substitutions, et le CR affiche Ready. La condition RendererUnavailable que
-// reconcileProvisioning prend soin de poser vit le temps d'une fonction.
-//
-// En production les deux assertions de type réussissent, donc ce chemin
-// n'existe pas — c'est justement ce qui le rend dangereux dans les TESTS : un
-// double partiel dégrade au lieu d'échouer, et la campagne mesure autre chose
-// que ce qu'elle croit.
+// Ce test visait avant un vrai seam manquant : fakeObserver n'implémentait
+// alors ni VClusterObserver ni VClusterProvisioner, et reconcileProvisioning
+// posait une condition RendererUnavailable que l'observation qui suivait
+// effaçait aussitôt — « une absence se lit comme un succès ». Ce chemin n'est
+// plus atteignable : r.Ops est VClusterServiceOps, l'union des six seams, donc
+// fakeObserver implémente les deux pour de vrai (RenderVClusterSubstitutions
+// rend juste zéro objet). La condition RendererUnavailable elle-même a disparu
+// du code de production — il n'y a plus de branche qui l'écrit — donc rien ne
+// pourrait plus la faire réapparaître ici.
 func TestAMissingProvisionerStillReportsProvisioned(t *testing.T) {
 	ctx := context.Background()
-	ops := &fakeObserver{obs: healthyObservation()} // observateur, PAS provisionneur
+	ops := &fakeObserver{obs: healthyObservation()}
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
 
 	vc := newObservedVCluster(t, ctx, "sans-provisionneur", nil)
@@ -301,10 +301,6 @@ func TestAMissingProvisionerStillReportsProvisioned(t *testing.T) {
 	}
 
 	got := fetchVCluster(t, ctx, vc)
-	c := vcCondition(got, v1alpha1.CondResourcesProvisioned)
-	if c.Reason == "RendererUnavailable" {
-		t.Fatal("la condition du seam manquant a survécu — le trou est bouché, retirer ce test")
-	}
 	requireVCCond(t, got, v1alpha1.CondResourcesProvisioned, metav1.ConditionTrue, "Healthy")
 	requireVCCond(t, got, v1alpha1.CondVClusterReady, metav1.ConditionTrue, "AllChecksPassed")
 }
@@ -636,38 +632,23 @@ func TestAMisplacedVClusterKeepsItsStaleReadyCondition(t *testing.T) {
 	}
 }
 
-// --- seam manquant sur le chemin destructeur --------------------------------
-
-// Le seam de suppression absent bloque l'objet SANS rien écrire nulle part.
+// --- seam manquant : plus un scénario atteignable ---------------------------
 //
-// Les trois assertions de type sur `r.Ops` traitent la même panne de trois
-// façons : VClusterObserver pose Unknown/NoObserver, VClusterProvisioner pose
-// False/RendererUnavailable, VClusterDeletionOps retourne une erreur avant
-// d'avoir écrit quoi que ce soit. Sur le chemin le plus grave des trois, c'est
-// la variante la plus muette : l'objet reste en Terminating, `kubectl describe`
-// ne dit rien, et l'erreur ne sort que dans les logs du pod.
-func TestAMissingDeletionSeamLeavesNothingInTheStatus(t *testing.T) {
-	ctx := context.Background()
-	ops := &fakeVClusterOps{} // ni observateur, ni provisionneur, ni suppression
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
-
-	vc := newDeletingVCluster(t, ctx, "seam-manquant", false, nil)
-	_, err := r.Reconcile(ctx, vcReq(vc))
-	if err == nil {
-		t.Fatal("aucune erreur : l'absence du seam de suppression est passée inaperçue")
-	}
-
-	got := fetchVCluster(t, ctx, vc)
-	if len(got.Status.Conditions) != 0 {
-		t.Fatalf("conditions écrites : %+v — le trou est bouché, relire ce test", got.Status.Conditions)
-	}
-	if got.Status.Phase != "" {
-		t.Fatalf("phase = %q : ce test fige le silence complet du status", got.Status.Phase)
-	}
-	if vclusterGone(t, ctx, vc) {
-		t.Fatal("objet libéré alors que la séquence n'a jamais tourné")
-	}
-}
+// Il y avait ici TestAMissingDeletionSeamLeavesNothingInTheStatus, qui posait
+// un faux n'implémentant « ni observateur, ni provisionneur, ni suppression »
+// comme `r.Ops` et vérifiait que le trou se refermait silencieusement. C'était
+// la trace directe de la dette décrite dans docs/etat-brique-operateur.md
+// « Dette assumée » : quatre (en réalité six) interfaces récupérées par
+// assertion de type sur un champ `Ops VClusterOps` trop étroit, chacune
+// dégradant le cas `!ok` à sa façon plutôt que le refuser.
+//
+// r.Ops est maintenant VClusterServiceOps (vcluster_controller.go), l'union des
+// six. Un faux qui n'implémente pas l'un d'eux ne COMPILE plus contre ce champ
+// — il n'y a donc plus de test à écrire ici : le compilateur fait le travail
+// qu'un test d'exécution faisait avant lui. fakeVClusterOps lui-même ne fait
+// plus exception : il implémente désormais les six (vcluster_controller_test.go),
+// avec des panics pour les cinq seams qu'il ne sert qu'à faire compiler, jamais
+// à exercer.
 
 // --- la borne de sauvegarde : une ancre pour deux significations ------------
 

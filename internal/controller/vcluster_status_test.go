@@ -65,6 +65,13 @@ func (f *fakeObserver) setObservation(o service.VClusterObservation) {
 	f.obs = o
 }
 
+// Les intégrations et la suppression sont héritées de fakeVClusterOps sans
+// être redéfinies ici : ces tests portent sur l'observation, pas sur ces deux
+// seams. Vault/Keycloak/Rancher répondent donc « déjà configuré » (comme
+// fullOps), et la suppression paniquerait si elle était atteinte — ce qu'elle
+// n'est jamais depuis ce faux (aucun test d'observation ne supprime le CR).
+var _ VClusterServiceOps = (*fakeObserver)(nil)
+
 // healthyObservation is a vcluster where every source answered and everything is
 // fine. Each test spoils exactly one thing, so what it proves is unambiguous.
 func healthyObservation() service.VClusterObservation {
@@ -104,18 +111,6 @@ func newObservedVCluster(t *testing.T, ctx context.Context, name string, mutate 
 	}
 	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), vc) })
 	return vc
-}
-
-// seedCondition writes a condition another reconcile step would have written,
-// through the status subresource, so the aggregation reads it back the way it
-// would in production.
-func seedCondition(t *testing.T, ctx context.Context, vc *v1alpha1.VCluster, condType string, status metav1.ConditionStatus, reason, message string) {
-	t.Helper()
-	got := fetchVCluster(t, ctx, vc)
-	setVClusterCond(got, condType, status, reason, message)
-	if err := k8sClient.Status().Update(ctx, got); err != nil {
-		t.Fatalf("seed condition %s: %v", condType, err)
-	}
 }
 
 func vcCondition(vc *v1alpha1.VCluster, condType string) *metav1.Condition {
@@ -325,33 +320,33 @@ func TestBudgetRefusedMakesReadyFalseAndPhaseFailed(t *testing.T) {
 }
 
 // Une condition ArgoCD restée d'une époque où ArgoCD était activé ne doit pas
-// bloquer Ready une fois ArgoCD coupé.
+// bloquer Ready une fois ArgoCD coupé — et la même condition doit recompter dès
+// qu'ArgoCD est redemandé.
+//
+// C'est une propriété de l'agrégat (blockingConditions/aggregateVClusterStatus),
+// testée directement dessus plutôt qu'à travers un Reconcile() complet. Ça n'a
+// plus de sens de la faire passer par reconcileKeycloak : depuis que r.Ops est
+// VClusterServiceOps, cette étape tourne pour de vrai à CHAQUE passage et
+// réécrit ArgoCDReady avant que l'agrégat ne la lise — plus aucune condition
+// « périmée » ne peut réellement survivre jusqu'à l'agrégat dans un Reconcile()
+// de bout en bout (elle ne le pouvait, avant, que parce que l'étape était
+// sautée par un seam incomplet — exactement le défaut que ce chantier ferme).
+// Ce qu'on vérifie ici reste la même règle, à sa vraie place.
 func TestArgoCDConditionIgnoredWhenArgoCDIsOff(t *testing.T) {
-	ctx := context.Background()
-	ops := &fakeObserver{obs: healthyObservation()}
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+	vc := newVCluster("argocd-coupe", nil)
+	setVClusterCond(vc, v1alpha1.CondResourcesProvisioned, metav1.ConditionTrue, "Healthy", "")
+	setVClusterCond(vc, v1alpha1.CondVaultConfigured, metav1.ConditionTrue, "Configured", "")
+	setVClusterCond(vc, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "KeycloakFailed", "client OIDC absent")
 
-	vc := newObservedVCluster(t, ctx, "argocd-coupe", nil)
-	seedCondition(t, ctx, vc, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "KeycloakFailed",
-		"client OIDC absent")
-
-	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if got := fetchVCluster(t, ctx, vc); vcCondition(got, v1alpha1.CondVClusterReady).Status != metav1.ConditionTrue {
-		t.Fatalf("Ready = %s : une condition ArgoCD périmée bloque un vcluster sans ArgoCD", vcCondition(got, v1alpha1.CondVClusterReady).Status)
+	aggregateVClusterStatus(vc)
+	if c := vcCondition(vc, v1alpha1.CondVClusterReady); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %+v : une condition ArgoCD périmée bloque un vcluster sans ArgoCD", c)
 	}
 
 	// Et la même condition compte dès qu'ArgoCD est demandé.
-	withArgo := newObservedVCluster(t, ctx, "argocd-actif", func(vc *v1alpha1.VCluster) {
-		vc.Spec.ArgoCD = &v1alpha1.ArgoCDSpec{Enabled: true}
-	})
-	seedCondition(t, ctx, withArgo, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "KeycloakFailed",
-		"client OIDC absent")
-	if _, err := r.Reconcile(ctx, vcReq(withArgo)); err != nil {
-		t.Fatalf("reconcile argocd: %v", err)
-	}
-	requireVCCond(t, fetchVCluster(t, ctx, withArgo), v1alpha1.CondVClusterReady, metav1.ConditionFalse, "ArgoCDReadyNotMet")
+	vc.Spec.ArgoCD = &v1alpha1.ArgoCDSpec{Enabled: true}
+	aggregateVClusterStatus(vc)
+	requireVCCond(t, vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "ArgoCDReadyNotMet")
 }
 
 // La première installation et la régression donnent la même lecture. Ce qui les
@@ -623,35 +618,10 @@ func TestSuspendedVClusterIsNotObserved(t *testing.T) {
 	}
 }
 
-// Sans observateur branché, l'opérateur dit qu'il ne sait pas — il n'invente pas
-// un verdict et il ne tombe pas.
-// provisionneurSansObservateur isole l'absence d'observateur. Il faut un
-// provisionneur, sinon c'est le refus de provisionnement qui coupe la
-// réconciliation et le test mesure autre chose que ce qu'il annonce.
-type provisionneurSansObservateur struct{ fakeVClusterOps }
-
-func (*provisionneurSansObservateur) EffectiveQuotas(req *models.CreateRequest, env string) (string, string, string, bool, error) {
-	return newFakeProvisioner().EffectiveQuotas(req, env)
-}
-
-func (*provisionneurSansObservateur) RenderVClusterSubstitutions(*models.CreateRequest, string, string) ([]*unstructured.Unstructured, error) {
-	return nil, nil
-}
-
-func TestNoObserverReportsUnknownRatherThanFailing(t *testing.T) {
-	ctx := context.Background()
-	ops := &provisionneurSansObservateur{}
-	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
-
-	vc := newObservedVCluster(t, ctx, "sans-observateur", nil)
-	res, err := r.Reconcile(ctx, vcReq(vc))
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	got := fetchVCluster(t, ctx, vc)
-	requireVCCond(t, got, v1alpha1.CondResourcesProvisioned, metav1.ConditionUnknown, "NoObserver")
-	requireVCCond(t, got, v1alpha1.CondVClusterReady, metav1.ConditionUnknown, "")
-	if res.RequeueAfter != ObserveIntervalMoving {
-		t.Fatalf("re-scrutation dans %s, attendu %s", res.RequeueAfter, ObserveIntervalMoving)
-	}
-}
+// Il y avait ici TestNoObserverReportsUnknownRatherThanFailing et le faux
+// provisionneurSansObservateur qui l'accompagnait. Le test posait un faux
+// n'implémentant pas VClusterObserver comme `r.Ops` et vérifiait que
+// reconcileObservedState dégradait sur Unknown/NoObserver au lieu de tomber.
+// r.Ops est maintenant VClusterServiceOps (vcluster_controller.go), l'union des
+// six seams : un tel faux ne compile plus contre ce champ, le scénario n'est
+// plus atteignable. Voir le commentaire équivalent dans interactions_test.go.
