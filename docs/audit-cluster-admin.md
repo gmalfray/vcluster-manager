@@ -672,6 +672,175 @@ Côté dépôts, lectures seules :
 `internal/controller/rbac_probe_test.go`,
 `docs/design-backup-restore-annotation.md`, `docs/etat-brique-operateur.md`.
 
+---
+
+## 4. L'évasion vers le nœud, exécutée — le §3.1 passe de déduit à prouvé
+
+> Écrit le 2026-08-08, en écriture sur le cluster de recette. Le §3.1 était le
+> seul constat de cet audit resté au statut **déduit** : « un tenant peut lancer
+> un pod privilégié qui atterrit tel quel sur le nœud », sans que personne l'ait
+> lancé. Cette section le tranche en le faisant, sur un vcluster jetable créé pour
+> l'occasion et supprimé après. Aucune commande d'évasion n'a été exécutée :
+> constater que le pod démarre avec ces privilèges suffit, et c'est où je m'arrête.
+
+### 4.1 Verdict
+
+**Confirmé.** Un pod `privileged: true`, `hostPID: true`, montant `hostPath: /`,
+créé par l'admin d'un vcluster **dans** son vcluster, est synchronisé tel quel
+dans le namespace hôte et y démarre avec ces mêmes privilèges sur le nœud. Rien
+ne l'en empêche : ni label PSA, ni webhook, ni ValidatingAdmissionPolicy, ni la
+configuration `policies` du chart vcluster. Les quatre verrous possibles sont
+absents, chacun vérifié.
+
+Comme le nœud est unique, ce pod est root sur le nœud qui porte le control-plane
+k3s, donc sur tous les autres tenants, sur MinIO et sur les secrets de plateforme.
+L'isolation multi-tenant que le produit vend ne repose, à ce niveau, sur **rien
+d'appliqué**. Le §3.1 avait raison.
+
+### 4.2 Le test, et ses sorties
+
+Un vcluster jetable `audit-psa` a été installé avec le chart `loft-sh/vcluster`
+**0.36.1** — la version en service ici (`helm list -A`) — et la même politique que
+la flotte réelle : `policies.podSecurityStandard: privileged`,
+`networkPolicy.enabled: false`. Seule différence sans rapport avec le test :
+l'etcd est déployé au lieu d'embarqué, l'embedded etcd étant refusé par la licence
+OSS. La politique testée est donc bien celle du produit.
+
+Le kubeconfig que le produit distribue au tenant est admin plein du vcluster —
+ce n'est pas une supposition, `auth whoami` le nomme :
+
+```
+KUBECONFIG=<kubeconfig exporté> kubectl auth whoami
+  → Username  kubernetes-super-admin
+    Groups    [system:masters system:authenticated]
+
+kubectl auth can-i create pods -n default   → yes
+```
+
+Le pod, créé depuis ce kubeconfig, à l'intérieur du vcluster :
+
+```yaml
+spec:
+  hostPID: true
+  containers:
+  - securityContext: { privileged: true }
+    volumeMounts: [{ name: hostroot, mountPath: /host }]
+  volumes:
+  - name: hostroot
+    hostPath: { path: /, type: Directory }
+```
+
+L'API du vcluster l'accepte **sans le moindre avertissement PSA**, ni à la
+création ni en `--dry-run=server` :
+
+```
+kubectl apply -f pod-priv.yaml --dry-run=server
+  → pod/pod-priv-audit configured   (aucun warning, aucune violation signalée)
+```
+
+Côté hôte, le pod réel apparaît dans le namespace du vcluster, `Running`, avec les
+privilèges **préservés** — la synchro ne filtre rien :
+
+```
+kubectl -n audit-psa get pod pod-priv-audit-x-default-x-audit-psa -o json | jq …
+  → { "hostPID": true,
+      "privileged": true,
+      "hostPathVolumes": [ { "path": "/", "type": "Directory" } ],
+      "nodeName": "vcluster-mgr",
+      "phase": "Running",
+      "containerReady": true }
+```
+
+Preuve que ces privilèges sont effectifs sur le nœud, sans rien lire du nœud ni
+tenter de s'en échapper — le conteneur voit l'espace de noms PID de l'hôte et
+tourne en root :
+
+```
+kubectl exec pod-priv-audit -- sh -c 'ls /proc | grep -E "^[0-9]+$" | wc -l; id'
+  → 453           (les process de l'hôte, pas ceux du seul conteneur)
+    uid=0(root) gid=0(root) …
+```
+
+Je n'ai pas chrooté dans `/host`, pas lu de fichier du nœud, pas touché aux autres
+tenants. Le fait est établi : le pod démarre privilégié sur l'hôte. Le reste est
+de l'exploitation, hors mandat.
+
+### 4.3 Les quatre verrous, tous absents — vérifié un par un
+
+| Verrou possible | État constaté |
+|---|---|
+| Label PSA sur le namespace hôte | **Aucun.** Les 33 namespaces ont `enforce/audit/warn` à `-`, y compris tous les `vcluster-*` et le namespace de test |
+| PSA côté vcluster (`policies.podSecurityStandard`) | Positionné à **`privileged`** dans la config déployée (`vc-config-*` de `demo` et `recette-restore-b`), c.-à-d. « tout est permis ». Origine : `VCLUSTER_POD_SECURITY: "privileged"` dans `deploy/base/configmap.yaml`, propagé par `internal/gitops/templates/values.yaml.tmpl` |
+| Webhook d'admission filtrant les pods | **Aucun.** Inventaire complet des `validating`/`mutating webhookconfigurations` : capi, cert-manager, ingress-nginx, rancher, vault-agent-injector. Le seul qui touche aux pods est l'injecteur Vault — il **mute** pour injecter un sidecar, il ne **refuse** rien |
+| ValidatingAdmissionPolicy | Deux VAP existent (`vcluster-manager-operator-namespace-scope`, `vcluster-manager-vcluster-name`), mais elles portent sur les **namespaces** que l'opérateur modifie et sur le **nom** des CR `vclusters`. Aucune ne regarde un pod |
+
+### 4.4 Remédiations, avec leur coût
+
+Point de départ qui change le calcul du coût : **aucun tenant vivant n'utilise
+aujourd'hui de pod privilégié.** Balayage des pods syncés dans `vcluster-demo`,
+`vcluster-recette-restore-a`, `vcluster-recette-restore-b`, `vcluster-manager` —
+aucun `privileged`, aucun `hostPath`, aucun `hostPID/hostNetwork/hostIPC`. Les
+control-plane des vclusters eux-mêmes (statefulset syncer, etcd) tournent
+`runAsUser: 0` mais `allowPrivilegeEscalation: false`, sans `privileged` ni
+`hostPath` : ils passent `baseline`. Le « coût » d'un durcissement — le tenant
+légitime qui a besoin d'un pod privilégié pour un CSI ou un agent — est donc ici
+**théorique**, pas encouru. C'est le bon moment pour serrer, avant qu'un tel
+tenant existe.
+
+**R-PSA-1 — `policies.podSecurityStandard: baseline` côté vcluster.**
+*Gain* : le refus a lieu **dans l'API du vcluster**, avec un message PSA lisible
+pour le tenant, avant toute synchro. `baseline` interdit exactement ce qui sert à
+l'évasion : `privileged`, `hostPID/IPC/Network`, `hostPath`, les capabilities
+larges. C'est la remédiation la plus propre côté expérience tenant.
+*Coût* : un changement de valeur par tenant (`VCLUSTER_POD_SECURITY`), appliqué
+par régénération GitOps et `helm upgrade` de chaque vcluster — pas à chaud, ça
+redémarre le control-plane du vcluster. À valider par un test symétrique (recréer
+un vcluster jetable en `baseline`, rejouer le pod, vérifier que l'API le refuse) :
+je ne l'ai pas exécuté, donc **le gain est déduit du fonctionnement de vcluster,
+pas prouvé ici**. C'est le test qui manque pour clore complètement.
+*Ce que ça casse* : un futur tenant ayant un vrai besoin privilégié devra passer
+par une exception explicite. Sur la flotte actuelle, rien.
+
+**R-PSA-2 — Labels PSA `enforce=baseline` sur les namespaces hôtes `vcluster-*`.**
+*Gain* : la défense ne dépend plus de la config du chart, elle est posée par
+l'hôte sur le namespace où le pod atterrit. Même si un vcluster est provisionné un
+jour sans PSA interne, le pod syncé est refusé à l'admission de l'hôte. C'est la
+ceinture en plus des bretelles de R-PSA-1.
+*Coût* : le refus survient **côté hôte, à la synchro**. Vu du tenant, son pod est
+créé dans le vcluster mais ne démarre jamais, sans message PSA clair de son côté —
+diagnostic pénible. Il faut aussi que le poseur du label soit l'opérateur au
+provisionnement (il a déjà `namespaces: update`, cf. §1.4), et vérifier que les
+pods de control-plane du vcluster passent `baseline` — c'est le cas aujourd'hui,
+vérifié ci-dessus, mais ça se re-vérifie à chaque montée de version du chart.
+*Ce que ça casse* : idem R-PSA-1 côté tenant, avec en plus l'asymétrie de
+diagnostic. À poser en `warn`/`audit` d'abord, `enforce` ensuite.
+
+**R-PSA-3 — Une ValidatingAdmissionPolicy sur les pods des namespaces `vcluster-*`.**
+*Gain* : granularité fine en CEL (refuser `privileged`/`hostPID`/`hostPath` mais
+tolérer une liste blanche par label), et cohérent avec l'architecture — l'infra a
+déjà deux VAP, le mécanisme est en place et connu de l'équipe.
+*Coût* : une CEL de plus à écrire, tester et maintenir, avec le même mode d'échec
+que R-PSA-2 (refus à la synchro, côté hôte). C'est la solution la plus fine et la
+plus chère à porter dans le temps.
+*Ce que ça casse* : rien sur la flotte actuelle ; un `failurePolicy: Fail` mal
+réglé bloquerait toute synchro de pod vers `vcluster-*` — à border par
+`matchConditions` sur le préfixe de namespace, comme les deux VAP existantes.
+
+**Recommandation.** R-PSA-1 en premier (le refus au bon endroit, message clair),
+R-PSA-2 en défense en profondeur derrière. R-PSA-3 seulement si un besoin
+d'exceptions granulaires apparaît. Et d'abord, le test qui me manque : rejouer ce
+même pod contre un vcluster jetable en `baseline` pour prouver — pas déduire — que
+l'API le refuse.
+
+### 4.5 État dans lequel je laisse le cluster
+
+Rien ne subsiste du test. Le pod a été supprimé, le chart `audit-psa` désinstallé,
+le namespace `audit-psa` supprimé, son PVC parti avec (aucun PV résiduel), le
+port-forward local fermé. `demo` et `recette-restore-b` sont intacts (5 pods
+`Running` chacun), la plateforme n'a pas été touchée. `recette-restore-a` n'a pas
+servi. Un port-forward vers `vcluster-recette-cdv-1` (port 18477) tourne encore,
+mais il appartient à un autre chantier, pas à ce test.
+
 ### 4.6 Le test symétrique : `baseline` refuse-t-il vraiment ? — prouvé
 
 Le §4.4 laissait un point ouvert : le gain de R-PSA-1 était **déduit** du
