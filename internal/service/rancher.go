@@ -78,6 +78,17 @@ type RancherStatus struct {
 	Cleaning bool   `json:"cleaning"`
 	Name     string `json:"name"`
 	Env      string `json:"env"`
+	// LastPairingError, when non-empty, carries the message of the most
+	// recent failed pairing attempt for this vcluster. PairRancher's heavy
+	// work runs in a background goroutine that outlives the request; without
+	// this, a failure there only reached slog, so a stuck "Pairing" state
+	// (the cluster exists in Rancher but never went active) gave no clue why.
+	// Only set while the cluster isn't Paired — it's the explanation for a
+	// stall, not a live error.
+	LastPairingError string `json:"last_pairing_error,omitempty"`
+	// LastPairingErrorAt is when LastPairingError was recorded (RFC3339).
+	// Empty unless LastPairingError is set.
+	LastPairingErrorAt string `json:"last_pairing_error_at,omitempty"`
 }
 
 // GetRancherStatus reports the current Rancher pairing state of a vcluster.
@@ -130,7 +141,20 @@ func (s *Service) GetRancherStatus(ctx context.Context, name, env string) Ranche
 	paired := found && info.State == "active"
 	pairing := found && !paired
 
-	return RancherStatus{Enabled: true, Paired: paired, Pairing: pairing, Cleaning: cleaning, Name: name, Env: env}
+	st := RancherStatus{Enabled: true, Paired: paired, Pairing: pairing, Cleaning: cleaning, Name: name, Env: env}
+
+	// A cluster stuck in "pending" state in Rancher forever and a vcluster
+	// where the very first import call failed look identical from here
+	// (pairing/found is unbounded in time either way) — the only way to tell
+	// them apart from a stall is the last recorded failure, if any.
+	if !paired {
+		if failure, recorded := s.cfg.RancherPairingFailureFor(name, env); recorded {
+			st.LastPairingError = failure.Message
+			st.LastPairingErrorAt = failure.At
+		}
+	}
+
+	return st
 }
 
 // PairRancher registers a vcluster in Rancher (prod only, admin only). RBAC is
@@ -180,12 +204,19 @@ func (s *Service) PairRancher(ctx context.Context, actor models.Actor, name, env
 
 	audit.LogActor(actor.Username, "pair-rancher", name, env)
 
+	// A genuinely new attempt is starting (the guards above already ruled
+	// out a cluster still lingering in Rancher from a previous one) — drop
+	// whatever failure that previous cycle left behind so it doesn't get
+	// shown against an attempt it has nothing to do with.
+	s.cfg.ClearRancherPairingFailure(name, env)
+
 	// Run the pairing asynchronously (heavy operation).
 	go func() {
 		// 1. Import cluster in Rancher.
 		clusterID, manifestURL, err := s.rancher.ImportCluster(name)
 		if err != nil {
 			slog.Error("rancher: import failed", "vcluster", name, "err", err)
+			s.cfg.SetRancherPairingFailure(name, env, "import Rancher : "+err.Error())
 			return
 		}
 		slog.Info("rancher: cluster imported", "vcluster", name, "cluster_id", clusterID, "manifest", manifestURL)
@@ -194,6 +225,7 @@ func (s *Service) PairRancher(ctx context.Context, actor models.Actor, name, env
 		manifest, err := s.rancher.DownloadManifest(manifestURL)
 		if err != nil {
 			slog.Error("rancher: download manifest failed", "vcluster", name, "err", err)
+			s.cfg.SetRancherPairingFailure(name, env, "téléchargement du manifeste : "+err.Error())
 			return
 		}
 
@@ -202,6 +234,7 @@ func (s *Service) PairRancher(ctx context.Context, actor models.Actor, name, env
 		bg := context.Background()
 		if err := k8s.ApplyManifestToVClusterViaPortForward(bg, name, manifest); err != nil {
 			slog.Error("rancher: apply manifest failed", "vcluster", name, "err", err)
+			s.cfg.SetRancherPairingFailure(name, env, "application du manifeste dans le vcluster : "+err.Error())
 			return
 		}
 		slog.Info("rancher: manifest applied, waiting for cluster to become active", "vcluster", name)
@@ -209,13 +242,24 @@ func (s *Service) PairRancher(ctx context.Context, actor models.Actor, name, env
 		// 4. Wait for the cluster to become active in Rancher (agent connects back).
 		if err := s.rancher.WaitForClusterActive(clusterID, 5*time.Minute); err != nil {
 			slog.Error("rancher: cluster did not become active", "vcluster", name, "err", err)
+			s.cfg.SetRancherPairingFailure(name, env, "le cluster n'est pas devenu actif : "+err.Error())
 			return
 		}
 
-		slog.Info("rancher: vcluster successfully paired and active", "vcluster", name)
+		s.finishPairingSuccess(name, env)
 	}()
 
 	return RancherStatus{Enabled: true, Pairing: true, Name: name, Env: env}, nil
+}
+
+// finishPairingSuccess records that name/env's pairing attempt made it all
+// the way to an active cluster. Split out from the goroutine above so the
+// one thing that matters here — dropping a stale failure a later, successful
+// attempt has superseded — can be tested without dragging in a working
+// port-forward.
+func (s *Service) finishPairingSuccess(name, env string) {
+	slog.Info("rancher: vcluster successfully paired and active", "vcluster", name)
+	s.cfg.ClearRancherPairingFailure(name, env)
 }
 
 // UnpairRancher removes a vcluster from Rancher (prod only, admin only). RBAC
@@ -244,6 +288,10 @@ func (s *Service) UnpairRancher(ctx context.Context, actor models.Actor, name, e
 	}
 
 	audit.LogActor(actor.Username, "unpair-rancher", name, env)
+
+	// The user is tearing this pairing down — whatever a previous attempt
+	// failed on no longer applies to whatever comes next.
+	s.cfg.ClearRancherPairingFailure(name, env)
 
 	// 2. Delete cluster from Rancher (only if found — if the cluster was
 	// deleted from Rancher manually or paired with a different name, skip
