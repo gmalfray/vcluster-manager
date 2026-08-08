@@ -2,13 +2,17 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	clienttesting "k8s.io/client-go/testing"
 )
 
 // newTestStatusClient builds a StatusClient backed by a fake dynamic client
@@ -463,5 +467,185 @@ func TestWaitForVClusterPodsGone_RespectsContextCancellation(t *testing.T) {
 	err := sc.WaitForVClusterPodsGone(ctx, "demo", 5*time.Second)
 	if err == nil {
 		t.Error("expected an error when the context is already cancelled")
+	}
+}
+
+// --- QuiesceVClusterForInPlaceRestore ---
+//
+// D2/D3 (docs/recette-restauration.md): scaling the control-plane and etcd
+// workloads to 0 before an in-place restore leaves them alive, still
+// reconciling — Velero's own restore of the SAME object (existingResourcePolicy:
+// update) races that live controller and recreates a pod node-agent never
+// tracks, which either hangs the whole Restore forever (Deployment: new random
+// pod name) or silently restores into an empty volume (StatefulSet: same pod
+// name, but the CONTROLLER created it, not Velero, so the volume never gets
+// filled). Reproduced live against Velero v1.15.1 on the recette cell; the fix
+// is deleting the workloads outright instead of scaling them down.
+
+func TestQuiesceVClusterForInPlaceRestore_EmbeddedDeletesTheSingleStatefulSet(t *testing.T) {
+	sc := newTestStatusClient(newStatefulSetObj("vcluster-demo", "vcluster-demo", map[string]string{"app": "vcluster"}))
+
+	topo, err := sc.QuiesceVClusterForInPlaceRestore(context.Background(), "demo", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if topo.ControlPlaneKind != "StatefulSet" || topo.PVCName != "data-vcluster-demo-0" {
+		t.Errorf("topology = %+v, want embedded StatefulSet / data-vcluster-demo-0", topo)
+	}
+	if _, err := sc.client.Resource(statefulSetGVR).Namespace("vcluster-demo").Get(context.Background(), "vcluster-demo", metav1.GetOptions{}); err == nil {
+		t.Error("expected the control-plane statefulset to be DELETED, not merely scaled to 0")
+	}
+}
+
+func TestQuiesceVClusterForInPlaceRestore_ExternalEtcdDeletesBothWorkloads(t *testing.T) {
+	sc := newTestStatusClient(
+		newDeploymentObj("vcluster-demo", "vcluster-demo", map[string]string{"app": "vcluster"}),
+		newStatefulSetObj("vcluster-demo-etcd", "vcluster-demo", map[string]string{"app": "etcd"}),
+	)
+
+	topo, err := sc.QuiesceVClusterForInPlaceRestore(context.Background(), "demo", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if topo.ControlPlaneKind != "Deployment" || topo.EtcdStatefulSet != "vcluster-demo-etcd" || topo.PVCName != "data-vcluster-demo-etcd-0" {
+		t.Errorf("topology = %+v, want external-etcd Deployment / vcluster-demo-etcd / data-vcluster-demo-etcd-0", topo)
+	}
+	if _, err := sc.client.Resource(deploymentGVR).Namespace("vcluster-demo").Get(context.Background(), "vcluster-demo", metav1.GetOptions{}); err == nil {
+		t.Error("expected the control-plane deployment to be DELETED, not merely scaled to 0")
+	}
+	if _, err := sc.client.Resource(statefulSetGVR).Namespace("vcluster-demo").Get(context.Background(), "vcluster-demo-etcd", metav1.GetOptions{}); err == nil {
+		t.Error("expected the etcd statefulset to be DELETED, not merely scaled to 0")
+	}
+}
+
+func TestQuiesceVClusterForInPlaceRestore_IdempotentWhenAlreadyDeleted(t *testing.T) {
+	// Nothing seeded: a retry of a sequence whose earlier attempt already
+	// deleted the workloads (or a vcluster with nothing deployed at all) must
+	// not be treated as a failure.
+	sc := newTestStatusClient()
+	if _, err := sc.QuiesceVClusterForInPlaceRestore(context.Background(), "demo", 100*time.Millisecond); err != nil {
+		t.Fatalf("expected no error when the workloads are already gone, got %v", err)
+	}
+}
+
+func TestQuiesceVClusterForInPlaceRestore_PropagatesARealDeleteFailure(t *testing.T) {
+	refus := func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "delete" && action.GetResource().Resource == "statefulsets" {
+			return true, nil, apierrors.NewForbidden(
+				schema.GroupResource{Resource: "statefulsets"}, "vcluster-demo",
+				fmt.Errorf("refusé par un webhook"))
+		}
+		return false, nil, nil
+	}
+	sc := NewTestStatusClientWithReactor(refus,
+		newStatefulSetObj("vcluster-demo", "vcluster-demo", map[string]string{"app": "vcluster"}),
+	)
+
+	if _, err := sc.QuiesceVClusterForInPlaceRestore(context.Background(), "demo", 100*time.Millisecond); err == nil {
+		t.Error("expected the forbidden delete to surface as an error, not be swallowed like a NotFound")
+	}
+}
+
+func TestQuiesceVClusterForInPlaceRestore_SelectorIsCapturedBeforeTheDelete(t *testing.T) {
+	// The whole point of capturing the selector up front: by the time the pod
+	// wait runs, a Get on the workload returns NotFound (we just deleted it).
+	// If the code re-read the selector at that point instead of reusing what
+	// it captured before deleting, it would see "no selector" and return
+	// immediately — instead of actually waiting out the full timeout below on
+	// the pod that (the fake client does no real garbage collection) never
+	// disappears on its own.
+	labels := map[string]string{"app": "vcluster"}
+	sc := newTestStatusClient(
+		newStatefulSetObj("vcluster-demo", "vcluster-demo", labels),
+		newPodObj("vcluster-demo-0", "vcluster-demo", labels),
+	)
+
+	const timeout = 300 * time.Millisecond
+	start := time.Now()
+	_, err := sc.QuiesceVClusterForInPlaceRestore(context.Background(), "demo", timeout)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		// A pod-wait timeout is logged and swallowed, not fatal — the caller
+		// still deletes the PVC (see the comment on QuiesceVClusterForInPlaceRestore).
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if elapsed < timeout {
+		t.Errorf("returned after %s, want at least the %s pod-wait timeout — the selector must not have been captured before the delete", elapsed, timeout)
+	}
+}
+
+// --- DeleteVClusterPVCNamed ---
+
+func TestDeleteVClusterPVCNamed_DoesNotReDeriveTheNameFromTopology(t *testing.T) {
+	// Nothing here would let detectVClusterTopology guess this exact PVC
+	// name — proving this path trusts the caller's topology instead of
+	// re-detecting it, which is the whole reason it exists (see
+	// QuiesceVClusterForInPlaceRestore: by the time this runs, the workload
+	// detectVClusterTopology would inspect is already gone, deleted on
+	// purpose).
+	sc := newTestStatusClient(newPVCObj("data-vcluster-demo-etcd-0", "vcluster-demo"))
+	if err := sc.DeleteVClusterPVCNamed(context.Background(), "demo", "data-vcluster-demo-etcd-0"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := sc.client.Resource(persistentVolumeClaimGVR).Namespace("vcluster-demo").Get(context.Background(), "data-vcluster-demo-etcd-0", metav1.GetOptions{}); err == nil {
+		t.Error("expected the PVC to be gone")
+	}
+}
+
+// --- DeleteVeleroBackup ---
+//
+// D5 (docs/recette-restauration.md, cas F): deleting the Backup Kubernetes
+// object directly is not how you delete a Velero backup — the data stays in
+// the bucket and backup-sync resurrects the object. Confirmed on the recette
+// cell: toast said "supprimé", the object was back three minutes later with a
+// fresh creationTimestamp, and `kubectl get deletebackuprequests` was empty
+// the whole time. The fix creates a DeleteBackupRequest instead; these tests
+// check that a request actually gets created and names the right backup, and
+// — deliberately — that the Backup object itself is left alone: Velero, not
+// this code, is what removes it once the data is gone.
+
+func TestDeleteVeleroBackup_CreatesADeleteBackupRequestNamingTheBackup(t *testing.T) {
+	var captured *unstructured.Unstructured
+	capture := func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if action.GetVerb() == "create" && action.GetResource().Resource == "deletebackuprequests" {
+			if create, ok := action.(clienttesting.CreateAction); ok {
+				if u, ok := create.GetObject().(*unstructured.Unstructured); ok {
+					captured = u
+				}
+			}
+		}
+		return false, nil, nil
+	}
+	sc := NewTestStatusClientWithReactor(capture, newBackupObj("manual-demo-1", "velero-system", "Completed"))
+
+	if err := sc.DeleteVeleroBackup(context.Background(), "manual-demo-1", "velero-system"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected a DeleteBackupRequest to be created — no create action observed")
+	}
+	if captured.GetKind() != "DeleteBackupRequest" {
+		t.Errorf("kind = %q, want DeleteBackupRequest", captured.GetKind())
+	}
+	if captured.GetNamespace() != "velero-system" {
+		t.Errorf("namespace = %q, want velero-system", captured.GetNamespace())
+	}
+	backupName, _, _ := unstructured.NestedString(captured.Object, "spec", "backupName")
+	if backupName != "manual-demo-1" {
+		t.Errorf("spec.backupName = %q, want manual-demo-1", backupName)
+	}
+}
+
+func TestDeleteVeleroBackup_DoesNotDeleteTheBackupObjectItself(t *testing.T) {
+	sc := newTestStatusClient(newBackupObj("manual-demo-1", "velero-system", "Completed"))
+
+	if err := sc.DeleteVeleroBackup(context.Background(), "manual-demo-1", "velero-system"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := sc.client.Resource(veleroBackupGVR).Namespace("velero-system").Get(context.Background(), "manual-demo-1", metav1.GetOptions{}); err != nil {
+		t.Errorf("expected the Backup object to still be there (Velero deletes it once the DeleteBackupRequest is processed), got %v", err)
 	}
 }

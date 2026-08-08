@@ -42,12 +42,49 @@ rules:
   - apiGroups: ["velero.io"]
     resources: ["backups", "restores", "downloadrequests", "schedules"]
     verbs: ["get", "list", "create", "delete"]
-  # Scale the vcluster's control-plane and etcd workloads down before an
-  # in-place restore (control-plane can be a Deployment or a StatefulSet
-  # depending on topology; etcd, when external, is always a StatefulSet)
+  # `deletebackuprequests` : supprimer une sauvegarde, pour de vrai.
+  #
+  # Le `delete` ci-dessus ne porte que sur l'OBJET Kubernetes `Backup`. Il ne
+  # touche pas au bucket, et le contrôleur de synchronisation de Velero recrée
+  # l'objet depuis le stockage quelques minutes plus tard. Mesuré en recette :
+  # « supprimé » affiché à 16:38, objet de retour à 16:41 avec un
+  # creationTimestamp neuf, données jamais parties.
+  #
+  # `velero backup delete` crée en réalité un `DeleteBackupRequest`, que Velero
+  # traite pour purger le bucket PUIS retirer l'objet. C'est ce que fait
+  # désormais DeleteVeleroBackup.
+  - apiGroups: ["velero.io"]
+    resources: ["deletebackuprequests"]
+    verbs: ["create", "get", "list"]
+  # Mettre le vcluster au repos avant une restauration in-place.
+  #
+  # `delete` et pas seulement `patch`, et c'est un vrai élargissement qu'il faut
+  # justifier. Scaler à zéro ne suffisait pas : l'objet restait vivant, Velero le
+  # restaurait avec `existingResourcePolicy: update` — donc remontait les
+  # replicas — et le contrôleur Kubernetes recréait alors le pod LUI-MÊME, sous
+  # un nom que le `PodVolumeRestore` de Velero ne suit pas.
+  #
+  # Deux conséquences mesurées, et la seconde est pire que la première : la
+  # restauration restait `InProgress` indéfiniment ET gelait le contrôleur Velero
+  # pour toute la plateforme (une restauration sans rapport, créée après, n'a
+  # jamais reçu de statut jusqu'à un redémarrage manuel) ; et le pod qui
+  # redémarrait n'était pas celui que Velero avait restauré — il n'avait pas
+  # l'init container `restore-wait`, donc le volume revenait VIDE, même depuis
+  # une sauvegarde pleine.
+  #
+  # Reproduit puis revérifié sur charge synthétique : avec suppression, la
+  # restauration passe `Completed` en une dizaine de secondes, les
+  # `PodVolumeRestore` aboutissent, et les témoins écrits avant sauvegarde sont
+  # bien là.
+  #
+  # Ce droit est cluster-wide, comme le reste de ce ClusterRole. Ce qui le borne
+  # est le code appelant, qui ne vise que le plan de contrôle et l'etcd du
+  # vcluster nommé — pas une garde d'admission. À resserrer par une
+  # ValidatingAdmissionPolicy le jour où celle des namespaces sera en `Deny`
+  # (voir operator-admission-policy.yaml).
   - apiGroups: ["apps"]
     resources: ["statefulsets", "deployments"]
-    verbs: ["get", "list", "patch", "update"]
+    verbs: ["get", "list", "patch", "update", "delete"]
   # Delete the vcluster's data PVC so Velero can recreate it from backup
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]

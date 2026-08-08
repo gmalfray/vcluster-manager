@@ -119,6 +119,8 @@ func (h *Handlers) CreateVeleroRestore(w http.ResponseWriter, r *http.Request) {
 			h.renderToast(w, "error", "Nom de backup invalide")
 		case errors.Is(err, service.ErrInvalidName):
 			h.renderToast(w, "error", "Nom invalide : doit commencer par une lettre, uniquement [a-z0-9-]")
+		case errors.Is(err, service.ErrCrossVClusterRestoreUnsupported):
+			h.renderToast(w, "error", "Restauration croisée non supportée : elle clonerait le plan de contrôle de la source dans le namespace de la cible au lieu d'y migrer ses données")
 		case errors.Is(err, service.ErrK8sUnavailable):
 			h.renderToast(w, "error", "Client Kubernetes non configuré")
 		case errors.Is(err, service.ErrBackupLookupFailed):
@@ -286,5 +288,11 @@ func (h *Handlers) DeleteVeleroBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("HX-Trigger", `{"veleroBackupsRefresh": true}`)
-	h.renderToast(w, "success", fmt.Sprintf("Backup %s supprimé", deleted))
+	// "supprimé" would be a lie: this only creates a DeleteBackupRequest, and
+	// Velero deletes the data (then the Backup object) asynchronously — a
+	// backup can sit at phase Deleting for a while before it's actually gone
+	// (D5, docs/recette-restauration.md cas F: the previous wording said
+	// "supprimé" for an object that was still fully there, data included,
+	// three minutes later).
+	h.renderToast(w, "success", fmt.Sprintf("Suppression demandée : %s", deleted))
 }

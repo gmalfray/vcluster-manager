@@ -220,19 +220,19 @@ func controlPlaneGVR(topo VClusterTopology) schema.GroupVersionResource {
 	return statefulSetGVR
 }
 
-// waitForWorkloadPodsGone waits until no pod matching workloadName's own
-// selector remains in ns. It reads the selector from the workload itself
-// (spec.selector.matchLabels) instead of guessing pod names, so it works the
-// same whether the workload is a Deployment (hashed pod names) or a
-// StatefulSet (fixed pod names). A workload that's already gone counts as
-// "pods gone" too — nothing left to wait for.
-func (s *StatusClient) waitForWorkloadPodsGone(ctx context.Context, gvr schema.GroupVersionResource, ns, workloadName string, timeout time.Duration) error {
+// workloadSelector reads a Deployment or StatefulSet's own pod selector
+// (spec.selector.matchLabels), as a label-selector string ready to List pods
+// with. Split out of waitForWorkloadPodsGone so a caller can capture the
+// selector BEFORE deleting the workload — once the workload itself is gone, a
+// Get can no longer tell you which pods used to be its own. Empty return, nil
+// error means "nothing to wait on" (workload absent, or no selector labels).
+func (s *StatusClient) workloadSelector(ctx context.Context, gvr schema.GroupVersionResource, ns, workloadName string) (string, error) {
 	obj, err := s.client.Resource(gvr).Namespace(ns).Get(ctx, workloadName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return fmt.Errorf("getting %s/%s: %w", gvr.Resource, workloadName, err)
+		return "", fmt.Errorf("getting %s/%s: %w", gvr.Resource, workloadName, err)
 	}
 	matchLabels, _, _ := unstructured.NestedStringMap(obj.Object, "spec", "selector", "matchLabels")
 	if len(matchLabels) == 0 {
@@ -240,9 +240,18 @@ func (s *StatusClient) waitForWorkloadPodsGone(ctx context.Context, gvr schema.G
 		// this workload's — nothing sane to wait on, so treat it like "already
 		// gone" instead of watching unrelated pods.
 		slog.Warn("workload has no selector labels, skipping the pod wait", "namespace", ns, "workload", workloadName)
+		return "", nil
+	}
+	return labels.SelectorFromSet(matchLabels).String(), nil
+}
+
+// waitForPodsGoneBySelector polls ns for pods matching selector until none
+// remain or timeout elapses. An empty selector means "nothing to wait on" —
+// see workloadSelector.
+func (s *StatusClient) waitForPodsGoneBySelector(ctx context.Context, ns, selector string, timeout time.Duration) error {
+	if selector == "" {
 		return nil
 	}
-	selector := labels.SelectorFromSet(matchLabels).String()
 
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -251,7 +260,7 @@ func (s *StatusClient) waitForWorkloadPodsGone(ctx context.Context, gvr schema.G
 	for {
 		list, err := s.client.Resource(podGVR).Namespace(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
 		if err != nil {
-			return fmt.Errorf("listing pods for %s: %w", workloadName, err)
+			return fmt.Errorf("listing pods matching %q: %w", selector, err)
 		}
 		if len(list.Items) == 0 {
 			return nil
@@ -260,10 +269,24 @@ func (s *StatusClient) waitForWorkloadPodsGone(ctx context.Context, gvr schema.G
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("%d pod(s) for %s/%s still there after %s", len(list.Items), ns, workloadName, timeout)
+			return fmt.Errorf("%d pod(s) matching %q in %s still there after %s", len(list.Items), selector, ns, timeout)
 		case <-ticker.C:
 		}
 	}
+}
+
+// waitForWorkloadPodsGone waits until no pod matching workloadName's own
+// selector remains in ns. It reads the selector from the workload itself
+// (spec.selector.matchLabels) instead of guessing pod names, so it works the
+// same whether the workload is a Deployment (hashed pod names) or a
+// StatefulSet (fixed pod names). A workload that's already gone counts as
+// "pods gone" too — nothing left to wait for.
+func (s *StatusClient) waitForWorkloadPodsGone(ctx context.Context, gvr schema.GroupVersionResource, ns, workloadName string, timeout time.Duration) error {
+	selector, err := s.workloadSelector(ctx, gvr, ns, workloadName)
+	if err != nil {
+		return err
+	}
+	return s.waitForPodsGoneBySelector(ctx, ns, selector, timeout)
 }
 
 // WaitForVClusterPodsGone waits until the vcluster's control-plane pod(s) —
@@ -287,6 +310,87 @@ func (s *StatusClient) WaitForVClusterPodsGone(ctx context.Context, name string,
 		}
 	}
 	return nil
+}
+
+// QuiesceVClusterForInPlaceRestore deletes — not scales to 0 — the vcluster's
+// control-plane workload and, when etcd runs external, its etcd StatefulSet
+// too, then waits for their pods to actually terminate. It returns the
+// topology it detected, which the caller must reuse for whatever comes next
+// (in particular, which PVC to delete): calling detectVClusterTopology again
+// after this runs would misread "the etcd StatefulSet is gone because we just
+// deleted it" as "this vcluster has embedded etcd" and pick the wrong PVC.
+//
+// Why delete and not scale to 0 (docs/recette-restauration.md D2/D3):
+// scaling to 0 leaves the Deployment/StatefulSet object alive, still
+// reconciling. Velero's own restore of that SAME object — with
+// existingResourcePolicy: update — patches its replica count back to the
+// backed-up value, and the Deployment/StatefulSet controller races Velero's
+// own pod restoration to recreate the pod itself. For a Deployment that pod
+// gets a brand new random name; the PodVolumeRestore Velero created is bound
+// to the exact pod name recorded in the backup and never finds it, and the
+// whole Restore hangs at "Waiting for all pod volume restores to complete"
+// forever (confirmed against the recette cell's own Velero: no timeout
+// rescues it, and while it's stuck no other restore on the platform gets
+// picked up either — the controller has to be restarted). For a StatefulSet
+// the recreated pod's name IS stable, but it's still a pod the CONTROLLER
+// created, not Velero — the mutating webhook that injects the
+// data-restore-blocking init container only fires for pods Velero itself
+// creates while processing the backup's Pod items, so this pod starts
+// immediately, mounts a freshly-provisioned EMPTY volume, and the backup's
+// data is silently never written to it. That is D2 restated: not a symptom
+// of an empty backup (proven on a backup with real PodVolumeBackup data —
+// see the handoff for the reproduction), but a live consequence of racing a
+// still-reconciling controller.
+//
+// Deleting the workload outright removes that race: nothing is left to
+// resurrect a pod behind Velero's back, so the ONLY pod created during the
+// restore is the one Velero itself restores from the backup. Verified live,
+// twice, against Velero v1.15.1: with scale-to-0 the restore hangs and the
+// volume comes back empty every time; with the workload deleted outright it
+// completes in seconds and the data is there.
+func (s *StatusClient) QuiesceVClusterForInPlaceRestore(ctx context.Context, name string, podTimeout time.Duration) (VClusterTopology, error) {
+	topo, err := s.detectVClusterTopology(ctx, name)
+	if err != nil {
+		return VClusterTopology{}, fmt.Errorf("detecting vcluster topology: %w", err)
+	}
+	ns := "vcluster-" + name
+
+	// Capture the selectors BEFORE deleting: once a workload is gone, a Get
+	// can no longer tell us which pods used to be its own.
+	cpGVR := controlPlaneGVR(topo)
+	cpSelector, err := s.workloadSelector(ctx, cpGVR, ns, "vcluster-"+name)
+	if err != nil {
+		return VClusterTopology{}, fmt.Errorf("reading %s selector: %w", topo.ControlPlaneKind, err)
+	}
+	var etcdSelector string
+	if topo.EtcdStatefulSet != "" {
+		etcdSelector, err = s.workloadSelector(ctx, statefulSetGVR, ns, topo.EtcdStatefulSet)
+		if err != nil {
+			return VClusterTopology{}, fmt.Errorf("reading etcd statefulset selector: %w", err)
+		}
+	}
+
+	// Idempotent on purpose, same as the PVC deletion further down the
+	// restore sequence: a caller retrying after a failed later step (e.g. the
+	// PVC delete itself) must not error out here just because this step
+	// already succeeded once.
+	if err := s.client.Resource(cpGVR).Namespace(ns).Delete(ctx, "vcluster-"+name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return VClusterTopology{}, fmt.Errorf("deleting %s vcluster-%s: %w", topo.ControlPlaneKind, name, err)
+	}
+	if topo.EtcdStatefulSet != "" {
+		if err := s.client.Resource(statefulSetGVR).Namespace(ns).Delete(ctx, topo.EtcdStatefulSet, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return VClusterTopology{}, fmt.Errorf("deleting etcd statefulset %s: %w", topo.EtcdStatefulSet, err)
+		}
+	}
+
+	if err := s.waitForPodsGoneBySelector(ctx, ns, cpSelector, podTimeout); err != nil {
+		slog.Warn("control-plane pod(s) didn't terminate in time, deleting the PVC anyway", "vcluster", name, "err", err)
+	}
+	if err := s.waitForPodsGoneBySelector(ctx, ns, etcdSelector, podTimeout); err != nil {
+		slog.Warn("etcd pod(s) didn't terminate in time, deleting the PVC anyway", "vcluster", name, "err", err)
+	}
+
+	return topo, nil
 }
 
 // CreateVeleroRestore creates a Velero Restore for backupName targeting targetNS (may differ from sourceNS for cross-vcluster restores).
@@ -407,11 +511,49 @@ func (s *StatusClient) GetRestoreStatus(ctx context.Context, restoreName, velero
 	return phase, nil
 }
 
-// DeleteVeleroBackup deletes a Velero Backup object by name.
+// veleroDeleteBackupRequestGVR is velero.io's DeleteBackupRequest — the
+// object `velero backup delete` creates to actually ask Velero to remove a
+// backup, as opposed to deleting the Backup Kubernetes object itself (see
+// DeleteVeleroBackup for why those are not the same thing).
+var veleroDeleteBackupRequestGVR = schema.GroupVersionResource{
+	Group:    "velero.io",
+	Version:  "v1",
+	Resource: "deletebackuprequests",
+}
+
+// DeleteVeleroBackup asks Velero to delete a backup by creating a
+// DeleteBackupRequest — the same mechanism `velero backup delete` uses.
+//
+// D5 (docs/recette-restauration.md, cas F): deleting the Backup Kubernetes
+// object directly does NOT delete the backup. The data stays in the bucket,
+// and Velero's own backup-sync controller resyncs the Backup object back from
+// object storage on its next pass because, as far as it's concerned, nothing
+// asked for the data to go away. Confirmed on the recette cell: deleting the
+// object made the app's toast say "supprimé", and three minutes later the
+// object was back with a fresh creationTimestamp — nothing had actually been
+// removed. A DeleteBackupRequest is the real request: Velero's backup
+// controller picks it up, deletes the data from the bucket, then deletes the
+// Backup object itself.
 func (s *StatusClient) DeleteVeleroBackup(ctx context.Context, backupName, veleroNamespace string) error {
-	err := s.client.Resource(veleroBackupGVR).Namespace(veleroNamespace).Delete(ctx, backupName, metav1.DeleteOptions{})
-	if err != nil {
-		return fmt.Errorf("deleting velero backup %s: %w", backupName, err)
+	reqName := fmt.Sprintf("%s-delete-%d", backupName, time.Now().UnixNano()/int64(time.Millisecond))
+	if len(reqName) > 63 {
+		reqName = reqName[:63]
+	}
+	req := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "velero.io/v1",
+			"kind":       "DeleteBackupRequest",
+			"metadata": map[string]interface{}{
+				"name":      reqName,
+				"namespace": veleroNamespace,
+			},
+			"spec": map[string]interface{}{
+				"backupName": backupName,
+			},
+		},
+	}
+	if _, err := s.client.Resource(veleroDeleteBackupRequestGVR).Namespace(veleroNamespace).Create(ctx, req, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("creating delete backup request for %s: %w", backupName, err)
 	}
 	return nil
 }
@@ -630,9 +772,18 @@ func (s *StatusClient) DeleteVClusterPVC(ctx context.Context, name string) error
 	if err != nil {
 		return fmt.Errorf("detecting vcluster topology: %w", err)
 	}
+	return s.DeleteVClusterPVCNamed(ctx, name, topo.PVCName)
+}
+
+// DeleteVClusterPVCNamed deletes pvcName from a vcluster's namespace without
+// re-detecting the topology. Needed after QuiesceVClusterForInPlaceRestore:
+// its topology (and therefore the right PVC name) has to be reused, not asked
+// for again — by the time this runs, the workload detectVClusterTopology
+// inspects to tell embedded from external etcd is gone, deleted on purpose.
+func (s *StatusClient) DeleteVClusterPVCNamed(ctx context.Context, name, pvcName string) error {
 	ns := "vcluster-" + name
-	if err := s.client.Resource(persistentVolumeClaimGVR).Namespace(ns).Delete(ctx, topo.PVCName, metav1.DeleteOptions{}); err != nil {
-		return fmt.Errorf("deleting PVC %s: %w", topo.PVCName, err)
+	if err := s.client.Resource(persistentVolumeClaimGVR).Namespace(ns).Delete(ctx, pvcName, metav1.DeleteOptions{}); err != nil {
+		return fmt.Errorf("deleting PVC %s: %w", pvcName, err)
 	}
 	return nil
 }
