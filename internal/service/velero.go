@@ -854,6 +854,29 @@ func (s *Service) resumeAfterInPlaceRestore(k8s *kubernetes.StatusClient, name, 
 				continue
 			}
 			slog.Info("flux resumed after restore", "restore", restoreName, "vcluster", name)
+
+			// CoreDNS a chargé son CA au démarrage ; la restauration a
+			// régénéré celui du control-plane. Il tourne donc sans jamais
+			// pouvoir joindre l'API server, et rien ne l'y ramènera — un
+			// certificat ne se recharge qu'au démarrage du processus. Le
+			// tenant se retrouve sans résolution DNS dans un vcluster qui a
+			// l'air parfaitement sain.
+			//
+			// Volontairement après la reprise de Flux et sans faire échouer la
+			// restauration : à ce stade tout le reste est en place. Un DNS
+			// resté à redémarrer se rattrape à la main tant qu'on sait qu'il
+			// faut le faire — d'où le niveau Error sur cette ligne, qui est la
+			// seule trace que ce rattrapage sera nécessaire.
+			if n, err := k8s.RestartVClusterDNS(context.Background(), name); err != nil {
+				slog.Error("restauration : le redémarrage de CoreDNS a échoué — le vcluster n'aura PAS de résolution DNS "+
+					"(ni entre ses services, ni vers Internet, donc pas d'émission de certificat) tant que "+
+					"ses pods CoreDNS n'auront pas été redémarrés à la main",
+					"vcluster", name, "restore", restoreName, "err", err)
+			} else {
+				slog.Info("restauration : CoreDNS redémarré pour qu'il recharge le CA régénéré",
+					"vcluster", name, "restore", restoreName, "pods", n)
+			}
+
 			s.resolveVeleroResume(restoreName, false, "")
 			return
 		}
