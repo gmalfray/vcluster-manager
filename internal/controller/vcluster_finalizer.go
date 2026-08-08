@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -627,6 +628,23 @@ func (r *VClusterReconciler) deletionDone(ctx context.Context, vc *v1alpha1.VClu
 	}
 	vc.Status.Deletion.Message = msg
 	setVClusterCond(vc, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "Deleted", msg)
+
+	// L'Event Kubernetes, pas seulement le log : le status et la condition qu'on
+	// vient d'écrire ne survivent pas non plus, puisque l'objet qui les porte
+	// disparaît deux appels plus loin, quand le finalizer part. Un `describe`
+	// ou un `get events` restent le seul endroit où cette phrase est encore
+	// lisible après coup — un log de pod suppose de savoir lequel, d'y avoir
+	// accès, et d'arriver avant sa rotation.
+	//
+	// Warning s'il reste quelque chose à reprendre à la main : « terminé avec
+	// des restes » n'est pas un succès. Normal sinon — c'est la seule preuve
+	// qu'un vcluster supprimé l'a vraiment été proprement, sans rien laisser
+	// derrière lui.
+	if len(rests) > 0 {
+		r.recordEvent(vc, corev1.EventTypeWarning, "DeletedWithLeftovers", msg)
+	} else {
+		r.recordEvent(vc, corev1.EventTypeNormal, "Deleted", msg)
+	}
 
 	// Et dans le log, parce que le status ne survit pas à la phrase qu'il porte :
 	// deux appels plus loin le finalizer est retiré et l'objet disparaît. Écrire

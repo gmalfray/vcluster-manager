@@ -6,6 +6,7 @@ import (
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -100,6 +101,27 @@ type VClusterReconciler struct {
 
 	// GracePeriod overrides DefaultGracePeriod. Zero means the default.
 	GracePeriod time.Duration
+
+	// Recorder émet les Events Kubernetes qui survivent à la disparition du CR
+	// qu'ils décrivent — utile pour un seul cas ici : la conclusion de la
+	// séquence de suppression, écrite dans le status d'un objet dont le
+	// finalizer part deux appels plus loin. Nil dans la plupart des tests, qui
+	// ne portent pas là-dessus ; recordEvent le tolère.
+	Recorder record.EventRecorder
+}
+
+// recordEvent émet un Event Kubernetes attaché à vc, si un recorder est câblé.
+//
+// Le nil-check n'est pas là pour la production — cmd/operator/main.go câble
+// toujours un recorder — mais pour les tests qui construisent un reconciler à
+// la main sans lui : ils sont bien plus nombreux que ceux qui portent sur les
+// events, et un appel sur une interface nil paniquerait au lieu de rester
+// silencieux.
+func (r *VClusterReconciler) recordEvent(vc *v1alpha1.VCluster, eventType, reason, message string) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Event(vc, eventType, reason, message)
 }
 
 func (r *VClusterReconciler) vclustersNamespace() string {
