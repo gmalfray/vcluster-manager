@@ -19,7 +19,17 @@ import (
 // need. Moved here from the handlers package during the service-layer
 // extraction so every domain (and every adapter) validates names against a
 // single copy instead of each keeping its own.
-var nameRegex = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+// Le plafond n'est pas un choix de style : ce nom devient `vcluster-<nom>`, et
+// un nom de namespace est une étiquette DNS RFC 1123 bornée à 63 caractères.
+// `vcluster-` en consomme 9, il reste donc 54 — soit 1 (premier caractère) + 53.
+//
+// Il manquait ici alors que la règle CEL de la CRD le porte déjà. L'écart allait
+// dans le sens sûr (la CEL est plus stricte, donc tout ce qu'elle admet passait
+// aussi ici), mais il laissait un chemin où un nom trop long était accepté par le
+// service pour finir en échec d'API au moment de créer le namespace — c'est-à-dire
+// une erreur technique tardive au lieu d'un refus lisible. Les deux règles disent
+// maintenant exactement la même chose.
+var nameRegex = regexp.MustCompile(`^[a-z][a-z0-9-]{0,53}$`)
 
 // OperatorNamespace is where the app and the operator run. Everything derived
 // from a vcluster name is `"vcluster-" + name`, so this namespace is reachable

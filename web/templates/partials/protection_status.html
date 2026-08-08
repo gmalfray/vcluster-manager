@@ -36,5 +36,17 @@
         </label>
     </div>
 </div>
+{{else}}
+<!-- Lecture ratee : ni « protege » ni « pas protege ». Afficher le toggle a
+     « Inactive » serait affirmer que la protection est levee alors que personne
+     n'a pu la lire — c'est le defaut que GetNamespaceProtection a cesse de
+     produire, et il ne doit pas revenir par l'ecran. -->
+<div class="flex items-center space-x-3">
+    <span class="text-sm font-medium text-gray-700">Protection namespace</span>
+    <span class="text-sm" style="color:var(--status-inactive-fg, #6b7280);"
+          title="{{if .Detail}}{{.Detail}}{{else}}cause inconnue{{end}}">
+        etat non lisible
+    </span>
+</div>
 {{end}}
 {{end}}
