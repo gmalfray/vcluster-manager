@@ -475,6 +475,14 @@ func TestOperatorRBACCannotDoVeleroOpsWork(t *testing.T) {
 // subjectMayDo demande à l'apiserver ce qu'il répondrait pour `subject`, sans
 // rien tenter.
 func subjectMayDo(t *testing.T, ctx context.Context, admin ctrlclient.Client, subject, verbe, groupe, ressource string) (bool, string) {
+	return subjectMayDoSub(t, ctx, admin, subject, verbe, groupe, ressource, "")
+}
+
+// subjectMayDoSub est subjectMayDo avec une sous-ressource (`pods/portforward`,
+// `vclusters/status`…). Les sous-ressources sont un angle mort facile : RBAC les
+// traite comme des ressources distinctes, et `create pods` n'accorde PAS
+// `create pods/portforward`.
+func subjectMayDoSub(t *testing.T, ctx context.Context, admin ctrlclient.Client, subject, verbe, groupe, ressource, sousRessource string) (bool, string) {
 	t.Helper()
 	sar := &authzv1.SubjectAccessReview{
 		Spec: authzv1.SubjectAccessReviewSpec{
@@ -488,7 +496,7 @@ func subjectMayDo(t *testing.T, ctx context.Context, admin ctrlclient.Client, su
 				"system:authenticated",
 			},
 			ResourceAttributes: &authzv1.ResourceAttributes{
-				Verb: verbe, Group: groupe, Resource: ressource,
+				Verb: verbe, Group: groupe, Resource: ressource, Subresource: sousRessource,
 			},
 		},
 	}
@@ -511,6 +519,10 @@ func seedVClusterWorkloads(t *testing.T, ctx context.Context, admin ctrlclient.C
 		nsObject("flux-system"),
 		statefulSetObject(ns, "vcluster-"+nom+"-etcd"),
 		deploymentObject(ns, "vcluster-"+nom),
+		// Le pod que withVClusterPortForward cherche : sans lui, les appels
+		// port-forward renoncent avant d'émettre leur requête, et leur droit
+		// n'est jamais exercé.
+		vclusterPodObject(ns, "vcluster-"+nom+"-0"),
 		pvcObject(ns, "data-vcluster-"+nom+"-etcd-0"),
 		// Les deux objets Flux que SetFluxSuspend suspend. Il patche le HelmRelease
 		// PUIS la Kustomization : sans le premier, le second n'est jamais émis et
@@ -530,5 +542,57 @@ func seedVClusterWorkloads(t *testing.T, ctx context.Context, admin ctrlclient.C
 			ctrlclient.FieldOwner("rbac-probe"), ctrlclient.ForceOwnership); err != nil {
 			t.Fatalf("semis de %s/%s : %v", obj.GetKind(), obj.GetName(), err)
 		}
+	}
+}
+
+// TestAppRBACGrantsThePortForwardItNeeds : le ClusterRole de l'app doit
+// accorder `create pods/portforward`.
+//
+// Le port-forward est le SEUL chemin par lequel l'application écrit dans un
+// vcluster : l'appairage Rancher y applique le manifeste d'enregistrement, le
+// dépairage y lance le job rancher-cleanup et attend sa fin, la suppression y
+// fait le ménage. Huit appels, sur quatre fichiers du service et des handlers,
+// passent tous par là.
+//
+// Le droit manquait, et rien ne le disait. Le 2026-08-08, un appairage Rancher
+// est resté indéfiniment « en cours » : l'import côté Rancher réussissait, le
+// cluster était créé en `pending`, puis l'apply dans le vcluster était refusé
+// dans une goroutine détachée dont l'erreur n'allait que dans les logs du pod.
+// La tentative suivante rebondissait sur le garde « existe déjà », sans écrire
+// une seule ligne. Le ClusterRole de l'OPÉRATEUR portait la règle depuis
+// toujours ; c'est celui de l'app qui ne l'avait pas.
+//
+// Vérifié par SubjectAccessReview et non en exerçant l'appel, après avoir essayé
+// l'inverse : `ApplyManifestToVClusterViaPortForward` échoue pendant la
+// négociation SPDY, AVANT d'émettre la moindre requête que le proxy
+// enregistreur puisse voir. Le test passait alors avec ou sans le droit — il ne
+// mesurait rien. On demande donc directement à l'apiserver ce qu'il répondrait.
+//
+// Les sous-ressources sont un angle mort à part entière : RBAC les traite comme
+// des ressources distinctes, et le `["get","list"]` sur `pods` que ce
+// ClusterRole porte déjà n'accorde rien sur `pods/portforward`.
+func TestAppRBACGrantsThePortForwardItNeeds(t *testing.T) {
+	ctx := context.Background()
+	admin := adminClient(t)
+	applyAppRBAC(t, ctx, admin)
+
+	allowed, raison := subjectMayDoSub(t, ctx, admin, appServiceAccount, "create", "", "pods", "portforward")
+	if !allowed {
+		t.Fatalf("le ClusterRole de l'app n'accorde pas `create pods/portforward` (%s).\n"+
+			"C'est le seul chemin par lequel l'application écrit dans un vcluster : sans lui, "+
+			"l'appairage Rancher, le dépairage et le ménage de suppression échouent tous — "+
+			"en silence, dans une goroutine détachée, pendant que l'IHM affiche « en cours ».\n"+
+			"À ajouter dans %s :\n"+
+			"  - apiGroups: [\"\"]\n    resources: [\"pods/portforward\"]\n    verbs: [\"create\"]",
+			raison, appRBACFile)
+	}
+
+	// Le pendant : ce que l'app ne doit PAS pouvoir faire sur les pods. `create
+	// pods` lui donnerait de quoi lancer une charge arbitraire sur l'hôte, ce
+	// qu'aucun de ses parcours ne demande. Sans cette moitié, élargir la règle
+	// ci-dessus à `pods` tout court passerait au vert.
+	if allowed, _ := subjectMayDo(t, ctx, admin, appServiceAccount, "create", "", "pods"); allowed {
+		t.Error("le ClusterRole de l'app accorde `create pods` : la règle a été élargie au-delà " +
+			"de la sous-ressource portforward, ce qui lui permettrait de lancer des charges sur l'hôte")
 	}
 }
