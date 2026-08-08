@@ -649,3 +649,81 @@ func TestDeleteVeleroBackup_DoesNotDeleteTheBackupObjectItself(t *testing.T) {
 		t.Errorf("expected the Backup object to still be there (Velero deletes it once the DeleteBackupRequest is processed), got %v", err)
 	}
 }
+
+// --- RestartVClusterDNS ---
+
+// TestRestartVClusterDNS_OnlyTargetsThisVClustersDNS verrouille le sélecteur.
+//
+// Les pods CoreDNS syncés portent `k8s-app: vcluster-kube-dns`, recopié tel
+// quel depuis le vcluster : deux vclusters du même hôte ont donc des pods
+// strictement homonymes de ce point de vue. Filtrer sur ce seul label
+// redémarrerait le DNS de tous les vclusters à chaque restauration de l'un
+// d'eux — une panne infligée à des tenants qui n'ont rien demandé, au pire
+// moment, celui où un incident est déjà en cours.
+//
+// C'est `vcluster.loft.sh/managed-by`, posé par le syncer, qui nomme le
+// propriétaire. Les deux labels ensemble, et eux seuls, désignent le bon
+// vcluster.
+func TestRestartVClusterDNS_OnlyTargetsThisVClustersDNS(t *testing.T) {
+	const dnsLabel = "vcluster-kube-dns"
+
+	mine := newPodObj("coredns-mine", "vcluster-alpha", map[string]string{
+		"k8s-app":                     dnsLabel,
+		"vcluster.loft.sh/managed-by": "alpha",
+	})
+	// Même label k8s-app, autre propriétaire : un voisin dans le même
+	// namespace hôte ne doit pas être touché.
+	neighbour := newPodObj("coredns-neighbour", "vcluster-alpha", map[string]string{
+		"k8s-app":                     dnsLabel,
+		"vcluster.loft.sh/managed-by": "beta",
+	})
+	// Une charge du tenant, qui n'a rien à voir avec le DNS.
+	workload := newPodObj("app-du-tenant", "vcluster-alpha", map[string]string{
+		"app":                         "facturation",
+		"vcluster.loft.sh/managed-by": "alpha",
+	})
+
+	s := NewTestStatusClient(mine, neighbour, workload)
+
+	n, err := s.RestartVClusterDNS(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("RestartVClusterDNS: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected exactly 1 pod deleted, got %d", n)
+	}
+
+	remaining := map[string]bool{}
+	list, err := s.client.Resource(podGVR).Namespace("vcluster-alpha").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("listing pods: %v", err)
+	}
+	for _, p := range list.Items {
+		remaining[p.GetName()] = true
+	}
+
+	if remaining["coredns-mine"] {
+		t.Error("le CoreDNS du vcluster restauré n'a pas été supprimé : il gardera son CA périmé")
+	}
+	if !remaining["coredns-neighbour"] {
+		t.Error("le CoreDNS d'un AUTRE vcluster a été supprimé : restaurer un vcluster casserait le DNS des voisins")
+	}
+	if !remaining["app-du-tenant"] {
+		t.Error("une charge du tenant a été supprimée")
+	}
+}
+
+// TestRestartVClusterDNS_NoDNSPodIsNotAnError : un vcluster sans pod CoreDNS
+// syncé (jamais démarré, ou déjà en cours de redémarrage) ne doit pas faire
+// échouer la reprise. Il n'y a rien à redémarrer, ce qui est le résultat voulu.
+func TestRestartVClusterDNS_NoDNSPodIsNotAnError(t *testing.T) {
+	s := NewTestStatusClient(newPodObj("autre-chose", "vcluster-alpha", map[string]string{"app": "x"}))
+
+	n, err := s.RestartVClusterDNS(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("aucun pod DNS ne doit pas être une erreur, got %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 deleted, got %d", n)
+	}
+}

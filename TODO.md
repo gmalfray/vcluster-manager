@@ -3,6 +3,40 @@
 Backlog des évolutions à venir. Les items terminés sont archivés dans
 [`CHANGELOG.md`](CHANGELOG.md).
 
+## Certificats des tenants — le solveur DNS-01 ne correspond pas à la plateforme
+
+- [ ] 🔴 **Aucun vcluster ne peut émettre de certificat sur la plateforme de
+  recette.** Le template tenant déploie dans chaque vcluster un `ClusterIssuer`
+  `letsencrypt-production-dns-gandi`, qui résout ses challenges DNS-01 via
+  l'API Gandi. Or le domaine de cette plateforme est géré par **Cloudflare** —
+  le `ClusterIssuer` de l'hôte le montre :
+
+  ```
+  {"dns01":{"cloudflare":{"apiTokenSecretRef":{"key":"api-token","name":"cloudflare-api-token"}}}}
+  ```
+
+  L'API Gandi répond donc `400 : The server could not comply with the request`
+  quand le webhook tente de créer l'enregistrement TXT — le domaine n'existe pas
+  dans ce compte. Constaté sur `recette-restore-a` :
+  `challenge recette-restore-a.preprod.rebuild-it.fr -> pending`,
+  `unable to create TXT record: StatusCode: 400`.
+
+  Ce n'est pas un défaut du produit mais un écart entre le dépôt GitOps de
+  recette et la plateforme qu'il déploie : le template vient d'un environnement
+  où Gandi est bien le registrar. Ça n'en reste pas moins bloquant, puisque plus
+  rien ne valide de bout en bout la chaîne « un tenant obtient un certificat ».
+
+  **L'arbitrage n'est pas technique** : aligner le tenant sur Cloudflare suppose
+  de distribuer un jeton d'API Cloudflare *dans le vcluster de chaque tenant*,
+  donc de confier à chaque tenant un jeton qui porte sur la zone DNS entière.
+  Avant d'écrire cette ligne, il faut décider si c'est acceptable, ou s'il faut
+  un jeton restreint par tenant, ou un solveur central côté hôte qui émette pour
+  eux. À trancher, pas à coder d'abord.
+
+  Distinct du correctif `sourceRef` de cert-manager (PR #13, mergée) : celui-là
+  faisait que cert-manager n'était pas **installé** ; ici il l'est, il tourne, et
+  c'est son émission qui échoue.
+
 ## Opérateur — durcissement issu de l'audit N6
 
 - [x] ~~🔴 **`ValidatingAdmissionPolicy` sur les namespaces de l'opérateur**~~ :

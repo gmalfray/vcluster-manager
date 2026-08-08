@@ -787,3 +787,60 @@ func (s *StatusClient) DeleteVClusterPVCNamed(ctx context.Context, name, pvcName
 	}
 	return nil
 }
+
+// RestartVClusterDNS supprime les pods CoreDNS du vcluster pour qu'ils
+// redémarrent. Retourne le nombre de pods supprimés.
+//
+// À appeler après une restauration en place, et seulement là. Voici pourquoi.
+//
+// La restauration remonte les objets du vcluster, mais son control-plane a
+// entre-temps régénéré son certificat : le CA que CoreDNS a chargé au
+// démarrage ne signe plus celui que présente l'API server. CoreDNS n'en tire
+// aucune conséquence — il continue de tourner, journalise
+// « certificate signed by unknown authority » à chaque tentative de watch, et
+// ne recharge jamais son CA. Il n'y a pas de mécanisme qui l'y amène : le
+// certificat ne se recharge qu'au démarrage du processus.
+//
+// L'état obtenu est le pire possible à diagnostiquer. Le pod est `Running`, la
+// restauration se déclare réussie, le vcluster répond à kubectl. Seul le
+// « 0/1 » du readiness le trahit, dans un namespace que personne n'ouvre après
+// une restauration réussie. Et il ne se répare jamais tout seul.
+//
+// Ce que ça coûte au tenant : aucune résolution DNS dans son cluster. Donc pas
+// d'appel entre services par nom, et pas d'accès à Internet — ce qui bloque
+// notamment l'enregistrement ACME de cert-manager, donc l'émission de TOUS ses
+// certificat. Observé sur recette-restore-a : ClusterIssuer bloqué sur
+// « dial tcp: lookup acme-v02.api.letsencrypt.org […] connection refused »
+// pendant 3h30, redevenu Ready dès le redémarrage de CoreDNS.
+//
+// Le sélecteur combine deux labels parce qu'un seul ne suffit pas : `k8s-app`
+// est recopié tel quel depuis le vcluster et se retrouverait sur les pods
+// homonymes de n'importe quel autre vcluster du même hôte, tandis que
+// `vcluster.loft.sh/managed-by` est posé par le syncer et nomme le vcluster
+// propriétaire. Les deux ensemble ne désignent que les CoreDNS de CELUI-CI.
+func (s *StatusClient) RestartVClusterDNS(ctx context.Context, name string) (int, error) {
+	ns := "vcluster-" + name
+	selector := labels.Set{
+		"k8s-app":                     "vcluster-kube-dns",
+		"vcluster.loft.sh/managed-by": name,
+	}.String()
+
+	list, err := s.client.Resource(podGVR).Namespace(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return 0, fmt.Errorf("listing vcluster dns pods: %w", err)
+	}
+
+	deleted := 0
+	for _, pod := range list.Items {
+		err := s.client.Resource(podGVR).Namespace(ns).Delete(ctx, pod.GetName(), metav1.DeleteOptions{})
+		switch {
+		case apierrors.IsNotFound(err):
+			// Déjà parti — c'est le résultat voulu, pas un échec.
+		case err != nil:
+			return deleted, fmt.Errorf("deleting dns pod %s: %w", pod.GetName(), err)
+		default:
+			deleted++
+		}
+	}
+	return deleted, nil
+}
