@@ -313,6 +313,55 @@ qu'un nom — et un nom est l'identité de l'objet, pas un champ géré (ce que
 Verdict inchangé pour la production : **No-Go prod.** Ce qui a tourné est la
 séquence de suppression sur des vclusters jetables, pas le cycle complet.
 
+## Le RBAC ne se relit plus, il s'exécute — 2026-08-08
+
+Suite directe du trou ci-dessus. « envtest n'applique pas le RBAC » était faux, et
+c'est ce qui débloque tout : envtest démarre bien son apiserver avec
+`--authorization-mode=RBAC`. Ce qui rendait l'autorisation invisible, c'est que le
+client rendu par `testEnv.Start()` appartient au groupe `system:masters`, qui la
+court-circuite. Il suffit donc de parler au même apiserver en **impersonant** le
+ServiceAccount de l'opérateur pour que le ClusterRole commité s'applique pour de
+vrai — sans cluster, dans la suite qui existait déjà.
+
+`internal/controller/rbac_probe_test.go` monte le harnais, `rbac_operator_test.go`
+porte les scénarios. Trois choix méritent d'être expliqués :
+
+**Un reverse proxy plutôt qu'un `rest.Config` impersonné.** La moitié des appels de
+l'opérateur ne sortent pas du client controller-runtime mais du client dynamique de
+`internal/kubernetes`, et `NewStatusClient` ne prend qu'un *chemin de kubeconfig*.
+Le proxy porte l'identité et l'authentification, le kubeconfig écrit pour le test
+pointe dessus en clair : les deux clients passent par la même identité et le même
+enregistreur. Bénéfice qui n'était pas l'objectif initial : l'enregistreur voit le
+code HTTP, donc il attrape les 403 que le code **avale** — `HostNamespaceState` et
+`CountVClusterPods` rendent « je ne sais pas » sur un refus, et un test qui ne
+regarderait que la valeur de retour ne verrait rien.
+
+**Un canari qui exige un refus.** `TestTheRBACProbeIsActuallyEnforcing` demande
+`list nodes` et échoue si ça passe. Sans lui, le mode de panne le plus probable du
+dispositif est silencieux : un en-tête d'impersonation qui ne part pas, et tout
+redevient vert sans rien vérifier — exactement le défaut qu'on ferme, un cran plus
+haut.
+
+**Un plancher de couverture.** « Aucun 403 » ne veut rien dire si aucun appel n'a
+été émis. `requireExercised` liste, avec leur raison d'être, les appels que chaque
+scénario DOIT avoir produits.
+
+Vérifié par mutation : `list resourcequotas` retiré → trois tests tombent, dont le
+reconcile complet, avec le message de production ; `delete namespaces` retiré →
+seule la séquence de suppression tombe ; `patch kustomizations` retiré → seuls les
+appels du service tombent ; `delete backups` retiré du ClusterRole de l'**app** →
+seul le test de l'app tombe. Les deux ClusterRoles sont couverts, parce que c'est
+le constat même de l'incident : ils ne couvrent pas les mêmes appels.
+
+**Ce que ça ne couvre pas, et c'est la moitié de sa valeur.** `create
+pods/portforward` — l'accès à l'API interne d'un vcluster demande un pod qui
+tourne, envtest n'a ni kubelet ni scheduler ; le `get secrets` qui le précède, lui,
+est couvert. Les `events` et les `leases`, émis par le manager controller-runtime
+et pas par un reconcile. Le `watch`. Le Role namespacé du backend ConfigMap. Et
+surtout : ces tests lisent `deploy/base/*.yaml`, donc **un cluster où le manifeste
+n'a pas été réappliqué reste cassé avec des tests verts**. Ce dernier trou ne se
+ferme qu'en recette, par un `kubectl auth can-i --list` en précondition.
+
 ## Le challenge N6 sur le namespace : `HostNamespaceState` rend plus qu'un booléen
 
 Quatre verdicts d'un challenge sur le cas B/D de la recette convergeaient vers

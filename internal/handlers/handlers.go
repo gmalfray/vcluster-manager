@@ -410,10 +410,8 @@ func (h *Handlers) getUser(r *http.Request) map[string]interface{} {
 // actor builds the transport-agnostic models.Actor the service layer uses for
 // RBAC and audit, from the request's session.
 func (h *Handlers) actor(r *http.Request) models.Actor {
-	user := auth.UserFromRequest(r)
-	username, _ := user["name"].(string)
 	return models.Actor{
-		Username: username,
+		Username: auth.ActorUsername(r),
 		IsAdmin:  auth.IsAdmin(r),
 	}
 }

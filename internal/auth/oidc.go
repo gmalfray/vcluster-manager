@@ -228,6 +228,24 @@ func generateState() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
+// ActorUsername returns the stable identifier to record for the current
+// session — preferred_username (the login name) rather than the display
+// name. Keycloak's "name" claim and the local JWT's "name" claim are both
+// free-text display names: two accounts can share one ("Test Admin"), and a
+// user can change theirs in Keycloak, which would silently rewrite who past
+// audit lines look like they belonged to. preferred_username is what stays
+// stable. Falls back to "name" for tokens that don't carry it (there
+// shouldn't be any once local.go sets it, but this keeps a signed-in user
+// audited under something rather than "unknown" if one slips through).
+func ActorUsername(r *http.Request) string {
+	user := UserFromRequest(r)
+	if u, ok := user["preferred_username"].(string); ok && u != "" {
+		return u
+	}
+	u, _ := user["name"].(string)
+	return u
+}
+
 // UserFromRequest returns the authenticated user's claims as a JSON-safe map for use in templates.
 func UserFromRequest(r *http.Request) map[string]interface{} {
 	cookie, err := r.Cookie("session_token")

@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,16 @@ import (
 
 	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 )
+
+// sessionCookie encodes claims into a JWT-shaped session_token cookie for
+// tests. The signature isn't checked by auth.UserFromRequest/IsAdmin, only
+// its shape and the payload.
+func sessionCookie(claims map[string]interface{}) *http.Cookie {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	payloadJSON, _ := json.Marshal(claims)
+	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	return &http.Cookie{Name: "session_token", Value: header + "." + payload + ".fakesig"}
+}
 
 // minimalHandlers builds a Handlers with only the fields needed for a given test.
 // All optional fields are zero/nil.
@@ -237,6 +249,36 @@ func TestRedirectWithFlash_SetsCookie(t *testing.T) {
 	}
 	if !strings.Contains(decoded, "Done") {
 		t.Errorf("cookie value = %q, want to contain 'Done'", decoded)
+	}
+}
+
+// --- actor ---
+
+// TestActor_UsesPreferredUsernameNotDisplayName locks D3: the audit trail
+// keys the actor on the stable login identifier, not the free-text display
+// name two accounts can share.
+func TestActor_UsesPreferredUsernameNotDisplayName(t *testing.T) {
+	h := minimalHandlers()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(sessionCookie(map[string]interface{}{
+		"name":               "Test Admin",
+		"preferred_username": "testadmin",
+	}))
+
+	got := h.actor(r)
+	if got.Username != "testadmin" {
+		t.Errorf("Username = %q, want the stable preferred_username 'testadmin', not the display name", got.Username)
+	}
+}
+
+func TestActor_FallsBackToNameWithoutPreferredUsername(t *testing.T) {
+	h := minimalHandlers()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(sessionCookie(map[string]interface{}{"name": "admin"}))
+
+	got := h.actor(r)
+	if got.Username != "admin" {
+		t.Errorf("Username = %q, want fallback to 'name'='admin'", got.Username)
 	}
 }
 

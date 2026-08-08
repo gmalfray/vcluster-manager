@@ -160,6 +160,54 @@ func TestUserFromRequest_MalformedToken(t *testing.T) {
 	}
 }
 
+// --- ActorUsername ---
+
+func TestActorUsername_PrefersPreferredUsername(t *testing.T) {
+	token := makeTestJWT(map[string]interface{}{
+		"name":               "Test Admin",
+		"preferred_username": "testadmin",
+	})
+	r := requestWithCookie(token)
+	if got := ActorUsername(r); got != "testadmin" {
+		t.Errorf("want preferred_username 'testadmin', got %q", got)
+	}
+}
+
+func TestActorUsername_DistinguishesHomonyms(t *testing.T) {
+	// Two different accounts sharing the same display name must not collapse
+	// to the same audited identity — that's the whole point of D3.
+	adminToken := makeTestJWT(map[string]interface{}{
+		"name":               "Test Admin",
+		"preferred_username": "admin",
+	})
+	otherToken := makeTestJWT(map[string]interface{}{
+		"name":               "Test Admin",
+		"preferred_username": "someone-else",
+	})
+	got1 := ActorUsername(requestWithCookie(adminToken))
+	got2 := ActorUsername(requestWithCookie(otherToken))
+	if got1 == got2 {
+		t.Fatalf("two accounts with the same display name but different preferred_username resolved to the same actor: %q", got1)
+	}
+}
+
+func TestActorUsername_FallsBackToName(t *testing.T) {
+	token := makeTestJWT(map[string]interface{}{
+		"name": "admin",
+	})
+	r := requestWithCookie(token)
+	if got := ActorUsername(r); got != "admin" {
+		t.Errorf("want fallback to name 'admin', got %q", got)
+	}
+}
+
+func TestActorUsername_NoCookieReturnsEmpty(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	if got := ActorUsername(r); got != "" {
+		t.Errorf("want empty string without a session, got %q", got)
+	}
+}
+
 // --- SetAdminGroups ---
 
 func TestSetAdminGroups_Configures(t *testing.T) {

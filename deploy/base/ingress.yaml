@@ -23,3 +23,57 @@ spec:
     - hosts:
         - __INGRESS_HOST__
       secretName: __TLS_SECRET__
+---
+# `/metrics` n'est pas authentifié, PAR CONCEPTION : c'est un endpoint de scrape
+# Prometheus, et le CHANGELOG assume ce choix en le justifiant par « Prom scrape
+# interne ». La justification est bonne ; le contexte ne l'était pas.
+#
+# L'Ingress ci-dessus route `/` en Prefix, donc il servait AUSSI `/metrics` —
+# publiquement, sur Internet, sans authentification. Vérifié : HTTP 200, 27 Ko,
+# depuis l'extérieur. Ce qui fuyait n'était ni un secret ni un nom de tenant (les
+# labels de chemin portent les patterns de route, pas les valeurs — c'est bien
+# fait), mais la surface d'API complète, les compteurs d'activité par
+# environnement, et `go_info`, c'est-à-dire la version exacte de Go, qui se croise
+# avec les CVE.
+#
+# Cet Ingress-ci existe uniquement pour REPRENDRE ce chemin à celui du dessus :
+# nginx choisit le path le plus spécifique, donc `/metrics` en Exact l'emporte sur
+# `/` en Prefix. La whitelist réduite au loopback fait rendre 403 à tout ce qui
+# vient de l'extérieur.
+#
+# Prometheus n'est pas concerné : il scrape le Service, dans le cluster, et ne
+# traverse jamais l'Ingress. Un `server-snippet` aurait été plus direct, mais
+# `allow-snippet-annotations` vaut `false` sur ce contrôleur (durcissement par
+# défaut d'ingress-nginx ≥ 1.9), et c'est très bien ainsi.
+#
+# La correction de fond serait de servir `/metrics` sur un port séparé, non
+# exposé par le Service — l'endpoint cesserait alors d'être exposable par erreur,
+# au lieu de dépendre d'un manifeste qu'on peut oublier. Voir TODO.md.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vcluster-manager-metrics-deny
+  namespace: vcluster-manager
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "__CLUSTER_ISSUER__"
+    # 127.0.0.1/32 : personne. L'Ingress ne sert à rien d'autre qu'à intercepter
+    # ce chemin pour que l'Ingress principal ne le serve pas.
+    nginx.ingress.kubernetes.io/whitelist-source-range: "127.0.0.1/32"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: __INGRESS_HOST__
+      http:
+        paths:
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: vcluster-manager
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - __INGRESS_HOST__
+      secretName: __TLS_SECRET__
