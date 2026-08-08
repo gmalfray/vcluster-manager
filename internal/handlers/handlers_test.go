@@ -182,18 +182,43 @@ func TestK8sForEnv_ReturnsNilWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestK8sForEnv_FallbackToAny(t *testing.T) {
+// TestK8sForEnv_NoFallbackToAnotherEnv replaces TestK8sForEnv_FallbackToAny,
+// which locked in the very behaviour that was the bug: with only a prod client
+// configured, a request for preprod used to be answered with the prod client.
+// Nothing logged it, and map iteration order made it non-deterministic which
+// client you got when several were present.
+//
+// The stake is not cosmetic: cleanup and deletion resolve their client this
+// way, so the fallback could run a deletion's cleanup against the wrong
+// cluster. A single-cluster install is unaffected — cmd/server/main.go
+// registers its one client under both keys.
+func TestK8sForEnv_NoFallbackToAnotherEnv(t *testing.T) {
 	h := minimalHandlers()
-	// Register only for prod; preprod should fall back to the prod client
 	h.k8sClients["prod"] = &kubernetes.StatusClient{}
 
-	// prod: direct hit
 	if h.k8sForEnv("prod") == nil {
-		t.Error("expected prod client")
+		t.Error("expected the prod client on a direct hit")
 	}
-	// preprod: falls back to prod client (backward compat)
-	if h.k8sForEnv("preprod") == nil {
-		t.Error("expected fallback client for preprod")
+	if got := h.k8sForEnv("preprod"); got != nil {
+		t.Error("preprod has no client configured: expected nil, got the client of another environment")
+	}
+}
+
+// TestCleanupClient_NilStaysNilThroughTheInterface guards a trap that a plain
+// `if k8s != nil` cannot catch. A nil *StatusClient stored in an interface
+// yields a non-nil interface value, so the guard inside runCleanupAndDelete
+// passed and the following call dereferenced nil. It runs in its own goroutine,
+// so the panic was unrecoverable and killed the process.
+func TestCleanupClient_NilStaysNilThroughTheInterface(t *testing.T) {
+	var absent *kubernetes.StatusClient // what k8sForEnv returns for an unknown env
+
+	if got := cleanupClient(absent); got != nil {
+		t.Fatal("a nil client must yield a nil interface, otherwise the `k8s != nil` guard is bypassed and the call panics")
+	}
+
+	present := &kubernetes.StatusClient{}
+	if got := cleanupClient(present); got == nil {
+		t.Error("a real client must survive the conversion")
 	}
 }
 

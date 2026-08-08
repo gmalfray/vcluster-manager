@@ -248,18 +248,57 @@ func (h *Handlers) getVaultState(env, name string) *vaultSetupState {
 }
 
 // k8sForEnv returns the StatusClient for the given environment, with fallback.
+// k8sForEnv returns the client registered for env, or nil.
+//
+// It used to fall back to "any client in the map" when env was missing. That
+// fallback was never needed and was actively dangerous. Not needed, because a
+// single-cluster install registers the one client under BOTH the "preprod" and
+// "prod" keys in cmd/server/main.go (its "single-cluster-both-envs" log line) —
+// so the lookup already hits. Dangerous, because on a two-cluster install where
+// one client failed to initialise, it silently answered every request for the
+// missing environment with the other cluster's client. Map iteration has no
+// defined order, so which one you got was not even stable.
+//
+// Concretely: with the prod client failing to start, a deletion aimed at prod
+// ran its cleanup against preprod, and nothing in the logs said so. Returning
+// nil turns that into a visible "client non configuré" — every caller already
+// handles nil, and the two that pass it on do so through cleanupClient below.
+//
+// Same reasoning and same fix as service.k8sForEnv; the two copies had drifted,
+// and only the service one had been corrected.
 func (h *Handlers) k8sForEnv(env string) *kubernetes.StatusClient {
 	h.k8sClientsMu.RLock()
 	defer h.k8sClientsMu.RUnlock()
 
-	if c, ok := h.k8sClients[env]; ok {
-		return c
+	return h.k8sClients[env]
+}
+
+// rancherCleanupClient is what runCleanupAndDelete needs of a Kubernetes
+// client. It is a named type so cleanupClient below can return a properly nil
+// interface value.
+type rancherCleanupClient interface {
+	ApplyManifestToVClusterViaPortForward(context.Context, string, []byte) error
+	WaitForJobComplete(context.Context, string, string, string, time.Duration) error
+}
+
+// cleanupClient converts a possibly-nil *StatusClient into an interface value
+// that is nil when the client is.
+//
+// Handing a nil *StatusClient straight to an interface parameter produces an
+// interface that holds a nil pointer — and such an interface is NOT equal to
+// nil. The `if k8s != nil` guard inside runCleanupAndDelete therefore passed,
+// and the next line dereferenced the nil pointer. Because that call runs in its
+// own goroutine (`go h.runCleanupAndDelete(...)`), the panic was not recoverable
+// by the HTTP handler: it took the whole process down.
+//
+// This was reachable before the fallback removal above — deleting a vcluster on
+// an install with no Kubernetes client configured was enough — and removing the
+// fallback makes nil reachable in more cases, so the guard has to actually work.
+func cleanupClient(c *kubernetes.StatusClient) rancherCleanupClient {
+	if c == nil {
+		return nil
 	}
-	// Fallback: return any available client (backward compatibility)
-	for _, c := range h.k8sClients {
-		return c
-	}
-	return nil
+	return c
 }
 
 // ClusterConfig shows the cluster configuration page (admin only).
