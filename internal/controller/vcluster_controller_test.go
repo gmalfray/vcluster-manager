@@ -127,9 +127,9 @@ func (f *fakeVClusterOps) SetProtection(context.Context, models.Actor, string, s
 	return service.ProtectionState{}, nil
 }
 
-func (f *fakeVClusterOps) HostNamespaceState(context.Context, string, string) (bool, bool) {
+func (f *fakeVClusterOps) HostNamespaceState(context.Context, string, string) service.NamespaceState {
 	unimplementedOnThisFake("HostNamespaceState")
-	return false, false
+	return service.NamespaceState{}
 }
 
 func (f *fakeVClusterOps) DeleteHostNamespace(context.Context, models.Actor, string, string) error {

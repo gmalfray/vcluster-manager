@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/gmalfray/vcluster-manager/internal/audit"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 )
@@ -399,6 +401,14 @@ func (s *Service) TeardownVCluster(ctx context.Context, actor models.Actor, name
 // namespace ne fait que POSER un deletionTimestamp. Ce qui la termine est une
 // observation ultérieure — HostNamespaceState — et cette attente appartient à
 // l'appelant.
+//
+// L'appelant n'appelle cette méthode QUE sur un namespace qu'il vient
+// d'observer sans deletionTimestamp (le finalizer observe avant d'agir,
+// justement pour ça) : chaque appel qui aboutit est donc une suppression
+// réelle, jamais une redemande sur un namespace déjà en Terminating. L'audit
+// n'a donc plus besoin de filtrer — il journalise dès que l'appel réussit,
+// exact par construction plutôt que par un Get qu'il faudrait refaire ici pour
+// vérifier ce que l'appelant sait déjà.
 func (s *Service) DeleteHostNamespace(ctx context.Context, actor models.Actor, name, env string) error {
 	if !actor.IsAdmin {
 		return ErrForbidden
@@ -411,39 +421,51 @@ func (s *Service) DeleteHostNamespace(ctx context.Context, actor models.Actor, n
 	if k8s == nil {
 		return ErrK8sUnavailable
 	}
-	requested, err := k8s.DeleteHostNamespace(ctx, name)
-	if err != nil {
+	if err := k8s.DeleteHostNamespace(ctx, name); err != nil {
 		return err
 	}
-	// Pas de ligne d'audit pour un namespace qui n'était pas là. Le finalizer
-	// rejoue cette étape à chaque tour, donc journaliser sans condition remplirait
-	// l'audit de suppressions qui n'ont rien supprimé — et rendrait illisible la
-	// seule qui compte.
-	if requested {
-		audit.LogActor(actor.Username, "vcluster-namespace-delete", name, env)
-	}
+	audit.LogActor(actor.Username, "vcluster-namespace-delete", name, env)
 	return nil
 }
 
-// HostNamespaceState dit si le namespace hôte du vcluster existe, et si on a pu
-// le savoir.
+// NamespaceState est ce que le cluster dit du namespace hôte d'un vcluster, en
+// une seule lecture : s'il existe, depuis quand il est condamné, et ce que
+// l'apiserver rapporte lui-même sur ce qui bloque sa terminaison.
 //
-// Sert au finalizer à distinguer « ce vcluster n'a jamais été matérialisé » de
-// « je n'arrive pas à regarder ». Le premier n'a pas de données à sauvegarder ; le
-// second doit garder le filet.
+// Sert au finalizer à trois endroits : distinguer « ce vcluster n'a jamais été
+// matérialisé » de « je n'arrive pas à regarder » avant d'exiger une
+// sauvegarde ; décider s'il y a encore quelque chose à supprimer ; et, une fois
+// la suppression demandée, s'ancrer sur DeletionTimestamp — un fait posé par
+// l'apiserver, pas une condition que l'opérateur écrit lui-même — pour savoir
+// depuis quand attendre et nommer, dans Conditions, ce qui retient vraiment le
+// namespace plutôt que de le deviner.
+type NamespaceState struct {
+	Exists            bool
+	Known             bool
+	DeletionTimestamp time.Time
+	Conditions        []corev1.NamespaceCondition
+}
+
+// HostNamespaceState lit le namespace hôte du vcluster.
 //
 // Pas dérivé du status : `chartVersion` vide voudrait dire « jamais provisionné »
 // dans la plupart des cas, mais il serait aussi vide sur un vcluster dont
 // l'observation n'a jamais abouti — donc éventuellement sur un vcluster qui porte
 // des données. Pour un garde-fou de données, la question se pose au moment de la
 // suppression, au cluster.
-func (s *Service) HostNamespaceState(ctx context.Context, name, env string) (exists, known bool) {
+func (s *Service) HostNamespaceState(ctx context.Context, name, env string) NamespaceState {
 	if !validName(name) {
-		return false, false
+		return NamespaceState{}
 	}
 	k8s := s.k8sForEnv(envOrDefault(env))
 	if k8s == nil {
-		return false, false
+		return NamespaceState{}
 	}
-	return k8s.HostNamespaceExists(ctx, name)
+	st, known := k8s.HostNamespaceState(ctx, name)
+	return NamespaceState{
+		Exists:            st.Exists,
+		Known:             known,
+		DeletionTimestamp: st.DeletionTimestamp,
+		Conditions:        st.Conditions,
+	}
 }

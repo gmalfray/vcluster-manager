@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,6 +55,17 @@ type fakeDeletionOps struct {
 	nsAbsent  bool
 	nsUnknown bool
 
+	// nsDeletionTimestamp : zéro tant que rien n'a condamné le namespace, posé
+	// au moment où DeleteHostNamespace réussit — exactement comme l'apiserver le
+	// ferait. C'est l'ancre que namespaceRemovalGiveUpAfter lit désormais : un
+	// fait tenu par le faux « cluster », pas une condition que l'opérateur
+	// écrirait sur le CR.
+	nsDeletionTimestamp time.Time
+	// nsConditions : ce que status.conditions rapporterait sur le namespace —
+	// sert à vérifier que le message d'abandon NOMME la vraie cause au lieu de
+	// la deviner.
+	nsConditions []corev1.NamespaceCondition
+
 	// nsSurvivesDelete garde le namespace en place malgré la suppression : le
 	// namespace en Terminating qu'un finalizer tiers retient, ou que la
 	// Kustomization Flux du tenant réapplique. C'est le cas que N6 doit rapporter
@@ -62,20 +74,29 @@ type fakeDeletionOps struct {
 	deleteNSErr      error
 }
 
-func (f *fakeDeletionOps) HostNamespaceState(_ context.Context, _, _ string) (bool, bool) {
+func (f *fakeDeletionOps) HostNamespaceState(_ context.Context, _, _ string) service.NamespaceState {
 	f.record("namespace-state")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.nsUnknown {
-		return false, false
+		return service.NamespaceState{}
 	}
-	return !f.nsAbsent, true
+	if f.nsAbsent {
+		return service.NamespaceState{Known: true}
+	}
+	return service.NamespaceState{
+		Known:             true,
+		Exists:            true,
+		DeletionTimestamp: f.nsDeletionTimestamp,
+		Conditions:        f.nsConditions,
+	}
 }
 
-// DeleteHostNamespace fait au faux cluster ce que l'appel fait au vrai : après
-// lui, le namespace n'est plus là. C'est ce changement d'état — et non un drapeau
-// « delete a été appelé » — qui permet à l'étape suivante de conclure par
-// observation, comme en production.
+// DeleteHostNamespace fait au faux cluster ce qu'un vrai Delete lui ferait :
+// le namespace n'est plus fraîchement vivant après lui, exactement comme
+// l'apiserver poserait un deletionTimestamp. C'est ce changement d'état — et
+// non un drapeau « delete a été appelé » — qui permet à l'étape suivante de
+// conclure par observation, comme en production.
 func (f *fakeDeletionOps) DeleteHostNamespace(context.Context, models.Actor, string, string) error {
 	f.record("delete-namespace")
 	f.mu.Lock()
@@ -83,10 +104,24 @@ func (f *fakeDeletionOps) DeleteHostNamespace(context.Context, models.Actor, str
 	if f.deleteNSErr != nil {
 		return f.deleteNSErr
 	}
-	if !f.nsSurvivesDelete {
+	if f.nsSurvivesDelete {
+		if f.nsDeletionTimestamp.IsZero() {
+			f.nsDeletionTimestamp = time.Now()
+		}
+	} else {
 		f.nsAbsent = true
 	}
 	return nil
+}
+
+// ageNamespaceDeletion recule l'horodatage de condamnation du namespace hôte
+// tenu par le faux cluster. C'est l'équivalent de ageCondition pour cette
+// borne-là : depuis que l'ancre est le deletionTimestamp du namespace et non
+// plus une condition du CR, c'est ici qu'il faut la reculer, pas sur l'objet.
+func (f *fakeDeletionOps) ageNamespaceDeletion(age time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nsDeletionTimestamp = time.Now().Add(-age)
 }
 
 func (f *fakeDeletionOps) record(call string) {
@@ -1018,20 +1053,55 @@ func TestDeletionWaitsForTheNamespaceToActuallyDisappear(t *testing.T) {
 	}
 }
 
+// Un namespace en Terminating ne fait redemander la suppression qu'UNE fois,
+// pas à chaque tour de reconcile.
+//
+// C'est la propriété qui, avant ce chantier, vivait dans
+// kubernetes.DeleteHostNamespace (un Get avant le Delete, pour ne pas écrire
+// une ligne d'audit par tour sur un namespace déjà condamné). Elle vit
+// maintenant ICI, dans l'ordre du contrôleur : reconcileFinalTeardownAndNamespaceRemoval
+// n'appelle DeleteHostNamespace que quand il vient d'observer un namespace
+// sans deletionTimestamp. Un namespace déjà en Terminating prend la branche
+// d'attente sans jamais rappeler DeleteHostNamespace — donc l'audit qu'elle
+// écrit à chaque succès reste exact sans avoir besoin de filtrer.
+func TestNamespaceRemovalOnlyRequestsDeletionOnce(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.nsSurvivesDelete = true
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := newDeletingVCluster(t, ctx, "ns-un-seul-appel", false, nil)
+
+	for i := range 3 {
+		if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+			t.Fatalf("reconcile %d: %v", i+1, err)
+		}
+	}
+	if vclusterGone(t, ctx, vc) {
+		t.Fatal("le CR est parti alors que le namespace retenu n'a jamais disparu")
+	}
+	if n := ops.count("delete-namespace"); n != 1 {
+		t.Fatalf("suppression demandée %d fois sur trois tours pour un namespace déjà en "+
+			"Terminating après le premier, attendu 1 : chaque appel de trop est une ligne "+
+			"d'audit qui n'a rien supprimé", n)
+	}
+}
+
 // Attendre, mais pas pour toujours. Un namespace qu'un finalizer tiers retient ne
 // partira pas parce qu'on insiste ; laisser le CR en Terminating indéfiniment
 // n'efface rien et ajoute un objet coincé au problème. On lâche, et on NOMME ce
 // qui reste — sinon la trace disparaît avec le CR.
+//
+// La borne s'ancre désormais sur le deletionTimestamp que le faux cluster tient
+// pour ce namespace (ageNamespaceDeletion), pas sur une condition du CR : c'est
+// le changement du point 2, et c'est pour ça qu'on ne sème plus la condition à
+// la main ici.
 func TestNamespaceRemovalWaitIsBounded(t *testing.T) {
 	ctx := context.Background()
 	ops := readyToDestroyOps()
-	ops.nsSurvivesDelete = true
+	ops.ageNamespaceDeletion(namespaceRemovalGiveUpAfter + time.Minute)
 	ops.teardownWarnings = []string{"backend d'auth Vault pas désactivé : 503"}
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 	vc := newDeletingVCluster(t, ctx, "ns-borne", false, nil)
-
-	ageCondition(t, ctx, vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse,
-		"NamespaceTerminating", namespaceRemovalGiveUpAfter+time.Minute)
 
 	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -1048,16 +1118,11 @@ func TestNamespaceRemovalWaitIsBounded(t *testing.T) {
 func TestGivingUpOnTheNamespaceNamesWhatIsLeft(t *testing.T) {
 	ctx := context.Background()
 	ops := readyToDestroyOps()
-	ops.nsSurvivesDelete = true
+	ops.ageNamespaceDeletion(namespaceRemovalGiveUpAfter + time.Minute)
 	ops.teardownWarnings = []string{"backend d'auth Vault pas désactivé : 503"}
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 
 	vc := terminatingVCluster("restes-ns")
-	apimeta.SetStatusCondition(&vc.Status.Conditions, metav1.Condition{
-		Type: v1alpha1.CondNamespaceRemoved, Status: metav1.ConditionFalse,
-		Reason: "NamespaceTerminating", Message: "posée par le test",
-		LastTransitionTime: metav1.NewTime(time.Now().Add(-namespaceRemovalGiveUpAfter - time.Minute)),
-	})
 
 	done, _, err := r.runDeletionSequence(ctx, ops, vc)
 	if err != nil || !done {
@@ -1068,6 +1133,64 @@ func TestGivingUpOnTheNamespaceNamesWhatIsLeft(t *testing.T) {
 		if !strings.Contains(vc.Status.Deletion.Message, want) {
 			t.Fatalf("le message de fin ne dit pas %q : %q", want, vc.Status.Deletion.Message)
 		}
+	}
+}
+
+// Le point 4 : le message d'abandon NOMME ce que status.conditions rapporte,
+// il ne devine plus.
+//
+// Avant, ce message disait « un finalizer tiers le retient, ou la
+// Kustomization Flux du tenant le réapplique » à chaque fois, qu'il y ait un
+// vrai motif ou non — et la recette a prouvé que ça ment (un refus levé 17 s
+// plus tôt s'est vu accuser d'un finalizer tiers qui n'existait pas). Un
+// namespace ayant vraiment une cause rapportée doit la voir apparaître ; un
+// namespace n'en rapportant aucune encore doit le dire honnêtement plutôt que
+// d'inventer une raison.
+func TestGivingUpNamesWhatKubernetesReportsInsteadOfGuessing(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.ageNamespaceDeletion(namespaceRemovalGiveUpAfter + time.Minute)
+	ops.nsConditions = []corev1.NamespaceCondition{
+		{
+			Type: "NamespaceFinalizersRemaining", Status: corev1.ConditionTrue,
+			Message: "some finalizers remain: recette.local/bloque",
+		},
+	}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := terminatingVCluster("cause-nommee")
+
+	done, _, err := r.runDeletionSequence(ctx, ops, vc)
+	if err != nil || !done {
+		t.Fatalf("séquence: done=%v err=%v", done, err)
+	}
+	msg := vc.Status.Deletion.Message
+	if !strings.Contains(msg, "recette.local/bloque") {
+		t.Fatalf("le message ne nomme pas le finalizer que status.conditions rapportait : %q", msg)
+	}
+	if strings.Contains(msg, "un finalizer tiers le retient") {
+		t.Fatalf("le message devine encore au lieu de citer status.conditions : %q", msg)
+	}
+}
+
+// Et l'honnêteté joue dans les deux sens : sans condition rapportée, le
+// message le dit plutôt que d'inventer une cause plausible.
+func TestGivingUpAdmitsWhenNothingIsReportedYet(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.ageNamespaceDeletion(namespaceRemovalGiveUpAfter + time.Minute)
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
+	vc := terminatingVCluster("cause-absente")
+
+	done, _, err := r.runDeletionSequence(ctx, ops, vc)
+	if err != nil || !done {
+		t.Fatalf("séquence: done=%v err=%v", done, err)
+	}
+	msg := vc.Status.Deletion.Message
+	if !strings.Contains(msg, "ne rapporte encore aucune cause") {
+		t.Fatalf("le message n'admet pas l'absence de cause rapportée : %q", msg)
+	}
+	if strings.Contains(msg, "un finalizer tiers le retient") {
+		t.Fatalf("le message devine encore au lieu d'admettre l'absence de cause : %q", msg)
 	}
 }
 
@@ -1086,58 +1209,59 @@ func TestNamespaceDeletionRefusalKeepsTheCR(t *testing.T) {
 	if vclusterGone(t, ctx, vc) {
 		t.Fatal("le CR a été lâché alors que la suppression du namespace a été refusée")
 	}
-	// Rapportée sur Ready, pas sur NamespaceRemoved : voir le commentaire de
-	// reconcileNamespaceRemoval. NamespaceRemoved ne doit être écrite QUE par
-	// l'attente, sinon son ancre de délai mesure tantôt un refus tantôt une
-	// attente — bug trouvé en recette (cas A), voir namespaceRemovalOverdue et
-	// TestARefusalDoesNotLendItsAgeToTheWaitThatFollows plus bas.
+	// Rapportée sur Ready, pas sur NamespaceRemoved. Ce n'est plus un correctif
+	// à défendre : un refus ne pose pas de deletionTimestamp, donc il n'atteint
+	// jamais le code qui écrit NamespaceRemoved (voir reconcileFinalTeardownAndNamespaceRemoval).
 	got := fetchVCluster(t, ctx, vc)
 	requireVClusterCond(t, got, v1alpha1.CondVClusterReady, metav1.ConditionFalse, "NamespaceDeletionForbidden")
 	if c := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.CondNamespaceRemoved); c != nil {
-		t.Fatalf("NamespaceRemoved = %+v : un refus ne doit plus l'écrire du tout", c)
+		t.Fatalf("NamespaceRemoved = %+v : un refus ne doit pas l'écrire du tout", c)
 	}
 }
 
-// Une vieille condition NamespaceRemoved posée pour une raison étrangère à
-// l'attente ne doit pas prêter son âge à l'attente qui commence quand la
-// suppression finit par réussir.
+// Le bug trouvé en recette (cas D 6bis) est maintenant impossible par
+// construction, pas seulement corrigé.
 //
-// C'est le bug trouvé en recette (cas A) : avant le correctif ci-dessus, un
-// refus écrivait CondNamespaceRemoved=False/DeleteFailed, et SetStatusCondition
-// ne remet LastTransitionTime à zéro que quand le STATUT change, pas la raison
-// — donc un refus qui durait plus de dix minutes (le scénario le plus probable
-// du chantier : le ClusterRole pas redéployé) prêtait sa vieille horloge à
-// l'attente qui commençait tout juste dès que quelqu'un corrigeait le
-// ClusterRole. Le CR partait au tout premier tour où la suppression aboutissait
-// enfin, sans avoir observé la disparition une seule fois.
-//
-// Ce test sème directement la condition périmée plutôt que de rejouer un vrai
-// refus pendant dix minutes : la condition posée à la main, vieille de plus de
-// dix minutes et sous une raison qui n'est PAS l'une des deux que l'attente
-// écrit elle-même, simule aussi bien une trace laissée par l'ancien code qu'une
-// main qui aurait patché l'objet. namespaceRemovalOverdue doit l'ignorer dans
-// les deux cas — c'est la défense en profondeur, en plus de la relocalisation
-// vérifiée par TestNamespaceDeletionRefusalKeepsTheCR juste au-dessus.
-func TestAnOldForeignReasonOnNamespaceRemovedDoesNotEndTheWaitEarly(t *testing.T) {
+// Avant, un refus prolongé écrivait CondNamespaceRemoved=False/DeleteFailed,
+// et l'attente qui commençait à la levée du refus héritait de cette vieille
+// horloge (SetStatusCondition ne remet LastTransitionTime à zéro que quand le
+// STATUT change, pas la raison) : le CR partait au tout premier tour où la
+// suppression aboutissait enfin, sans avoir observé la disparition une seule
+// fois. La borne s'ancre maintenant sur le deletionTimestamp du namespace lui-
+// même, posé par l'apiserver — et un refus n'en pose aucun. Ce test rejoue le
+// même scénario : un long refus suivi d'un succès, et vérifie que l'attente
+// démarre à zéro.
+func TestARefusalDoesNotLendItsAgeToTheWaitThatFollows(t *testing.T) {
 	ctx := context.Background()
 	ops := readyToDestroyOps()
-	// La suppression réussit dès ce tour, mais le namespace n'a pas encore eu le
-	// temps de disparaître : l'état normal du tout premier tour qui aboutit.
+	ops.deleteNSErr = errors.New("namespaces \"vcluster-ancre-etrangere\" is forbidden")
+	// Le namespace reste en Terminating une fois le refus levé : c'est ce que le
+	// test vérifie, il ne faut pas que le faux le fasse disparaître tout seul.
 	ops.nsSurvivesDelete = true
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default"}
 	vc := newDeletingVCluster(t, ctx, "ancre-etrangere", false, nil)
 
-	ageCondition(t, ctx, vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse, "DeleteFailed",
-		namespaceRemovalGiveUpAfter+time.Hour)
+	// Le refus dure « depuis longtemps » : rien dans le faux cluster ne pose de
+	// deletionTimestamp tant que DeleteHostNamespace échoue, donc rien à vieillir
+	// ici — c'est justement la propriété qu'on vérifie. Plusieurs tours de refus
+	// avant la levée, pour ressembler à un vrai ClusterRole oublié.
+	for range 3 {
+		if _, err := r.Reconcile(ctx, vcReq(vc)); err == nil {
+			t.Fatal("le refus aurait dû remonter une erreur")
+		}
+	}
+
+	ops.mu.Lock()
+	ops.deleteNSErr = nil
+	ops.mu.Unlock()
 
 	res, err := r.Reconcile(ctx, vcReq(vc))
 	if err != nil {
-		t.Fatalf("reconcile: %v", err)
+		t.Fatalf("reconcile après levée du refus: %v", err)
 	}
-
 	if vclusterGone(t, ctx, vc) {
-		t.Fatal("CR lâché au premier tour où la suppression a réussi : la vieille condition a " +
-			"prêté son âge à l'attente qui commençait tout juste — le bug de recette (cas A)")
+		t.Fatal("CR lâché au premier tour où la suppression a réussi : l'attente n'a pas eu le " +
+			"temps d'observer la disparition une seule fois — le bug de recette (cas D 6bis)")
 	}
 	got := fetchVCluster(t, ctx, vc)
 	c := apimeta.FindStatusCondition(got.Status.Conditions, v1alpha1.CondNamespaceRemoved)
@@ -1146,7 +1270,7 @@ func TestAnOldForeignReasonOnNamespaceRemovedDoesNotEndTheWaitEarly(t *testing.T
 	}
 	if c.Reason != "NamespaceTerminating" {
 		t.Fatalf("NamespaceRemoved = %s/%s, attendu False/NamespaceTerminating : l'attente a conclu "+
-			"prématurément (RemovalUnconfirmed) sur l'âge d'une condition qui n'est pas la sienne",
+			"prématurément (RemovalUnconfirmed) sur un deletionTimestamp qui vient tout juste d'être posé",
 			c.Status, c.Reason)
 	}
 	if res.RequeueAfter != deletionStepRequeue {
@@ -1344,14 +1468,11 @@ func TestDeletionEmitsAWarningEventWhenLeftoversRemain(t *testing.T) {
 func TestGivingUpOnTheNamespaceEmitsAWarningEvent(t *testing.T) {
 	ctx := context.Background()
 	ops := readyToDestroyOps()
-	ops.nsSurvivesDelete = true
+	ops.ageNamespaceDeletion(namespaceRemovalGiveUpAfter + time.Minute)
 	ops.teardownWarnings = []string{"backend d'auth Vault pas désactivé : 503"}
 	rec := events.NewFakeRecorder(5)
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
 	vc := newDeletingVCluster(t, ctx, "event-ns-borne", false, nil)
-
-	ageCondition(t, ctx, vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse,
-		"NamespaceTerminating", namespaceRemovalGiveUpAfter+time.Minute)
 
 	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
 		t.Fatalf("reconcile: %v", err)

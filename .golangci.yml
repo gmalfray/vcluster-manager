@@ -82,6 +82,7 @@ linters:
         - portait
         - demandes
         - respecte
+        - condamnation
 
   exclusions:
     generated: lax

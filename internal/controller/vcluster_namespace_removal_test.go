@@ -12,6 +12,7 @@ import (
 
 	"github.com/gmalfray/vcluster-manager/api/v1alpha1"
 	"github.com/gmalfray/vcluster-manager/internal/models"
+	"github.com/gmalfray/vcluster-manager/internal/service"
 )
 
 // --- ce que l'étape passe réellement au service ------------------------------
@@ -45,7 +46,7 @@ func (r *namespaceCallRecorder) DeleteHostNamespace(ctx context.Context, actor m
 	return r.fakeDeletionOps.DeleteHostNamespace(ctx, actor, name, env)
 }
 
-func (r *namespaceCallRecorder) HostNamespaceState(ctx context.Context, name, env string) (bool, bool) {
+func (r *namespaceCallRecorder) HostNamespaceState(ctx context.Context, name, env string) service.NamespaceState {
 	r.recMu.Lock()
 	r.stateCalls = append(r.stateCalls, nsCall{name: name, env: env})
 	r.recMu.Unlock()
@@ -126,17 +127,21 @@ func (o *liveNamespaceOps) DeleteHostNamespace(ctx context.Context, _ models.Act
 	return nil
 }
 
-func (o *liveNamespaceOps) HostNamespaceState(ctx context.Context, name, _ string) (bool, bool) {
+func (o *liveNamespaceOps) HostNamespaceState(ctx context.Context, name, _ string) service.NamespaceState {
 	o.record("namespace-state")
 	var ns corev1.Namespace
 	err := k8sClient.Get(ctx, types.NamespacedName{Name: "vcluster-" + name}, &ns)
 	switch {
 	case apierrors.IsNotFound(err):
-		return false, true
+		return service.NamespaceState{Known: true}
 	case err != nil:
-		return false, false
+		return service.NamespaceState{}
 	default:
-		return true, true
+		st := service.NamespaceState{Known: true, Exists: true, Conditions: ns.Status.Conditions}
+		if ns.DeletionTimestamp != nil {
+			st.DeletionTimestamp = ns.DeletionTimestamp.Time
+		}
+		return st
 	}
 }
 
@@ -211,6 +216,11 @@ func TestTheOperatorDeletesTheHostNamespaceItProvisioned(t *testing.T) {
 // toujours de conclure passerait la moitié « on n'annonce rien sans preuve »
 // sans jamais rien terminer. Le namespace n'est pas créé du tout ici, ce qui est
 // l'état réel une fois la suppression aboutie.
+//
+// delete-namespace n'est PAS appelée ici : l'étape observe d'abord (point 1),
+// voit un namespace absent, et conclut directement — demander la suppression
+// d'un namespace qui n'a jamais existé n'aurait rien apporté, et aurait coûté
+// une ligne d'audit pour rien.
 func TestTheCRIsReleasedOnceTheNamespaceIsReallyGone(t *testing.T) {
 	ctx := context.Background()
 	ops := newLiveNamespaceOps()
@@ -225,8 +235,11 @@ func TestTheCRIsReleasedOnceTheNamespaceIsReallyGone(t *testing.T) {
 	if !vclusterGone(t, ctx, vc) {
 		t.Fatalf("CR toujours retenu alors que le namespace n'existe pas (trace: %v)", ops.trace())
 	}
-	if n := ops.count("delete-namespace"); n != 1 {
-		t.Fatalf("suppression demandée %d fois, attendu 1 : l'étape doit demander même "+
-			"quand elle croit qu'il n'y a rien — c'est l'observation qui conclut, pas elle", n)
+	if n := ops.count("namespace-state"); n == 0 {
+		t.Fatalf("aucune observation du namespace : la conclusion n'a rien constaté (trace: %v)", ops.trace())
+	}
+	if n := ops.count("delete-namespace"); n != 0 {
+		t.Fatalf("suppression demandée %d fois pour un namespace qui n'a jamais existé, attendu 0 : "+
+			"observer d'abord sert précisément à ne pas agir sur ce qui est déjà absent", n)
 	}
 }

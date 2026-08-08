@@ -35,7 +35,7 @@ import (
 // l'opérateur possède la CRÉATION et la SUPPRESSION de ce namespace (le
 // finalizer le supprime lui-même, arbitrage N6), Flux en possède la
 // réapplication tant que l'overlay du tenant est commité. La conséquence
-// pratique est dans reconcileNamespaceRemoval : un namespace qu'on supprime
+// pratique est dans reconcileFinalTeardownAndNamespaceRemoval : un namespace qu'on supprime
 // alors que la Kustomization du tenant vit encore réapparaît, et l'étape le
 // rapporte au lieu de prétendre l'avoir détruit.
 //
