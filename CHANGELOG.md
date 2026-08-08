@@ -6,6 +6,50 @@ Toutes les modifications notables sont documentées ici. Le format suit
 
 ## [Unreleased]
 
+## [1.5.0-rc2] — 2026-08-09
+
+Quatre correctifs, tous portant sur des dispositifs de sûreté qui n'en étaient
+pas. Une protection de suppression que rien ne faisait respecter, un DNS mort
+après restauration sans que rien ne le signale, un droit RBAC manquant qui
+rendait muettes toutes les écritures dans les vclusters, et un tableau de bord
+qui comptait les échecs sans jamais dire lesquels.
+
+Le point commun n'est pas le hasard : ce sont précisément les mécanismes qu'on
+ne teste que le jour où on en a besoin, et ce jour-là il est trop tard pour
+découvrir qu'ils ne fonctionnaient pas.
+
+### Fixed
+- **La protection de suppression ne protégeait rien.** L'IHM proposait un
+  interrupteur « Protection namespace » qui posait une annotation qu'aucun
+  contrôle d'admission ne lisait — un `kubectl delete` sur un namespace protégé
+  passait sans résistance. Une `ValidatingAdmissionPolicy` la rend effective.
+- **Le vcluster restauré n'avait plus de résolution DNS.** CoreDNS gardait le CA
+  chargé à son démarrage, que la restauration avait entre-temps régénéré ; il
+  tournait sans jamais pouvoir joindre l'API server, et ne se réparait jamais
+  seul. Plus aucune résolution pour le tenant, donc pas d'ACME et aucun
+  certificat émis.
+- **L'application ne pouvait pas écrire dans les vclusters.** Le droit
+  `create pods/portforward` manquait à son ClusterRole — celui de l'opérateur le
+  portait. Huit appels cassés : appairage Rancher, dépairage, ménage de
+  suppression. Tous échouaient dans une goroutine détachée, sans rien afficher.
+- **Un appairage en cours n'offrait aucune sortie.** L'état « Pairing » n'est
+  borné par rien ; tant qu'il désactivait l'interrupteur, un appairage qui
+  n'aboutissait pas laissait le vcluster bloqué pour toujours.
+- **Deux versions pour un même artefact.** Le fichier VERSION et le tag git
+  avaient divergé : l'image publiée sous 1.5.0-rc1 embarquait un binaire qui se
+  déclarait 1.4.2-rc3. La CI dérive désormais la version du tag.
+
+### Added
+- **Le tableau de bord nomme les réconciliations en échec** au lieu de les
+  compter. Un « 8/14 » ambre disait qu'il fallait chercher, pas où : six
+  HelmReleases cert-manager sont restés en échec des heures durant sous ce
+  chiffre. Le type, le namespace, le nom et le message sont désormais affichés.
+- **Deux invariants de déploiement sous test** : tout fichier de `deploy/base`
+  doit être référencé dans son kustomization, et toute `ValidatingAdmissionPolicy`
+  doit avoir son binding. Les deux défauts s'étaient produits en écrivant ces
+  correctifs — un fichier non référencé n'est jamais déployé, une policy sans
+  binding ne s'applique à personne, et dans les deux cas rien n'échoue.
+
 ## [1.5.0-rc1] — 2026-08-08
 
 Version mineure : elle ajoute un troisième binaire, et donc une troisième image.
