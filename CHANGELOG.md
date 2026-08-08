@@ -6,6 +6,18 @@ Toutes les modifications notables sont documentées ici. Le format suit
 
 ## [Unreleased]
 
+## [1.5.0-rc1] — 2026-08-08
+
+Version mineure : elle ajoute un troisième binaire, et donc une troisième image.
+
+Les correctifs qu'elle emporte ont un point commun — aucun ne se voyait depuis le
+produit. Un `list resourcequotas` manquant empêchait toute réconciliation avec la
+suite de tests au vert ; des sauvegardes se déclaraient `Completed` sans contenir
+une seule donnée ; l'API des vclusters était joignable en HTTP clair depuis
+Internet ; un pod tenant obtenait root sur le nœud hôte ; et cert-manager n'était
+installé dans aucun vcluster, donc aucun ingress de tenant n'avait de certificat.
+Tous ont été trouvés en observant un cluster réel, pas en lisant le code.
+
 ### Added
 - **Opérateur — Events Kubernetes** : `Normal/Deleted` et `Warning/DeletedWithLeftovers`, émis
   au seul endroit où l'information **disparaît** — la conclusion de la suppression s'écrit dans
