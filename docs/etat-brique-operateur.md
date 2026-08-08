@@ -168,6 +168,70 @@ tourné sur un vrai cluster, c'est prendre le risque avant d'avoir la preuve.
 Ordre retenu : **recette preprod → correction de ce qu'elle trouve → câblage des
 accès.**
 
+## Les Events Kubernetes : un seul, à la fin
+
+`VClusterReconciler` porte maintenant un `record.EventRecorder`
+(`cmd/operator/main.go` le câble via `mgr.GetEventRecorderFor`), et un seul
+endroit du code l'utilise : `deletionDone`, dans `vcluster_finalizer.go`.
+
+**Pourquoi là et nulle part ailleurs.** Le status et ses conditions portent
+déjà l'état courant d'un `VCluster` vivant, et un Event qui répète une
+condition à chaque tour serait le bruit que la doctrine du dépôt proscrit
+explicitement. Un Event n'ajoute quelque chose que là où l'information qu'il
+porte **disparaît** — et il n'y a qu'un seul endroit où ça arrive vraiment :
+la conclusion de la séquence de suppression. Elle écrit sa phrase dans
+`status.deletion.message`, sur un objet dont le finalizer est retiré deux
+appels plus loin — l'objet, et son status avec lui, n'existent donc plus
+l'instant d'après. Un `kubectl get events` (ou `describe` pendant la rétention)
+reste le seul endroit où cette phrase est encore lisible après coup ; le log
+ajouté plus tôt dans `deletionDone` (commit `8e392cf`, N6) suppose de savoir
+dans quel pod chercher, d'y avoir accès, et d'arriver avant sa rotation.
+
+**Deux events possibles à cet endroit, pas un seul** :
+- `Normal/Deleted` — suppression propre, rien à reprendre à la main. C'est la
+  seule preuve, une fois le CR parti, qu'elle s'est vraiment terminée sans
+  rien laisser derrière elle.
+- `Warning/DeletedWithLeftovers` — la conclusion porte des restes (Rancher,
+  Keycloak, Vault, GitLab non nettoyés, ou un namespace qui n'a pas confirmé
+  sa disparition dans les dix minutes — `RemovalUnconfirmed`). `Warning`, pas
+  `Normal` : une suppression qui laisse des restes n'est pas un succès, même
+  si elle n'a bloqué personne.
+
+**`RemovalUnconfirmed` n'a pas son propre event.** Le renoncement à dix
+minutes sur la disparition du namespace débouche, dans le même appel, sur
+`deletionDone(..., leftover)` : c'est elle qui écrit la conclusion finale, en
+ajoutant le namespace resté debout aux avertissements du teardown. Un
+deuxième event ferait doublon avec le premier, qui porte déjà cette raison
+dans son message.
+
+**Ce qui a été écarté, et pourquoi** :
+- **Le refus de budget** (`BudgetExceeded`, `NoBudgetConfigured`), **le
+  blocage par `deletionProtection`**, **la protection illisible qui arrête la
+  séquence** (`ProtectionUnknown`) — les trois candidats que la mission
+  proposait de challenger. Aucun ne disparaît : dans les trois cas le `VCluster`
+  reste vivant (ou en Terminating, mais présent), sa condition reste posée et
+  lisible par `kubectl describe` aussi longtemps que la situation dure. Un
+  Event y ajouterait une seconde copie de la même information sans rien
+  révéler que le status ne dit déjà — exactement ce que la règle 3 de la
+  mission demandait d'éviter.
+- **Un event par étape intermédiaire de la suppression** (dépairage en cours,
+  sauvegarde en cours...) — ce sont des états stables d'une séquence qui
+  boucle toutes les 30 s tant qu'elle n'a pas avancé. En émettre un à chaque
+  tour aurait noyé le seul event qui compte sous des dizaines d'events
+  identiques — le correctif qui a supprimé une ligne d'audit par tour sur un
+  namespace en Terminating existe pour la même raison.
+- **`VeleroOpsReconciler`** — pas de recorder câblé dessus. Ses marqueurs
+  `VClusterVeleroOps` ne portent pas de finalizer et ne disparaissent jamais
+  au terme d'une séquence : leurs conditions (`CondBackupCompleted`,
+  `CondRestoreInProgress`...) restent lisibles sur un objet qui reste là. Rien
+  n'y disparaît, donc rien n'y justifie un Event à ce stade.
+
+Vérifié par mutation : l'émission retirée, le type Normal/Warning inversé, le
+nil-check du recorder retiré (panique sur les dizaines de tests qui
+construisent un reconciler sans lui — la preuve que ce garde est nécessaire),
+un event injecté dans le blocage par protection, un event injecté dans une
+étape intermédiaire du dépairage — chacune fait tomber son test.
+
 ## Ce qui n'est pas couvert
 
 - **Les accès aux intégrations, pas le code.** Le code est là : `VaultConfigured` et
@@ -177,13 +241,31 @@ accès.**
   ni Rancher, donc les étapes rendent `Unknown/NotConfigured` — honnête, mais `Ready`
   n'atteint jamais le vert pour un vcluster demandant ArgoCD. Décision prise :
   après la recette preprod (voir les arbitrages ci-dessus).
-- **`ArgoCDReady` ne couvre que le volet Keycloak.** Le dépôt GitLab et la santé de
-  la Kustomization ArgoCD ne sont pas encore vérifiés — la réserve est portée par le
-  message de la condition, pas cachée derrière un `True` optimiste.
-- **`podCount`** — aucun lecteur ne le remplit. Écrire 0 affirmerait « aucun pod »,
-  alors qu'on n'a qu'une absence.
-- **Les events Kubernetes** proposés en §3.3 — `VClusterReconciler` n'a pas de
-  `record.EventRecorder`.
+- **`ArgoCDReady` couvre Keycloak et la Kustomization, pas le dépôt GitLab.**
+  `reconcileKeycloak` (vcluster_integrations.go) pose la condition à partir du
+  client OIDC, comme avant ; `refineArgoCDReady` (vcluster_status.go), appelée
+  depuis l'étape d'observation qui suit, la raffine ensuite avec ce que le
+  cluster montre de la Kustomization `argocd-<name>` — le graphe tenant qui
+  installe ArgoCD dans le vcluster (`internal/gitops/templates/tenant/
+  argocd_kustomization.yaml.tmpl`). Même principe que `provisionedFrom` pour
+  `ResourcesProvisioned` : le dernier mot revient à ce qui a été observé, pas
+  à ce que l'étape d'intégration croyait avoir obtenu. Le dépôt GitLab reste
+  hors de portée : `cmd/operator/main.go` ne passe pas de client GitLab à ce
+  binaire, et le client existant
+  (`internal/gitops/gitlab.go:AppManifestsRepoExists`) confond de toute façon
+  « dépôt absent » et « API en échec » dans le même `false` — le câbler
+  aujourd'hui pourrait transformer un hoquet GitLab en `False` qui se lirait
+  « ArgoCD est cassé ». La réserve reste dans le message plutôt que caché
+  derrière un `True` optimiste.
+- **`podCount` est rempli, en distinguant lu-à-zéro de non-lu.**
+  `StatusClient.CountVClusterPods` (internal/kubernetes/status.go) liste les
+  pods du namespace hôte (`vcluster-<name>`) — le ClusterRole de l'opérateur a
+  déjà `pods: get, list`. `ObserveVCluster` le lit en parallèle des autres
+  sources, sous son propre budget (5 s, pas de port-forward impliqué), et
+  porte le résultat dans `VClusterObservation.PodCount` **et**
+  `PodCountKnown`. `applyObservation` n'écrit `status.podCount` que si
+  `PodCountKnown` est vrai — une lecture ratée laisse le champ à sa dernière
+  valeur connue au lieu de retomber à zéro, qui se lirait « plus aucun pod ».
 - **La restaurabilité des sauvegardes** — la recette a vérifié qu'une sauvegarde
   Velero se termine avant destruction, pas qu'elle restaure.
 - **Les intégrations pendant la suppression** — Keycloak, Vault et le dépôt

@@ -29,11 +29,19 @@ func TestValidName(t *testing.T) {
 		{"../etc", false},
 		{"demo/evil", false},
 		{"demo evil", false},
+		// La borne de longueur, qui a la même raison d'être que la règle CEL de la
+		// CRD : `vcluster-` + le nom doit tenir dans les 63 caractères d'un nom de
+		// namespace, donc 54 au plus. Un nom de 55 accepté ici échouerait plus tard
+		// à la création du namespace — une erreur d'API tardive au lieu d'un refus
+		// lisible. Les deux bornes doivent tomber au même endroit, sinon un nom est
+		// refusé d'un côté et pas de l'autre.
+		{strings.Repeat("a", 54), true},
+		{strings.Repeat("a", 55), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := ValidName(tt.name); got != tt.want {
-				t.Errorf("ValidName(%q) = %v, want %v", tt.name, got, tt.want)
+				t.Errorf("ValidName(%q) (longueur %d) = %v, want %v", tt.name, len(tt.name), got, tt.want)
 			}
 		})
 	}

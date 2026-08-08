@@ -20,6 +20,12 @@ const (
 	ObserveBudgetRancher    = 10 * time.Second
 	ObserveBudgetProtection = 5 * time.Second
 	ObserveBudgetBackups    = 10 * time.Second
+	// ObserveBudgetPods and ObserveBudgetArgoCD are plain Gets/Lists against the
+	// host cluster's own API server — no port-forward involved, so they get the
+	// same short budget as ObserveBudgetProtection rather than sharing
+	// ObserveBudgetCluster's 20s, which exists for the port-forward hop.
+	ObserveBudgetPods   = 5 * time.Second
+	ObserveBudgetArgoCD = 5 * time.Second
 )
 
 // Rancher pairing states, the same six words rancher_status.html renders.
@@ -104,6 +110,20 @@ type VClusterObservation struct {
 	// could not list them" (unknown, LastBackup nil too).
 	BackupsKnown bool
 	LastBackup   *models.VeleroBackupInfo
+
+	// PodCountKnown is false when the pod list in the vcluster's host namespace
+	// could not be read. PodCount only means something when this is true: a
+	// failed list and "the namespace runs zero pods right now" both leave
+	// PodCount at 0, and only this flag tells the two apart.
+	PodCountKnown bool
+	PodCount      int
+
+	// ArgoCDKustomization carries the Ready condition of argocd-<name> — the
+	// Kustomization that installs ArgoCD inside the vcluster (the generator's
+	// tenant/argocd graph). Same "Ready"/"Unknown"/reason vocabulary as
+	// HelmRelease and Kustomization above. Read unconditionally, same as those
+	// two: it costs one Get, and this type has no spec to gate it on.
+	ArgoCDKustomization string
 }
 
 // ObserveVCluster reads the live state of a vcluster for the operator's status
@@ -114,10 +134,10 @@ type VClusterObservation struct {
 // that fails because Rancher is down would retry the whole lifecycle over a
 // piece of information nobody is blocked on.
 //
-// The four sources are read in parallel, each under its own budget. Sequentially
-// the worst case would add up to 45s — longer than the reconcile's own requeue
-// interval, which would leave the operator permanently one pass behind whenever
-// several integrations are down at once.
+// The six sources are read in parallel, each under its own budget. Sequentially
+// the worst case would add up to well over a minute — longer than the
+// reconcile's own requeue interval, which would leave the operator permanently
+// one pass behind whenever several integrations are down at once.
 func (s *Service) ObserveVCluster(ctx context.Context, name, env string) VClusterObservation {
 	env = envOrDefault(env)
 	obs := VClusterObservation{Name: name, Env: env}
@@ -129,18 +149,21 @@ func (s *Service) ObserveVCluster(ctx context.Context, name, env string) VCluste
 	}
 
 	// Each goroutine owns its own variable and everything is merged after Wait,
-	// rather than four writers poking at one struct: distinct fields would be
+	// rather than six writers poking at one struct: distinct fields would be
 	// safe, but "safe if you know the memory model" is not the same as obvious.
 	var (
-		wg         sync.WaitGroup
-		info       *models.StatusInfo
-		clusterOut bool
-		rancher    RancherStatus
-		protection ProtectionState
-		backups    VeleroBackupsView
-		backupsErr error
+		wg                  sync.WaitGroup
+		info                *models.StatusInfo
+		clusterOut          bool
+		rancher             RancherStatus
+		protection          ProtectionState
+		backups             VeleroBackupsView
+		backupsErr          error
+		podCount            int
+		podCountKnown       bool
+		argoCDKustomization string
 	)
-	wg.Add(4)
+	wg.Add(6)
 
 	go func() {
 		defer wg.Done()
@@ -177,6 +200,20 @@ func (s *Service) ObserveVCluster(ctx context.Context, name, env string) VCluste
 		backups, backupsErr = s.GetVeleroBackups(readCtx, name, env)
 	}()
 
+	go func() {
+		defer wg.Done()
+		readCtx, cancel := context.WithTimeout(ctx, ObserveBudgetPods)
+		defer cancel()
+		podCount, podCountKnown = k8s.CountVClusterPods(readCtx, name)
+	}()
+
+	go func() {
+		defer wg.Done()
+		readCtx, cancel := context.WithTimeout(ctx, ObserveBudgetArgoCD)
+		defer cancel()
+		argoCDKustomization = k8s.GetArgoCDKustomizationStatus(readCtx, name)
+	}()
+
 	wg.Wait()
 
 	obs.ClusterTimedOut = clusterOut
@@ -206,6 +243,11 @@ func (s *Service) ObserveVCluster(ctx context.Context, name, env string) VCluste
 			obs.LastBackup = &b
 		}
 	}
+
+	obs.PodCount = podCount
+	obs.PodCountKnown = podCountKnown
+	obs.ArgoCDKustomization = argoCDKustomization
+
 	return obs
 }
 

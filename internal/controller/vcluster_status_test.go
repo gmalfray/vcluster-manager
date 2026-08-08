@@ -94,6 +94,9 @@ func healthyObservation() service.VClusterObservation {
 			Phase:          "Completed",
 			CompletionTime: "2026-08-06T02:11:00Z",
 		},
+		PodCountKnown:       true,
+		PodCount:            2,
+		ArgoCDKustomization: "Ready",
 	}
 }
 
@@ -625,3 +628,194 @@ func TestSuspendedVClusterIsNotObserved(t *testing.T) {
 // r.Ops est maintenant VClusterServiceOps (vcluster_controller.go), l'union des
 // six seams : un tel faux ne compile plus contre ce champ, le scénario n'est
 // plus atteignable. Voir le commentaire équivalent dans interactions_test.go.
+
+// --- podCount --------------------------------------------------------------
+
+// Une liste de pods qui a réussi doit se voir dans le status.
+func TestPodCountIsWrittenWhenTheReadSucceeds(t *testing.T) {
+	ctx := context.Background()
+	obs := healthyObservation()
+	obs.PodCountKnown = true
+	obs.PodCount = 4
+	ops := &fakeObserver{obs: obs}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "podcount-connu", nil)
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := fetchVCluster(t, ctx, vc); got.Status.PodCount != 4 {
+		t.Fatalf("status.podCount = %d, attendu 4", got.Status.PodCount)
+	}
+}
+
+// Le piège central de la mission : une lecture ratée doit laisser podCount à
+// sa dernière valeur connue, jamais à zéro. Zéro et « je n'ai pas pu lire »
+// sont deux faits différents, et le champ est un int qui vaut 0 par défaut —
+// si applyObservation écrivait PodCount sans regarder PodCountKnown, ce test
+// tomberait en trouvant 0 au lieu de 3.
+func TestPodCountKeepsTheLastKnownValueOnAFailedRead(t *testing.T) {
+	ctx := context.Background()
+	known := healthyObservation()
+	known.PodCountKnown = true
+	known.PodCount = 3
+	ops := &fakeObserver{obs: known}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "podcount-illisible", nil)
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+	if got := fetchVCluster(t, ctx, vc); got.Status.PodCount != 3 {
+		t.Fatalf("préalable : status.podCount = %d, attendu 3", got.Status.PodCount)
+	}
+
+	unknown := healthyObservation()
+	unknown.PodCountKnown = false
+	unknown.PodCount = 0
+	ops.setObservation(unknown)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	if got.Status.PodCount != 3 {
+		t.Fatalf("status.podCount = %d après une lecture ratée, attendu 3 (dernière valeur connue) : "+
+			"« je n'ai pas pu lire » a été confondu avec « zéro pod »", got.Status.PodCount)
+	}
+}
+
+// Un vcluster réellement vide (zéro pod, lecture réussie) doit pouvoir
+// s'afficher à zéro : ce n'est pas la même chose que l'inconnue ci-dessus.
+func TestPodCountZeroIsWrittenWhenGenuinelyKnown(t *testing.T) {
+	ctx := context.Background()
+	obs := healthyObservation()
+	obs.PodCountKnown = true
+	obs.PodCount = 0
+	ops := &fakeObserver{obs: obs}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "podcount-zero-reel", func(vc *v1alpha1.VCluster) {
+		vc.Status.PodCount = 7 // une valeur précédente, pour prouver que le zéro l'écrase bien
+	})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := fetchVCluster(t, ctx, vc); got.Status.PodCount != 0 {
+		t.Fatalf("status.podCount = %d, attendu 0 (lecture réussie, réellement vide)", got.Status.PodCount)
+	}
+}
+
+// --- ArgoCDReady : raffinement par la Kustomization argocd-<name> ---------
+
+// Keycloak prêt (fakeVClusterOps.EnsureKeycloakClient rend toujours nil) et
+// Kustomization saine : la condition passe True avec le message complet, pas
+// seulement celui de reconcileKeycloak qui réserve encore la Kustomization.
+func TestArgoCDReadyCombinesKeycloakAndKustomization(t *testing.T) {
+	ctx := context.Background()
+	obs := healthyObservation()
+	obs.ArgoCDKustomization = "Ready"
+	ops := &fakeObserver{obs: obs}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "argocd-tout-va-bien", func(v *v1alpha1.VCluster) {
+		v.Spec.ArgoCD = &v1alpha1.ArgoCDSpec{Enabled: true}
+	})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	requireVCCond(t, got, v1alpha1.CondArgoCDReady, metav1.ConditionTrue, "KeycloakAndKustomizationReady")
+	c := vcCondition(got, v1alpha1.CondArgoCDReady)
+	if !strings.Contains(c.Message, "GitLab") {
+		t.Fatalf("le message ne réserve plus le volet GitLab, non vérifié : %q", c.Message)
+	}
+}
+
+// Un échec constaté sur la Kustomization fait retomber la condition, alors
+// que Keycloak seul l'aurait laissée True.
+func TestArgoCDReadyFallsToFalseOnAKnownKustomizationFailure(t *testing.T) {
+	ctx := context.Background()
+	obs := healthyObservation()
+	obs.ArgoCDKustomization = "BuildFailed"
+	ops := &fakeObserver{obs: obs}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "argocd-kustomization-en-echec", func(v *v1alpha1.VCluster) {
+		v.Spec.ArgoCD = &v1alpha1.ArgoCDSpec{Enabled: true}
+	})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	requireVCCond(t, got, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "ArgoCDKustomizationNotReady")
+}
+
+// Kustomization pas encore créée (ou illisible) : Unknown, pas False — le
+// travail n'est pas forcément cassé, on ne sait simplement pas encore.
+func TestArgoCDReadyIsUnknownWhenTheKustomizationIsNotReadable(t *testing.T) {
+	ctx := context.Background()
+	obs := healthyObservation()
+	obs.ArgoCDKustomization = "Unknown"
+	ops := &fakeObserver{obs: obs}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "argocd-kustomization-inconnue", func(v *v1alpha1.VCluster) {
+		v.Spec.ArgoCD = &v1alpha1.ArgoCDSpec{Enabled: true}
+	})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	requireVCCond(t, got, v1alpha1.CondArgoCDReady, metav1.ConditionUnknown, "ArgoCDKustomizationNotReadable")
+}
+
+// Le mutant le plus tentant : sauter la garde `obs.Err != nil` avant d'appeler
+// le raffinement. Sans elle, un cluster injoignable ferait lire
+// ArgoCDKustomization comme "" (jamais lue) et ferait retomber une condition
+// True sur une simple panne réseau — exactement le défaut que chartVersion et
+// rancher.paired évitent déjà un peu plus bas dans applyObservation.
+func TestArgoCDReadyIsNotDowngradedByAnUnreachableCluster(t *testing.T) {
+	ctx := context.Background()
+	obs := healthyObservation()
+	obs.ArgoCDKustomization = "Ready"
+	ops := &fakeObserver{obs: obs}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "argocd-cluster-muet", func(v *v1alpha1.VCluster) {
+		v.Spec.ArgoCD = &v1alpha1.ArgoCDSpec{Enabled: true}
+	})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+	if got := fetchVCluster(t, ctx, vc); vcCondition(got, v1alpha1.CondArgoCDReady).Status != metav1.ConditionTrue {
+		t.Fatal("préalable : ArgoCDReady devait être True")
+	}
+
+	ops.setObservation(service.VClusterObservation{Err: service.ErrK8sUnavailable})
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	c := vcCondition(got, v1alpha1.CondArgoCDReady)
+	if c.Status != metav1.ConditionTrue || c.Reason != "KeycloakClientReady" {
+		t.Fatalf("ArgoCDReady = %+v : un cluster injoignable a fait bouger la condition alors que rien n'a pu être relu", c)
+	}
+}
+
+// ArgoCD désactivé : reconcileKeycloak pose False/ArgoCDDisabled, et le
+// raffinement ne doit pas y toucher — sa garde ne porte que sur un True.
+func TestArgoCDReadyRefinementLeavesDisabledAlone(t *testing.T) {
+	ctx := context.Background()
+	obs := healthyObservation()
+	obs.ArgoCDKustomization = "Ready" // même si la Kustomization existe encore d'une vie précédente
+	ops := &fakeObserver{obs: obs}
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "preprod", Namespace: "default"}
+
+	vc := newObservedVCluster(t, ctx, "argocd-coupe-avec-obs", nil)
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := fetchVCluster(t, ctx, vc)
+	requireVCCond(t, got, v1alpha1.CondArgoCDReady, metav1.ConditionFalse, "ArgoCDDisabled")
+}

@@ -8,8 +8,12 @@ import (
 )
 
 // ProtectionState is the namespace-deletion-protection status of a vcluster.
-// It is the single result type returned to both adapters (rendered as an HTMX
-// fragment by the web layer, serialized as JSON by the REST layer).
+//
+// Its only consumer today is the web adapter, which turns it into the
+// protection_status.html HTMX fragment. The `json` tags below are there for the
+// REST layer of the API migration (Phase C) — no route serves this type as JSON
+// yet, and the comment used to claim otherwise. Keep the tags, but do not treat
+// them as a contract someone is already holding.
 type ProtectionState struct {
 	// Available reports whether the annotation was actually read: false when
 	// there is no client for the environment, or when the read itself failed.
@@ -25,7 +29,14 @@ type ProtectionState struct {
 	// It exists because the finalizer now stops on !Available before destroying
 	// anything (vcluster_finalizer.go): "protection unreadable" ends up in a
 	// condition someone has to act on, and "je n'ai pas pu lire" without the
-	// reason sends them looking. Same channel as RancherTeardownState.Detail.
+	// reason sends them looking. Same channel as RancherTeardownState.Detail —
+	// and the web fragment shows it too, so the screen says "état non lisible"
+	// with its cause instead of rendering nothing at all.
+	//
+	// Available and Detail encode the same fact (Available == (Detail == "")),
+	// an invariant held by hand across the constructors below. If a third one
+	// appears, derive one from the other rather than adding a fourth place to
+	// keep in sync.
 	Detail string `json:"detail,omitempty"`
 }
 

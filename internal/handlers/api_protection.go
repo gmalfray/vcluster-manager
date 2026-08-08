@@ -60,9 +60,17 @@ func (h *Handlers) setProtection(w http.ResponseWriter, r *http.Request, enabled
 // renderProtection renders the protection_status.html HTMX fragment from a
 // service.ProtectionState.
 func (h *Handlers) renderProtection(w http.ResponseWriter, r *http.Request, st service.ProtectionState) {
+	// Detail dit POURQUOI la réponse est indisponible, et le fragment le montre.
+	// Sans lui, le template — entièrement sous {{if .Enabled}} — rendait du vide :
+	// l'admin voyait son « Chargement... » remplacé par rien, définitivement, le
+	// conteneur n'ayant qu'un hx-trigger="load". C'est mieux que l'ancien
+	// comportement, qui affichait un toggle « Inactive » sur une lecture ratée —
+	// un mensonge —, mais l'absence se lit pareil pour qui regarde l'écran.
+	// Trois états jusqu'au bout : protégé, pas protégé, pas lisible.
 	h.renderPartial(w, "protection_status.html", map[string]interface{}{
 		"Enabled":   st.Available,
 		"Protected": st.Protected,
+		"Detail":    st.Detail,
 		"Name":      st.Name,
 		"Env":       st.Env,
 		"User":      h.getUser(r),

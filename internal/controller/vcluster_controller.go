@@ -6,6 +6,7 @@ import (
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -100,6 +101,32 @@ type VClusterReconciler struct {
 
 	// GracePeriod overrides DefaultGracePeriod. Zero means the default.
 	GracePeriod time.Duration
+
+	// Recorder émet les Events Kubernetes qui survivent à la disparition du CR
+	// qu'ils décrivent — utile pour un seul cas ici : la conclusion de la
+	// séquence de suppression, écrite dans le status d'un objet dont le
+	// finalizer part deux appels plus loin. Nil dans la plupart des tests, qui
+	// ne portent pas là-dessus ; recordEvent le tolère.
+	Recorder events.EventRecorder
+}
+
+// recordEvent émet un Event Kubernetes attaché à vc, si un recorder est câblé.
+//
+// Le nil-check n'est pas là pour la production — cmd/operator/main.go câble
+// toujours un recorder — mais pour les tests qui construisent un reconciler à
+// la main sans lui : ils sont bien plus nombreux que ceux qui portent sur les
+// events, et un appel sur une interface nil paniquerait au lieu de rester
+// silencieux.
+// `action` est le verbe imposé par l'API events v1 : ce que l'opérateur a FAIT,
+// distinct de `reason` qui dit pourquoi. L'ancienne API (record.EventRecorder,
+// dépréciée dans controller-runtime v0.23) ne l'avait pas.
+func (r *VClusterReconciler) recordEvent(vc *v1alpha1.VCluster, eventType, reason, action, message string) {
+	if r.Recorder == nil {
+		return
+	}
+	// `related` reste nil : l'Event ne parle que du VCluster. Le namespace qu'il
+	// mentionne dans son message n'existe déjà plus quand cet event part.
+	r.Recorder.Eventf(vc, nil, eventType, reason, action, "%s", message)
 }
 
 func (r *VClusterReconciler) vclustersNamespace() string {

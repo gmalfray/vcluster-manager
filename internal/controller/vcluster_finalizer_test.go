@@ -12,6 +12,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
@@ -1253,5 +1254,210 @@ func TestAnUnreadableNamespaceStillRequiresTheBackup(t *testing.T) {
 	}
 	if n := ops.count("trigger-backup"); n == 0 {
 		t.Fatal("l'étape de sauvegarde a été sautée sur une lecture ratée")
+	}
+}
+
+// --- events Kubernetes ------------------------------------------------------
+//
+// Un seul endroit émet : la conclusion de la suppression (deletionDone). C'est
+// la seule information que ce chantier perd autrement — les autres arrêts de
+// la séquence (protection bloquée, protection illisible, sauvegarde en
+// attente...) restent lisibles dans le status d'un objet qui, lui, ne
+// disparaît pas. Émettre là aussi serait dupliquer une condition déjà en
+// place, pas ajouter un fait qu'on perdrait sinon.
+//
+// drainEvent lit le prochain event sans bloquer : au moment où on l'appelle,
+// Reconcile est déjà retourné, donc tout ce qu'il avait à émettre est déjà
+// dans le canal — bloquer serait attendre un event qui ne viendra jamais au
+// lieu de constater son absence.
+func drainEvent(t *testing.T, rec *events.FakeRecorder) string {
+	t.Helper()
+	select {
+	case e := <-rec.Events:
+		return e
+	default:
+		return ""
+	}
+}
+
+// Une suppression propre — rien à reprendre à la main — mérite quand même son
+// event : c'est la seule preuve, une fois le CR parti, qu'elle s'est terminée
+// sans rien laisser derrière elle.
+func TestDeletionEmitsANormalEventWhenNothingIsLeftBehind(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	rec := events.NewFakeRecorder(5)
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
+	vc := newDeletingVCluster(t, ctx, "event-propre", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !vclusterGone(t, ctx, vc) {
+		t.Fatal("le vcluster n'a pas été supprimé")
+	}
+
+	e := drainEvent(t, rec)
+	if !strings.HasPrefix(e, "Normal Deleted ") {
+		t.Fatalf("event = %q, attendu un event Normal/Deleted", e)
+	}
+	if strings.Contains(e, "restes") {
+		t.Fatalf("event %q mentionne des restes alors qu'il n'y en a pas", e)
+	}
+	if e2 := drainEvent(t, rec); e2 != "" {
+		t.Fatalf("un second event a été émis : %q — une seule conclusion par suppression", e2)
+	}
+}
+
+// Ce que le teardown n'a pas pu nettoyer dehors (Keycloak, Vault, GitLab)
+// mérite un Warning, pas un Normal : « terminé avec des restes » n'est pas un
+// succès.
+func TestDeletionEmitsAWarningEventWhenLeftoversRemain(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.teardownWarnings = []string{"clients OIDC Keycloak pas supprimés : 503"}
+	rec := events.NewFakeRecorder(5)
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
+	vc := newDeletingVCluster(t, ctx, "event-restes", false, nil)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !vclusterGone(t, ctx, vc) {
+		t.Fatal("le vcluster n'a pas été supprimé")
+	}
+
+	e := drainEvent(t, rec)
+	if !strings.HasPrefix(e, "Warning DeletedWithLeftovers ") {
+		t.Fatalf("event = %q, attendu un event Warning/DeletedWithLeftovers", e)
+	}
+	if !strings.Contains(e, "Keycloak") {
+		t.Fatalf("event %q ne nomme pas ce qui reste à reprendre à la main", e)
+	}
+}
+
+// Le renoncement à dix minutes (RemovalUnconfirmed) débouche directement sur
+// deletionDone, dans le même appel : c'est elle qui écrit la conclusion, avec
+// le namespace resté debout en plus des avertissements du teardown. Pas besoin
+// d'un event séparé pour RemovalUnconfirmed — celui de la conclusion porte déjà
+// cette raison-là dans son message.
+func TestGivingUpOnTheNamespaceEmitsAWarningEvent(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.nsSurvivesDelete = true
+	ops.teardownWarnings = []string{"backend d'auth Vault pas désactivé : 503"}
+	rec := events.NewFakeRecorder(5)
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
+	vc := newDeletingVCluster(t, ctx, "event-ns-borne", false, nil)
+
+	ageCondition(t, ctx, vc, v1alpha1.CondNamespaceRemoved, metav1.ConditionFalse,
+		"NamespaceTerminating", namespaceRemovalGiveUpAfter+time.Minute)
+
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !vclusterGone(t, ctx, vc) {
+		t.Fatal("le CR n'a pas été lâché malgré la borne dépassée")
+	}
+
+	e := drainEvent(t, rec)
+	if !strings.HasPrefix(e, "Warning DeletedWithLeftovers ") {
+		t.Fatalf("event = %q, attendu un event Warning/DeletedWithLeftovers", e)
+	}
+	for _, want := range []string{"vcluster-event-ns-borne", "Vault"} {
+		if !strings.Contains(e, want) {
+			t.Fatalf("event %q ne dit pas %q", e, want)
+		}
+	}
+}
+
+// Un arrêt bloqué (protection à true) est un état stable, pas une fin : le CR
+// reste, sa condition reste lisible dessus, et rejouer le reconcile ne doit pas
+// remettre un event à chaque passage — ce serait exactement le bruit que la
+// doctrine du dépôt proscrit.
+func TestBlockedDeletionEmitsNoEvent(t *testing.T) {
+	ctx := context.Background()
+	ops := unpairedOps()
+	rec := events.NewFakeRecorder(5)
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
+	vc := newDeletingVCluster(t, ctx, "event-bloque", true, nil)
+
+	for i := range 3 {
+		if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+			t.Fatalf("reconcile %d: %v", i+1, err)
+		}
+	}
+	if e := drainEvent(t, rec); e != "" {
+		t.Fatalf("event émis sur un blocage stable : %q", e)
+	}
+}
+
+// Une protection illisible boucle toutes les 30 s sur la même condition tant
+// que la panne persiste : ce n'est ni une transition ni une fin, donc pas
+// d'event, même après plusieurs passages.
+func TestUnreadableProtectionEmitsNoEvent(t *testing.T) {
+	ctx := context.Background()
+	ops := readyToDestroyOps()
+	ops.protection = service.ProtectionState{Available: false, Detail: "apiserver injoignable"}
+	rec := events.NewFakeRecorder(5)
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
+	vc := newDeletingVCluster(t, ctx, "event-protection-illisible", false, nil)
+
+	for i := range 2 {
+		if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+			t.Fatalf("reconcile %d: %v", i+1, err)
+		}
+	}
+	if e := drainEvent(t, rec); e != "" {
+		t.Fatalf("event émis sur une panne de lecture en boucle : %q", e)
+	}
+}
+
+// La progression normale de la séquence — dépairage en cours, sauvegarde en
+// cours — ne doit rien émettre non plus : seule la toute dernière étape,
+// celle qui lâche le CR, écrit un event. Sans quoi une suppression à trois
+// tours en émettrait trois, noyant l'unique fait qui compte.
+func TestIntermediateDeletionStepsEmitNoEvent(t *testing.T) {
+	ctx := context.Background()
+	ops := &fakeDeletionOps{
+		rancher:    service.RancherTeardownState{Enabled: true, StillKnown: true},
+		protection: service.ProtectionState{Available: true, Protected: true},
+	}
+	rec := events.NewFakeRecorder(5)
+	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
+	vc := newDeletingVCluster(t, ctx, "event-intermediaire", false, nil)
+
+	// 1. Rancher connaît encore le cluster : dépairage, aucune fin en vue.
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+	if e := drainEvent(t, rec); e != "" {
+		t.Fatalf("event émis pendant le dépairage : %q", e)
+	}
+
+	// 2. Dépairé, nettoyage terminé : la sauvegarde part, toujours pas de fin.
+	ops.rancher = service.RancherTeardownState{
+		Enabled: true,
+		Cleanup: service.CleanupJobState{Observable: true, Found: true, Done: true},
+	}
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+	if e := drainEvent(t, rec); e != "" {
+		t.Fatalf("event émis pendant le lancement de la sauvegarde : %q", e)
+	}
+
+	// 3. Sauvegarde terminée : la séquence va au bout, l'event arrive ici.
+	ops.mu.Lock()
+	ops.backup.Phase, ops.backup.Completed = "Completed", true
+	ops.mu.Unlock()
+	if _, err := r.Reconcile(ctx, vcReq(vc)); err != nil {
+		t.Fatalf("reconcile 3: %v", err)
+	}
+	if !vclusterGone(t, ctx, vc) {
+		t.Fatal("séquence pas terminée au troisième tour")
+	}
+	if e := drainEvent(t, rec); !strings.HasPrefix(e, "Normal Deleted ") {
+		t.Fatalf("event = %q à la conclusion, attendu Normal/Deleted", e)
 	}
 }
