@@ -157,7 +157,7 @@ func main() {
 		// suppression : elle écrit sa phrase dans un status dont l'objet
 		// disparaît deux appels plus loin, et l'Event est ce qui en garde une
 		// trace consultable après coup (voir vcluster_finalizer.go).
-		Recorder: mgr.GetEventRecorderFor("vcluster-controller"),
+		Recorder: mgr.GetEventRecorder("vcluster-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		log.Error(err, "câblage du reconciler VCluster")
 		os.Exit(1)

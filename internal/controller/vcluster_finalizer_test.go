@@ -12,7 +12,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 
 	"github.com/gmalfray/vcluster-manager/internal/models"
 	"github.com/gmalfray/vcluster-manager/internal/service"
@@ -1270,7 +1270,7 @@ func TestAnUnreadableNamespaceStillRequiresTheBackup(t *testing.T) {
 // Reconcile est déjà retourné, donc tout ce qu'il avait à émettre est déjà
 // dans le canal — bloquer serait attendre un event qui ne viendra jamais au
 // lieu de constater son absence.
-func drainEvent(t *testing.T, rec *record.FakeRecorder) string {
+func drainEvent(t *testing.T, rec *events.FakeRecorder) string {
 	t.Helper()
 	select {
 	case e := <-rec.Events:
@@ -1286,7 +1286,7 @@ func drainEvent(t *testing.T, rec *record.FakeRecorder) string {
 func TestDeletionEmitsANormalEventWhenNothingIsLeftBehind(t *testing.T) {
 	ctx := context.Background()
 	ops := readyToDestroyOps()
-	rec := record.NewFakeRecorder(5)
+	rec := events.NewFakeRecorder(5)
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
 	vc := newDeletingVCluster(t, ctx, "event-propre", false, nil)
 
@@ -1316,7 +1316,7 @@ func TestDeletionEmitsAWarningEventWhenLeftoversRemain(t *testing.T) {
 	ctx := context.Background()
 	ops := readyToDestroyOps()
 	ops.teardownWarnings = []string{"clients OIDC Keycloak pas supprimés : 503"}
-	rec := record.NewFakeRecorder(5)
+	rec := events.NewFakeRecorder(5)
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
 	vc := newDeletingVCluster(t, ctx, "event-restes", false, nil)
 
@@ -1346,7 +1346,7 @@ func TestGivingUpOnTheNamespaceEmitsAWarningEvent(t *testing.T) {
 	ops := readyToDestroyOps()
 	ops.nsSurvivesDelete = true
 	ops.teardownWarnings = []string{"backend d'auth Vault pas désactivé : 503"}
-	rec := record.NewFakeRecorder(5)
+	rec := events.NewFakeRecorder(5)
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
 	vc := newDeletingVCluster(t, ctx, "event-ns-borne", false, nil)
 
@@ -1378,7 +1378,7 @@ func TestGivingUpOnTheNamespaceEmitsAWarningEvent(t *testing.T) {
 func TestBlockedDeletionEmitsNoEvent(t *testing.T) {
 	ctx := context.Background()
 	ops := unpairedOps()
-	rec := record.NewFakeRecorder(5)
+	rec := events.NewFakeRecorder(5)
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
 	vc := newDeletingVCluster(t, ctx, "event-bloque", true, nil)
 
@@ -1399,7 +1399,7 @@ func TestUnreadableProtectionEmitsNoEvent(t *testing.T) {
 	ctx := context.Background()
 	ops := readyToDestroyOps()
 	ops.protection = service.ProtectionState{Available: false, Detail: "apiserver injoignable"}
-	rec := record.NewFakeRecorder(5)
+	rec := events.NewFakeRecorder(5)
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
 	vc := newDeletingVCluster(t, ctx, "event-protection-illisible", false, nil)
 
@@ -1423,7 +1423,7 @@ func TestIntermediateDeletionStepsEmitNoEvent(t *testing.T) {
 		rancher:    service.RancherTeardownState{Enabled: true, StillKnown: true},
 		protection: service.ProtectionState{Available: true, Protected: true},
 	}
-	rec := record.NewFakeRecorder(5)
+	rec := events.NewFakeRecorder(5)
 	r := &VClusterReconciler{Client: k8sClient, Ops: ops, Cell: "cell1", Namespace: "default", Recorder: rec}
 	vc := newDeletingVCluster(t, ctx, "event-intermediaire", false, nil)
 

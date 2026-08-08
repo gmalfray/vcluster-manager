@@ -641,9 +641,9 @@ func (r *VClusterReconciler) deletionDone(ctx context.Context, vc *v1alpha1.VClu
 	// qu'un vcluster supprimé l'a vraiment été proprement, sans rien laisser
 	// derrière lui.
 	if len(rests) > 0 {
-		r.recordEvent(vc, corev1.EventTypeWarning, "DeletedWithLeftovers", msg)
+		r.recordEvent(vc, corev1.EventTypeWarning, "DeletedWithLeftovers", "Delete", msg)
 	} else {
-		r.recordEvent(vc, corev1.EventTypeNormal, "Deleted", msg)
+		r.recordEvent(vc, corev1.EventTypeNormal, "Deleted", "Delete", msg)
 	}
 
 	// Et dans le log, parce que le status ne survit pas à la phrase qu'il porte :
