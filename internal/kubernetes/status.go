@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -527,4 +528,98 @@ func extractConditionStatus(obj *unstructured.Unstructured, condType string) str
 		}
 	}
 	return "Unknown"
+}
+
+// UnreadyReconciliation nomme une réconciliation Flux qui n'est pas Ready.
+type UnreadyReconciliation struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	// Message est le message de la condition Ready, tronqué : c'est lui qui
+	// dit quoi faire (« HelmRepository not found », « dependency not ready »).
+	Message string `json:"message"`
+}
+
+// ListUnreadyReconciliations liste les HelmReleases et Kustomizations des
+// namespaces vcluster-* qui ne sont pas Ready, avec le message qui l'explique.
+//
+// CountReadyHelmReleases donne déjà « 8/14 » au tableau de bord, et ce compteur
+// a fait la preuve de son insuffisance : le 2026-08-08, six HelmReleases
+// cert-manager étaient en échec depuis des heures sur deux vclusters. Le chiffre
+// était donc ambre, il n'a mené personne au problème. Un compteur dit qu'il faut
+// chercher, il ne dit pas où — et sans le nom, il faut ouvrir un kubectl que
+// l'application existe précisément pour éviter.
+//
+// Les Kustomizations comptent autant que les HelmReleases : ce jour-là, c'est
+// une Kustomization (les ClusterIssuer) qui échouait en cascade, et un des deux
+// symptômes que la panne offrait.
+func (s *StatusClient) ListUnreadyReconciliations(ctx context.Context) ([]UnreadyReconciliation, error) {
+	var out []UnreadyReconciliation
+
+	for kind, gvr := range map[string]schema.GroupVersionResource{
+		"HelmRelease":   helmReleaseGVR,
+		"Kustomization": kustomizationGVR,
+	} {
+		list, err := s.client.Resource(gvr).Namespace("").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("listing %s: %w", kind, err)
+		}
+		for _, item := range list.Items {
+			if !strings.HasPrefix(item.GetNamespace(), "vcluster-") {
+				continue
+			}
+			if extractConditionStatus(&item, "Ready") == "Ready" {
+				continue
+			}
+			out = append(out, UnreadyReconciliation{
+				Kind:      kind,
+				Namespace: item.GetNamespace(),
+				Name:      item.GetName(),
+				Message:   truncateMessage(extractConditionMessage(&item, "Ready"), 200),
+			})
+		}
+	}
+
+	// Ordre stable : sans tri, l'itération de la map ci-dessus et celle de
+	// l'API rendraient la liste différente à chaque rafraîchissement, ce qui
+	// rend une page qui se recharge toute seule illisible.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+// extractConditionMessage rend le message d'une condition, ou "" s'il n'y en a
+// pas. Pendant d'extractConditionStatus, qui rend le reason.
+func extractConditionMessage(obj *unstructured.Unstructured, condType string) string {
+	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !found {
+		return ""
+	}
+	for _, c := range conditions {
+		cond, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := cond["type"].(string); t == condType {
+			msg, _ := cond["message"].(string)
+			return msg
+		}
+	}
+	return ""
+}
+
+// truncateMessage borne un message d'erreur. Les messages Flux embarquent
+// parfois une trace entière, qui ferait sauter la mise en page.
+func truncateMessage(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
