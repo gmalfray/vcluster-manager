@@ -184,17 +184,77 @@ accès.**
   alors qu'on n'a qu'une absence.
 - **Les events Kubernetes** proposés en §3.3 — `VClusterReconciler` n'a pas de
   `record.EventRecorder`.
-- **La recette réelle** — rien de tout cela n'a tourné sur un vrai cluster depuis la
-  fusion des chantiers. L'infra est coupée. Verdict de recette : **No-Go prod, Go
-  recette preprod sur vclusters jetables.** Le plan de la séquence de suppression
-  est écrit : `recette-n6-namespace.md`.
+- **La restaurabilité des sauvegardes** — la recette a vérifié qu'une sauvegarde
+  Velero se termine avant destruction, pas qu'elle restaure.
+- **Les intégrations pendant la suppression** — Keycloak, Vault et le dépôt
+  GitLab sont traversés sans client, donc rapportés comme non traités. C'est
+  honnête, et c'est ce que la recette a lu dans le message final ; ça reste à
+  câbler (voir les arbitrages).
 
-## Dette assumée
+## La recette réelle a eu lieu — 2026-08-08
 
-Les chantiers récupèrent leurs dépendances de service par **assertion de type sur
-`r.Ops`** (`VClusterObserver`, `VClusterProvisioner`, `VClusterDeletionOps`) plutôt
-que par un champ, pour que cinq chantiers parallèles ne se battent pas sur la même
-struct. Un `var _ X = (*service.Service)(nil)` empêche la pourriture silencieuse en
-production. Mais en test, un faux qui n'implémente pas l'interface **dégrade au lieu
-d'échouer** — ça a déjà mordu une fois à la fusion. Les quatre interfaces doivent se
-rejoindre maintenant que les chantiers ont atterri.
+Premier passage de la brique opérateur sur un vrai cluster (k3s v1.32.4, infra
+montée pour l'occasion). Plan et protocole : `recette-n6-namespace.md`.
+
+| Cas | Ce qu'il tranche | Verdict |
+|---|---|---|
+| A | le namespace part-il, et le CR le suit-il ? | ✅ sauvegarde Velero `Completed`, namespace disparu, CR lâché **après** |
+| B | un namespace retenu bloque-t-il puis débloque-t-il ? | ✅ bloqué 10 min pile, puis `RemovalUnconfirmed` nommant les restes |
+| C | que fait Flux quand on supprime son namespace ? | ⚠️ voir ci-dessous |
+| E | un redémarrage perd-il la borne ? | ✅ `lastTransitionTime` identique avant/après |
+
+**Ce que la recette a trouvé et qu'aucun test ne pouvait trouver.** Le ClusterRole
+de l'opérateur n'avait pas `list` sur les `resourcequotas`, dont dépend l'étape
+budget. Conséquence : **aucun `VCluster` n'était réconcilié**, jamais. Et tout
+était vert — parce qu'**envtest n'applique pas le RBAC**. C'est la limite
+structurelle de la campagne de tests, et elle s'est payée à la première minute du
+premier contact avec un vrai API server.
+
+**Cas C — le namespace orphelin est le comportement NORMAL, pas un cas rare.**
+La question qu'on ne pouvait pas trancher sans cluster était : Flux réapplique-t-il
+plus vite qu'un namespace ne termine ? Réponse mesurée : la Kustomization tenant a
+un `interval: 5m`, et la terminaison a pris **45 s**. Donc le namespace disparaît,
+l'opérateur le constate, lâche le CR — et Flux recrée un namespace vide quelques
+minutes plus tard (constaté à 4 min 20). Il n'est plus mentionné par aucun CR.
+
+Ce n'est pas un échec de N6 : la séquence a constaté ce qu'elle annonçait. C'est
+une **contrainte d'ordre** qu'il faut écrire dans le parcours de suppression :
+retirer l'arbre du tenant de fluxprod (ou suspendre sa Kustomization) **avant**
+de supprimer le CR. Sinon l'orphelin est systématique, pas accidentel.
+
+**Deux faits vérifiés que le code affirmait sans preuve** : l'opérateur
+n'apparaît pas dans les `managedFields` du namespace, parce qu'il ne déclare
+qu'un nom — et un nom est l'identité de l'objet, pas un champ géré (ce que
+`ProvisionFieldManager` soutenait) ; et `protect-deletion` est bien posée par
+`kustomize-controller` depuis l'arbre tenant, à `false`.
+
+Verdict inchangé pour la production : **No-Go prod.** Ce qui a tourné est la
+séquence de suppression sur des vclusters jetables, pas le cycle complet.
+
+## Dette soldée : les six seams se sont rejoints
+
+Les chantiers récupéraient leurs dépendances de service par **assertion de type sur
+`r.Ops`**, pour que cinq chantiers parallèles ne se battent pas sur la même struct.
+En production c'était sûr — `var _ X = (*service.Service)(nil)` l'exclut. En test,
+un faux qui n'implémentait qu'une moitié **dégradait au lieu d'échouer** : la
+branche `!ok` posait une condition « ce contrôleur n'a pas de générateur » et
+continuait, donc le test passait au vert en mesurant autre chose que ce qu'il
+prétendait. Ça avait déjà mordu une fois.
+
+`Ops` porte maintenant un type unique qui embarque les six interfaces. Un double
+incomplet **ne compile plus** — l'incomplétude est redevenue une erreur de
+compilation au lieu d'un vert trompeur.
+
+Ce que le refactor a fait tomber en passant, et qui vaut d'être noté : un test
+d'agrégation reposait, sans le savoir, sur le fait que les intégrations étaient
+sautées pour son faux partiel. C'était exactement le faux vert que ce chantier
+ferme. Quatre des cinq branches `!ok` supprimées n'étaient couvertes que par des
+tests du seam manquant lui-même — ils ne mesuraient rien d'autre ; la cinquième
+n'était couverte par rien.
+
+Fermé au même endroit : les seams passaient `(vc.Name, r.Cell)` en deux `string`
+voisines, donc une interversion **compilait** et faisait agir sur le mauvais
+vcluster. Les cinq appels du finalizer sont maintenant gardés par un test qui rend
+cette mutation mortelle. Un type nommé la rendrait impossible plutôt que testée —
+chiffré, pas appliqué : le diff déborderait sur `internal/service` et ses
+appelants, largement au-delà de la dette qu'on solde.
