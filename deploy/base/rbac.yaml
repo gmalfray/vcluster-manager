@@ -93,6 +93,28 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  # Ouvrir un port-forward vers l'API server d'un vcluster.
+  #
+  # C'est le seul chemin dont l'app dispose pour écrire DANS un vcluster :
+  # l'appairage Rancher y applique le manifeste d'enregistrement, le dépairage
+  # y lance le job rancher-cleanup et attend sa fin, la suppression y fait le
+  # ménage. Huit appels, répartis sur quatre fichiers du service et des
+  # handlers, passent tous par là.
+  #
+  # Sans ce droit, aucun n'aboutit — et aucun ne le dit. Les appels partent dans
+  # une goroutine détachée, l'erreur ne va que dans les logs du pod, et l'IHM
+  # continue d'afficher « appairage en cours » indéfiniment. Constaté le
+  # 2026-08-08 : un cluster resté `pending` côté Rancher, et une seconde
+  # tentative rejetée par le garde « existe déjà » avant même d'écrire une ligne
+  # de log.
+  #
+  # Le ClusterRole de l'opérateur porte cette règle depuis toujours
+  # (operator-rbac.yaml) ; c'est celui de l'app qui ne l'avait pas. Les deux
+  # binaires ont été séparés sans que cette asymétrie apparaisse, parce que rien
+  # ne l'exerçait.
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

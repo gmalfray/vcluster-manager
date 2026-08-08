@@ -89,9 +89,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Sur un tag, le tag FAIT foi. Ailleurs, le fichier VERSION.
+      #
+      # Ce step lisait VERSION dans tous les cas, et les deux ont divergé sans
+      # que rien ne le signale : l'image publiée sous 1.5.0-rc1 (tag Docker
+      # dérivé du tag git par metadata-action) embarquait un binaire qui se
+      # déclarait 1.4.2-rc3 au démarrage. Deux vérités pour un même artefact,
+      # et c'est la fausse qu'on lit dans les logs quand on diagnostique.
+      #
+      # Dériver du tag ne corrige pas seulement l'écart du jour : ça rend la
+      # divergence impossible, plutôt que de compter sur quelqu'un pour penser
+      # à mettre le fichier à jour avant de taguer.
       - name: Read version
         id: version
-        run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(cat VERSION)"
+          fi
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "version retenue : ${version} (ref_type=${GITHUB_REF_TYPE})"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

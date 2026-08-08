@@ -44,18 +44,35 @@
 <div class="flex items-center space-x-4" {{if or .Pairing .Cleaning}}hx-get="/api/vclusters/{{.Name}}/rancher-status?env={{.Env}}" hx-trigger="load delay:3s" hx-swap="outerHTML" hx-target="this"{{end}}>
     <div class="flex items-center space-x-3">
         <span class="text-sm font-medium text-gray-700">Rancher</span>
-        <label class="relative inline-flex items-center {{if or .Pairing .Cleaning}}cursor-not-allowed{{else}}cursor-pointer{{end}}">
+        {{/* L'appairage reste ACTIONNABLE pendant qu'il est en cours, et c'est
+             délibéré. « Pairing » se calcule en « le cluster existe dans Rancher
+             mais n'est pas actif » : rien ne le borne dans le temps, donc un
+             appairage qui n'aboutit pas y reste indéfiniment. Quand cet état
+             désactivait l'interrupteur, il n'offrait aucune sortie — le
+             2026-08-08, un appairage bloqué par un droit RBAC manquant a laissé
+             un vcluster inutilisable, avec un « en cours » perpétuel et pas un
+             seul bouton pour revenir en arrière. Il a fallu supprimer le cluster
+             à la main côté Rancher.
+
+             UnpairRancher ne demande pas que le cluster soit actif : il le
+             cherche, le supprime s'il existe, puis nettoie. Il fonctionne donc
+             parfaitement sur un appairage à moitié fait, ce qui est exactement
+             la sortie de secours qui manquait.
+
+             « Cleaning » reste bloquant, lui : c'est une suppression déjà
+             engagée, et l'interrompre laisserait le vcluster à moitié détruit. */}}
+        <label class="relative inline-flex items-center {{if .Cleaning}}cursor-not-allowed{{else}}cursor-pointer{{end}}">
             <input type="checkbox"
                    {{if .Paired}}checked{{end}}
-                   {{if or .Pairing .Cleaning}}disabled{{end}}
+                   {{if .Cleaning}}disabled{{end}}
                    class="sr-only peer"
-                   hx-post="/api/vclusters/{{.Name}}/{{if .Paired}}unpair{{else}}pair{{end}}-rancher?env={{.Env}}"
+                   hx-post="/api/vclusters/{{.Name}}/{{if or .Paired .Pairing}}unpair{{else}}pair{{end}}-rancher?env={{.Env}}"
                    hx-target="closest div[class*='flex items-center space-x-4']"
                    hx-swap="outerHTML"
-                   {{if not (or .Pairing .Cleaning)}}
-                   hx-confirm="{{if .Paired}}Desappairer{{else}}Appairer{{end}} ce vcluster avec Rancher ?"
-                   data-confirm-severity="{{if .Paired}}danger{{else}}default{{end}}"
-                   data-confirm-label="{{if .Paired}}Desappairer{{else}}Appairer{{end}}"
+                   {{if not .Cleaning}}
+                   hx-confirm="{{if .Pairing}}Cet appairage est en cours depuis un moment. Annuler et revenir en arriere ?{{else if .Paired}}Desappairer ce vcluster avec Rancher ?{{else}}Appairer ce vcluster avec Rancher ?{{end}}"
+                   data-confirm-severity="{{if or .Paired .Pairing}}danger{{else}}default{{end}}"
+                   data-confirm-label="{{if .Pairing}}Annuler l'appairage{{else if .Paired}}Desappairer{{else}}Appairer{{end}}"
                    {{end}}>
             <!-- Convention : off = gris neutre, on = couleur positive. Le rouge est reserve aux vraies alertes. -->
             <div class="relative w-16 h-8 rounded-full transition-colors duration-200" style="background-color:{{if or .Pairing .Cleaning}}var(--indigo){{else if .Paired}}var(--status-ready-fg){{else}}var(--surface3){{end}};{{if or .Pairing .Cleaning}}opacity:0.6;{{end}}">

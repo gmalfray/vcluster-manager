@@ -726,6 +726,23 @@ func deploymentObject(ns, name string) *unstructured.Unstructured {
 	return unstructuredObject("apps/v1", "Deployment", ns, name, workloadSpec(name))
 }
 
+// vclusterPodObject plante le pod du control-plane d'un vcluster, avec les
+// labels EXACTS que withVClusterPortForward cherche
+// (`app=vcluster,release=vcluster-<nom>`, internal/kubernetes/vcluster_access.go).
+//
+// Sans ce pod, tout appel passant par le port-forward s'arrête sur « no vcluster
+// pod found » AVANT d'émettre la moindre requête portforward — et le 403 qu'on
+// veut détecter n'est jamais émis. C'est très exactement pour ça que le trou de
+// droit sur `pods/portforward` a survécu à une suite RBAC qui exerçait déjà une
+// vingtaine d'appels : le test ne pouvait pas atteindre la ligne fautive.
+func vclusterPodObject(ns, name string) *unstructured.Unstructured {
+	obj := unstructuredObject("v1", "Pod", ns, name, map[string]any{
+		"containers": []any{map[string]any{"name": "syncer", "image": "registry.invalid/pause:latest"}},
+	})
+	obj.SetLabels(map[string]string{"app": "vcluster", "release": ns})
+	return obj
+}
+
 func pvcObject(ns, name string) *unstructured.Unstructured {
 	return unstructuredObject("v1", "PersistentVolumeClaim", ns, name, map[string]any{
 		"accessModes": []any{"ReadWriteOnce"},
