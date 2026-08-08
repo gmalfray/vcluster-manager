@@ -277,21 +277,30 @@ et la Kustomization `tenant-recette-n6-c` est active.
    done
    ```
 
-   **Issue attendue 1 — le namespace ne part jamais** : Flux le recrée aussi vite qu'il est
-   supprimé, `NamespaceRemoved` reste `False/NamespaceTerminating`, et à dix minutes la
-   borne rend `Unknown/RemovalUnconfirmed` avec le message qui cite la Kustomization du
-   tenant. C'est le comportement conçu.
+   **MESURÉ le 2026-08-08 — c'est l'issue 2, et ce n'est pas un cas rare.** Ce cas était
+   écrit avec deux issues plausibles parce qu'on ne savait pas laquelle l'emporterait :
+   Flux réapplique-t-il plus vite qu'un namespace ne termine ? La réponse est chiffrée
+   maintenant, et elle ne dépend pas de la chance :
 
-   **Issue attendue 2 — le namespace disparaît une fraction de seconde, puis revient** :
-   l'opérateur observe « disparu » pendant cette fenêtre, conclut `True/NamespaceGone` et
-   lâche le CR ; Flux recrée ensuite un namespace vide, que plus rien ne pilote. Le
-   résultat est un namespace orphelin qu'aucun CR ne mentionne.
+   | Grandeur | Valeur observée |
+   |---|---|
+   | terminaison du namespace | **45 s** (11:36:14 → 11:36:59) |
+   | `interval` de la Kustomization tenant | **5 m** |
+   | recréation du namespace par Flux | **4 min 20** après sa disparition |
 
-   **L'issue 2 n'est pas un échec de N6** — la séquence a bien constaté ce qu'elle
-   annonçait — mais c'est un défaut d'exploitation à remonter, avec l'heure exacte et la
-   sortie de la boucle. La contre-mesure est en amont : retirer l'arbre du tenant de
-   fluxprod (ou suspendre `tenant-recette-n6-c`) **avant** de supprimer le CR, ce qui est
-   l'ordre que suit le parcours de suppression de l'app.
+   La terminaison est donc d'un ordre de grandeur plus rapide que le cycle de Flux. Le
+   namespace part, l'opérateur le constate, conclut `True/NamespaceGone` et lâche le CR —
+   tout cela correctement — puis Flux recrée un namespace vide que plus aucun CR ne
+   mentionne. **L'orphelin est le comportement par défaut, pas un accident de timing.**
+
+   L'issue 1 (« Flux le recrée aussi vite qu'il est supprimé, la borne rend
+   `RemovalUnconfirmed` ») ne s'observera que si quelque chose retient le namespace assez
+   longtemps pour couvrir les cinq minutes — un finalizer tiers, donc le cas B.
+
+   **Ce n'est pas un échec de N6** : la séquence a constaté ce qu'elle annonçait. C'est une
+   **contrainte d'ordre**, et elle doit être écrite dans le parcours de suppression plutôt
+   que laissée à la vigilance : retirer l'arbre du tenant de fluxprod (ou suspendre
+   `tenant-<nom>`) **avant** de supprimer le CR. Sinon l'orphelin est systématique.
 4. Rejouer une fois dans le bon ordre, pour vérifier que ce chemin-là est propre :
 
    ```bash
@@ -317,7 +326,21 @@ Le déploiement de l'opérateur et son ClusterRole partent dans deux objets dist
 l'image de N6 sans le RBAC est le scénario de rate le plus probable de tout ce chantier.
 
 **Cible** : `recette-n6-d`. **Impact** : la fenêtre dégrade l'opérateur pour **toute la
-cell**. Prévenir avant, et ne pas dépasser quelques minutes.
+cell**. Prévenir avant.
+
+⚠️ **La durée du refus fait partie du test, et le plan disait l'inverse.** Il demandait
+« ne pas dépasser quelques minutes », par prudence. C'est exactement ce qui rendait ce cas
+aveugle : le défaut qu'il devait attraper ne se manifeste qu'**au-delà de dix minutes** de
+refus, parce qu'il tient à une borne de dix minutes. Joué en fenêtre courte le 2026-08-08,
+le cas passait ; joué en dépassant la borne, il a fait tomber le CR en 17 secondes sur un
+namespace qui n'avait jamais disparu. Un cas de recette conçu pour être sûr avait été
+conçu pour ne rien trouver.
+
+Le point 6 bis ci-dessous couvre cette durée. Pour limiter l'impact sans perdre le test :
+suspendre la Kustomization Flux de l'app (`flux suspend kustomization vcluster-manager -n
+flux-system`) avant de dégrader le ClusterRole — sinon Flux le remet tout seul en cinq
+minutes et la fenêtre se referme sans qu'on l'ait décidé — et prévenir que la cell est
+dégradée le temps du cas.
 
 1. Poser le CR `recette-n6-d`, attendre le namespace, désarmer le filet (cas B, point 3).
 2. Sauvegarder le ClusterRole, puis lui retirer `delete` :
@@ -355,8 +378,43 @@ cell**. Prévenir avant, et ne pas dépasser quelques minutes.
    tour suivant, `NamespaceRemoved` passe à `True/NamespaceGone`, le CR est lâché. C'est
    la moitié qui compte : un refus n'est pas un état absorbant.
 
+6 bis. **Le refus prolongé — c'est ce point qui a trouvé le bug, ne pas le sauter.**
+   Rejouer les points 1 à 5 sur une cible `recette-n6-d-long`, mais en laissant le refus
+   durer **plus de dix minutes** avant de remettre le ClusterRole. Relever l'ancre d'abord :
+
+   ```bash
+   kubectl -n $CRNS get vcluster recette-n6-d-long -o jsonpath='
+   {range .status.conditions[?(@.type=="NamespaceRemoved")]}{.status}/{.reason} depuis {.lastTransitionTime}{end}{"\n"}'
+   # attendre que cette date ait plus de 10 minutes, PUIS remettre le ClusterRole
+   ```
+
+   **Attendu** : après la remise du droit, le CR **attend** la disparition réelle du
+   namespace. `kubectl get ns` doit répondre `NotFound` **avant** que le CR ne parte.
+
+   **Ce qui invalide le cas** : le CR disparaît dans les secondes qui suivent la remise du
+   droit alors que `kubectl get ns vcluster-recette-n6-d-long` répond encore `Terminating`.
+   C'est le bug d'ancre — le refus prêtait sa vieille horloge à l'attente qui commençait —
+   et son symptôme lisible est un message d'adieu qui accuse « un finalizer tiers le
+   retient, ou la Kustomization Flux du tenant le réapplique » sur un `deletionTimestamp`
+   vieux de quelques secondes. Si vous lisez cette phrase-là avec un namespace fraîchement
+   condamné, ne cherchez pas le finalizer tiers : c'est l'opérateur qui ment.
+
 **Retour arrière** : le point 5, et il n'est pas optionnel. Vérifier avec
-`kubectl diff -f /tmp/n6-clusterrole.bak.yaml` qu'il ne reste aucun écart.
+`kubectl diff -f /tmp/n6-clusterrole.bak.yaml` qu'il ne reste aucun écart. Si la
+Kustomization de l'app a été suspendue, la reprendre :
+`flux resume kustomization vcluster-manager -n flux-system`.
+
+**Piège de déploiement rencontré en jouant ce cas.** Le Deployment de l'opérateur peut
+être épinglé sur un tag **mutable** (`main`) avec `imagePullPolicy: IfNotPresent` : un
+`kubectl rollout restart` ne retire alors **rien** du registre, et le pod continue de
+tourner l'ancienne image. Le cas D mesure alors du vieux code sans le dire. Vérifier le
+digest réellement exécuté avant de conclure quoi que ce soit sur un correctif :
+
+```bash
+kubectl get pods -n $CRNS -o jsonpath='{range .items[*]}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+docker inspect ghcr.io/gmalfray/vcluster-manager-operator:main --format '{{index .RepoDigests 0}}'
+# les deux digests doivent coïncider ; sinon, épingler le Deployment par digest
+```
 
 ---
 
@@ -465,7 +523,20 @@ Go recette suivante si, et seulement si :
 - cas A : namespace supprimé et CR lâché **dans cet ordre**, ligne d'audit présente ;
 - cas B : blocage constaté, borne à dix minutes respectée, message nommant le namespace ;
 - cas D : refus RBAC visible dans la condition, CR conservé, reprise automatique après
-  remise du ClusterRole.
+  remise du ClusterRole — **et le point 6 bis joué**, c'est-à-dire un refus de plus de dix
+  minutes suivi d'une remise du droit, sans que le CR parte avant la disparition réelle du
+  namespace ;
+- cas E : `lastTransitionTime` identique avant et après le redémarrage de l'opérateur.
+
+Le cas E était absent de cette liste alors qu'il figurait dans les No-Go : un lecteur
+pressé lisait la grille et le sautait. Il ancre la seule propriété de reprise après
+redémarrage, il est donc dans les deux.
+
+Le cas C ne figure dans aucune des deux listes, et c'est délibéré : aucune de ses sorties
+n'est un échec de N6. Ce qu'il produit est une **mesure** (le rapport entre le temps de
+terminaison d'un namespace et l'intervalle de la Kustomization tenant) dont on tire une
+contrainte d'ordre pour le parcours de suppression. Le jouer reste utile ; en faire un
+critère de verdict ne l'était pas.
 
 No-Go si l'un de ceux-ci se produit :
 
