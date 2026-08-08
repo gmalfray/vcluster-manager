@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/gmalfray/vcluster-manager/internal/kubernetes"
 	"github.com/gmalfray/vcluster-manager/internal/models"
 )
 
@@ -32,6 +33,12 @@ type FluxSummary struct {
 	PreprodReady int `json:"preprod_ready"`
 	ProdTotal    int `json:"prod_total"`
 	ProdReady    int `json:"prod_ready"`
+	// Unready nomme les réconciliations en échec, parce que le compteur
+	// ci-dessus ne suffit pas : un « 8/14 » ambre dit qu'il faut chercher,
+	// pas où chercher. Le 2026-08-08, six HelmReleases cert-manager étaient
+	// en échec depuis des heures — le chiffre l'affichait, et il a fallu
+	// ouvrir un kubectl pour savoir lesquels.
+	Unready []kubernetes.UnreadyReconciliation `json:"unready,omitempty"`
 }
 
 // GetStatus returns the real-time status of a vcluster (the normal path of the
@@ -87,6 +94,17 @@ func (s *Service) GetFluxSummary(ctx context.Context) FluxSummary {
 		case "prod":
 			summary.ProdTotal, summary.ProdReady = total, ready
 		}
+
+		// Le détail est ce qui rend le compteur exploitable. Son échec ne doit
+		// pas emporter le compteur lui-même : « 8/14 » sans le détail reste
+		// plus utile que rien, alors qu'un tableau de bord vide ne dit pas si
+		// tout va bien ou si personne ne regarde.
+		unready, err := k8s.ListUnreadyReconciliations(ctx)
+		if err != nil {
+			slog.Error("error listing unready reconciliations", "env", env, "err", err)
+			continue
+		}
+		summary.Unready = append(summary.Unready, unready...)
 	}
 
 	summary.Total = summary.PreprodTotal + summary.ProdTotal

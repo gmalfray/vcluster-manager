@@ -19,5 +19,25 @@
     </span>
     {{end}}
 </div>
+{{if .Unready}}
+{{/* Le compteur seul dit qu'il faut chercher, pas où. Nommer les
+     réconciliations en échec et leur motif est ce qui permet d'agir sans
+     ouvrir un kubectl — c'est précisément ce que cet écran existe pour
+     éviter. */}}
+<details class="mt-2" style="text-align:left;">
+    <summary style="cursor:pointer;font-size:0.8rem;color:var(--amber);">
+        {{len .Unready}} en échec — voir lesquelles
+    </summary>
+    <ul style="margin-top:0.4rem;padding-left:0.9rem;font-size:0.75rem;color:var(--text-secondary);">
+        {{range .Unready}}
+        <li style="margin-bottom:0.35rem;">
+            <span style="font-weight:600;">{{.Kind}}/{{.Name}}</span>
+            <span style="color:var(--text-muted);">({{.Namespace}})</span>
+            {{if .Message}}<div style="color:var(--text-muted);word-break:break-word;">{{.Message}}</div>{{end}}
+        </li>
+        {{end}}
+    </ul>
+</details>
+{{end}}
 {{end}}
 {{end}}

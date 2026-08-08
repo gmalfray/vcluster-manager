@@ -25,7 +25,14 @@ func TestGetStatus_K8sUnavailable_EnvDefaultsToPreprod(t *testing.T) {
 func TestGetFluxSummary_NoClients(t *testing.T) {
 	s := newTestService()
 	summary := s.GetFluxSummary(context.Background())
-	if summary != (FluxSummary{}) {
+	// Comparaison champ par champ : FluxSummary porte désormais la liste des
+	// réconciliations en échec, et un struct contenant un slice n'est plus
+	// comparable avec !=. Ce qui est vérifié ne change pas — sans client
+	// configuré, rien n'est compté et rien n'est nommé.
+	if summary.Total != 0 || summary.Ready != 0 ||
+		summary.PreprodTotal != 0 || summary.PreprodReady != 0 ||
+		summary.ProdTotal != 0 || summary.ProdReady != 0 ||
+		len(summary.Unready) != 0 {
 		t.Fatalf("expected a zero summary when no client is configured, got %+v", summary)
 	}
 }
