@@ -424,6 +424,43 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       Rien de tout ça n'est testable par `go test` (CSS/attributs HTML) : vérifié par lecture
       exhaustive + calcul de contraste WCAG, pas par exécution automatisée.
 
+## Recette du 2026-08-09 — findings ouverts
+
+- [ ] 🟠 **Le navlink ArgoCD ne se déploie jamais sur un vcluster créé par la
+      voie GitOps.** Constaté sur `recette-restore-a` :
+
+      post build failed for 'link-argocd': substitute from
+      'ConfigMap/vcluster-recette-restore-a-substitutions' error: not found
+
+      Le template généré (`navlink_kustomization.yaml.tmpl`) déclare un
+      `substituteFrom` sur `vcluster-<nom>-substitutions`. Or ce ConfigMap est
+      produit par l'**opérateur** à partir du CR — `SubstitutionConfigMap`
+      (`internal/gitops/objects.go`) le dit explicitement : « the single object
+      **the operator** owns on the host cluster ». Sur cette plateforme il n'y a
+      aucun CR `VCluster` (les vclusters viennent de la voie app→GitOps), donc
+      aucun ConfigMap, donc la Kustomization échoue en boucle.
+      **`navlink` est le seul template dans ce cas** : `cert-manager-config`,
+      qui suit le même patron, fournit ses valeurs en `substitute:` direct dans
+      le template généré et fonctionne. La migration du navlink vers le modèle
+      opérateur a donc cassé le chemin GitOps sans que rien ne le signale côté
+      application — l'échec ne se voit que dans Flux.
+      **Aggravant** : le fichier ciblé (`lib/tenant-template/argocd/navlink/`)
+      ne contient **aucun** `${...}` — ni dans le seed de recette, ni dans le
+      dépôt de production, où l'URL est en dur (`argocd.base.rancher.kosmos.fr`).
+      La substitution qui fait échouer la Kustomization ne servirait donc à rien
+      même si le ConfigMap existait.
+      Correctif le plus simple : `optional: true` sur ce `substituteFrom`, qui
+      répare la voie GitOps sans rien retirer à la voie opérateur. À trancher
+      avec la question de fond : ce navlink doit-il pointer vers l'ArgoCD du
+      vcluster (et donc être paramétré) ou rester un lien fixe vers l'ArgoCD
+      central ?
+
+- [ ] 🔵 **`wildcard-rebuild-it-fr` n'est pas émis** (infra, hors de ce dépôt).
+      `Issuing certificate as Secret does not exist` depuis 111 min, deux
+      challenges DNS-01 dont un seul `valid`. Non bloquant : le wildcard
+      `*.preprod` est émis, et les certificats des services (Keycloak, Vault,
+      Rancher, vcluster-manager) le sont aussi, individuellement.
+
 ## Sécurité — l'adresse source n'est pas fiable derrière cet ingress
 
 - [ ] 🔴 **Le rate limiter par IP ne distingue pas les clients.** Trouvé en
