@@ -3,52 +3,120 @@
 Backlog des évolutions à venir. Les items terminés sont archivés dans
 [`CHANGELOG.md`](CHANGELOG.md).
 
-## ArgoCD ne démarre pas dans un vcluster avec quota — hypothèse à trancher
+## ArgoCD dans un vcluster avec quota — hypothèse tranchée (infirmée)
 
-- [ ] 🔴 **À vérifier en priorité dès qu'un cluster est de nouveau disponible.**
-  Le 2026-08-08, l'activation d'ArgoCD sur `recette-restore-a` n'a rien produit :
-  les fichiers étaient bien générés dans le dépôt GitOps (22:22), mais aucune
-  Kustomization `argocd-*` n'est apparue côté hôte avant que le cluster ne
-  disparaisse. Diagnostic interrompu.
+- [x] ~~🔴 **Hypothèse : ArgoCD refusé à l'admission faute de `requests`**~~ —
+  **INFIRMÉE le 2026-08-09**, sur une plateforme de recette remontée pour
+  l'occasion (K3s 1.32, chart vcluster 0.34.7).
 
-  **Hypothèse, non confirmée** : le template `argocd/base` du dépôt GitOps
-  déploie le manifeste upstream d'ArgoCD, qui ne déclare **aucune `resources.requests`**.
-  Or `values.yaml.tmpl` pose un `resourceQuota` portant sur `requests.cpu`,
-  `requests.memory` et `requests.storage`. Un quota portant sur `requests.X` rend
-  la déclaration de X **obligatoire** : tout pod qui n'en déclare pas est refusé à
-  l'admission, quelle que soit la place restante. ArgoCD serait donc refusé sur
-  tout vcluster ayant un quota — pas seulement sur celui-ci.
+  Ce qui était supposé : le manifeste amont d'ArgoCD ne déclare aucune
+  `resources.requests`, or un `resourceQuota` portant sur `requests.X` rend la
+  déclaration de X obligatoire — donc ArgoCD serait refusé sur tout vcluster
+  ayant un quota.
 
-  **Ce qui la confirmerait ou l'infirmerait, et c'est le point décisif** : le
-  chart vcluster pose-t-il un `LimitRange` par défaut ? `values.yaml.tmpl` ne
-  désactive explicitement `policies.limitRange` que dans la branche `NoQuotas` ;
-  dans le cas normal, c'est le défaut du chart qui s'applique. Si ce défaut pose
-  un `LimitRange` avec des `defaultRequest`, les pods sans requests héritent de
-  valeurs et passent — l'hypothèse tombe, et la cause est ailleurs.
+  La première moitié est vraie et vérifiable sans cluster :
+  `argo-cd/stable/manifests/install.yaml` contient 7 workloads et 10 conteneurs,
+  **aucun ne déclare `resources`** (les 42 occurrences de `resources:` du fichier
+  sont des règles RBAC).
 
-  Vérification : créer un vcluster avec quota et ArgoCD, puis
-  `kubectl get limitrange -n vcluster-<nom>` et lire les events du namespace
-  `argocd` dans le vcluster (`must specify requests.memory` serait la preuve).
+  La seconde moitié est fausse, et c'est le point décisif que ce TODO avait bien
+  identifié : **le chart pose un `LimitRange`**. Le wrapper
+  `platform-helm-charts/charts/vcluster/values.yaml` porte `limitRange.enabled:
+  true` avec `defaultRequest: cpu 50m / memory 128Mi`, et le namespace hôte le
+  montre en vrai (`ephemeral-storage: 3Gi` s'y ajoute). Les pods sans requests
+  **héritent donc de valeurs et passent l'admission**.
 
-  **Piste distincte, à ne pas confondre** : le dépôt GitOps de production
-  (gitlab.kosmos.fr) impose, lui, `requests.memory: 6Gi` ET `limits.memory: 6Gi`
-  au seul `argocd-application-controller` (total ArgoCD ≈ 7,2 Gi). Une `request`
+  Constaté de bout en bout sur `recette-restore-a` (quota 2 CPU / 4Gi / 20Gi,
+  ArgoCD activé) : Kustomization `argocd-*` `Ready=True`, les 7 pods ArgoCD
+  `1/1 Running`, **0 redémarrage**, aucun OOMKill, aucun event d'admission
+  refusée. L'échec du 2026-08-08 avait une autre cause — le diagnostic d'alors
+  était interrompu par la destruction du cluster, pas par un blocage réel.
+
+  **Coût réel d'ArgoCD, mesuré** (différence entre un vcluster avec et un sans,
+  tous deux convergés, lue sur `.status.used` de leur ResourceQuota) :
+
+  | | CPU | mémoire | pods |
+  |---|---|---|---|
+  | socle vcluster seul (`demo`) | 140m | 470Mi | 3 |
+  | avec ArgoCD (`recette-restore-a`) | 490m | 1366Mi | 10 |
+  | **ArgoCD** | **350m** | **896Mi** | **7** |
+
+  896Mi = 7 × 128Mi et 350m = 7 × 50m : ce que le quota compte n'est pas un
+  besoin d'ArgoCD, c'est le `defaultRequest` du LimitRange appliqué à ses pods.
+  Ces chiffres bougeront donc si le LimitRange change, ou le jour où ArgoCD
+  déclarera ses propres requests — pas si ArgoCD consomme davantage.
+  On est très loin des ~7,2 Gi redoutés.
+
+  ⚠️ **Limite de cette mesure** : cluster de recette au repos, un seul nœud, une
+  poignée d'objets à réconcilier. Elle dit qu'ArgoCD démarre et tient, pas qu'il
+  tiendrait sous charge — sa `limit` héritée est 1Gi par conteneur, et c'est par
+  là qu'un OOMKill arriverait, pas par le quota.
+
+- [ ] 🟠 **Piste distincte, toujours ouverte** : le dépôt GitOps de production
+  (gitlab.kosmos.fr) impose `requests.memory: 6Gi` ET `limits.memory: 6Gi` au
+  seul `argocd-application-controller` (total ArgoCD ≈ 7,2 Gi). Une `request`
   est une réservation ferme, pas un plafond : cette valeur rend ArgoCD
   incompatible avec tout quota inférieur à 8 Gi. Ce réglage n'existe PAS dans le
-  dépôt de recette — les deux environnements ont donc des causes d'échec
-  différentes, et il faut traiter les deux.
+  dépôt de recette — la mesure ci-dessus ne dit donc rien de la production.
+  Reste à faire, et hors de ce dépôt : descendre les requests du controller vers
+  ~1 Gi après mesure réelle sur un ArgoCD de production chargé.
 
-  **Décision déjà prise** (2026-08-08) sur les deux volets, reste à implémenter :
-  descendre les requests du controller vers ~1 Gi après mesure réelle, et poser
-  un contrôle **bloquant à la création** qui refuse une combinaison
+- [x] ~~🔴 **Contrôle bloquant à la création** : refuser une combinaison
   quota/options que le produit sait impossible, avec le minimum requis dans le
-  message. Aujourd'hui on propose une case « ArgoCD » sans jamais confronter son
-  coût au quota demandé, et l'échec qui s'ensuit est muet.
+  message.~~ Fait — `internal/service/vcluster_quota_floor.go`,
+  `ValidateQuotaFitsOptions`, branché dans `Service.Create` (donc UI **et** API
+  REST, qui ne passent pas par l'API server).
 
-## Certificats des tenants — le solveur DNS-01 ne correspond pas à la plateforme
+  Il lit les quotas **effectifs** (`EffectiveQuotas`), pas `req.CPU`/`req.Memory`
+  bruts : un champ vide vaut « quota par défaut du générateur », et le lire brut
+  laisserait passer précisément les créations qui n'ont rien saisi — la majorité.
+  Planchers issus de la mesure ci-dessus, avec leur provenance en commentaire ;
+  seules les options dont le coût est mesuré entrent dans le calcul (Velero et le
+  bootstrap FluxCD n'y sont pas — les compter avec un chiffre inventé ferait
+  refuser des combinaisons viables, ce qui est pire que pas de contrôle).
 
-- [ ] 🔴 **Aucun vcluster ne peut émettre de certificat sur la plateforme de
-  recette.** Le template tenant déploie dans chaque vcluster un `ClusterIssuer`
+  Ce que ça ne couvre pas, sciemment : le chemin CR/Flux, où c'est le reconcile
+  qui garde (`checkResourceBudget`) et qui répond à la question inverse — « la
+  cell a-t-elle encore la place ? ». Les deux contrôles sont complémentaires,
+  aucun ne remplace l'autre.
+
+  Vérifié par mutation, 8 mutants, 8 tués, aucun survivant, témoin au vert, avec
+  chaque test isolé dans son propre `go test -run` (sans ça, un mutant qui fait
+  paniquer `Create` masque tous les tests suivants et on ne sait plus qui tue
+  quoi) : appel retiré de `Create` → les 2 tests de `Create` tombent ; champs
+  bruts au lieu des effectifs → seul le test qui vise ça tombe ; ArgoCD rendu
+  gratuit → 4 tests tombent mais **pas** celui du même quota sans ArgoCD ;
+  plancher mémoire divisé par deux → 3 tests tombent, donc c'est bien la valeur
+  mesurée qui est verrouillée et pas seulement la présence du contrôle ;
+  comparaison inversée → 5 tests dont les cas passants, qui ne passent donc pas
+  par accident.
+
+## Certificats des tenants — arbitrage résolu, reste à nettoyer le template
+
+- [x] ~~🔴 **L'arbitrage « faut-il un jeton Cloudflare par tenant ? »**~~ —
+  **tranché le 2026-08-09 : non, et la solution est déjà en place.** La
+  troisième option envisagée ci-dessous (« un solveur central côté hôte qui
+  émette pour eux ») est ce que la plateforme fait déjà : l'hôte porte les
+  `ClusterIssuer` `letsencrypt-dns01` (DNS-01 Cloudflare) et `letsencrypt-prod`,
+  émet un certificat **wildcard**, et `kubernetes-reflector` le réplique dans les
+  namespaces `vcluster-*`. Vérifié sur le cluster : `wildcard-preprod-rebuild-it-fr-tls`
+  présent dans les 4 namespaces `vcluster-*`, les deux ClusterIssuers hôte
+  `Ready=True`, aucun Gandi côté hôte. Le template ArgoCD du tenant consomme
+  déjà ce secret (`spec.tls[0].secretName` patché sur `{{.TLSSecret}}`).
+  **Aucun jeton d'API Cloudflare n'est distribué à un tenant**, ce qui était tout
+  l'enjeu. Design d'origine : `vcluster-manager-infra/docs/plan-argocd-dns01.md`.
+
+- [ ] 🟠 **Reste à faire : retirer le `ClusterIssuer` Gandi du template tenant.**
+  Il n'a plus d'usage sur cette plateforme mais il y est toujours, et il échoue
+  bruyamment quand un vcluster l'active. Le seed de recette le contourne déjà par
+  suppression (`clusters/preprod/vclusters/demo/tenant/kustomization.yaml` retire
+  cert-manager du tenant, avec la note « à réintroduire avec un webhook DNS01
+  adapté à Cloudflare ») — c'est un contournement par vcluster, pas un correctif.
+  Le fichier visé vit dans le dépôt fluxprod, hors du périmètre de ce dépôt.
+
+  <details><summary>Constat d'origine (2026-08-08), conservé</summary>
+
+  Le template tenant déploie dans chaque vcluster un `ClusterIssuer`
   `letsencrypt-production-dns-gandi`, qui résout ses challenges DNS-01 via
   l'API Gandi. Or le domaine de cette plateforme est géré par **Cloudflare** —
   le `ClusterIssuer` de l'hôte le montre :
@@ -78,6 +146,8 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
   Distinct du correctif `sourceRef` de cert-manager (PR #13, mergée) : celui-là
   faisait que cert-manager n'était pas **installé** ; ici il l'est, il tourne, et
   c'est son émission qui échoue.
+
+  </details>
 
 ## Opérateur — durcissement issu de l'audit N6
 
@@ -184,12 +254,23 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       des tests verts. C'est le seul endroit où la piste 3 garde sa valeur : un
       `kubectl auth can-i` en précondition de recette. Reste ouvert ci-dessous.
 
-- [ ] 🟠 **Précondition de recette : le ClusterRole déployé == le ClusterRole commité.** Le seul
-      trou que les tests Go ne peuvent pas fermer par construction. À ajouter en tête des plans
-      de recette, avant toute étape : `kubectl get clusterrole vcluster-manager-operator -o yaml`
-      comparé au fichier de HEAD, puis `kubectl auth can-i --list --as
-      system:serviceaccount:vcluster-manager:vcluster-manager-operator`. Le protocole exact (avec
-      la contre-preuve par mutation) est déjà écrit plus haut pour le ClusterRole de l'app.
+- [x] ~~🟠 **Précondition de recette : le ClusterRole déployé == le ClusterRole commité.**~~
+      Exécutée le 2026-08-09 sur la plateforme remontée, sur les **deux** ClusterRoles :
+      comparaison règle par règle entre `kubectl get clusterrole <nom> -o yaml` et les fichiers
+      de HEAD (`deploy/base/rbac.yaml`, `operator-rbac.yaml`), après normalisation (tri des
+      verbes/ressources, tri des règles) — `vcluster-manager` 12 règles des deux côtés,
+      `vcluster-manager-operator` 14 des deux côtés, **diff vide dans les deux sens** (aucune
+      règle déployée en trop, aucune manquante). Puis droits effectifs : `create pods
+      --subresource=portforward` → `yes` pour l'app (le droit du fix #17 est bien déployé),
+      `list resourcequotas` → `yes` pour l'opérateur (le trou du 2026-08-08 est refermé), et
+      `create vclusters` / `delete backups` → `no`, conformément à ce que le design refuse.
+      ⚠️ **Le piège de la forme avec slash est reproduit à l'identique sur ce cluster** :
+      `kubectl auth can-i create pods/portforward` répond `no` alors que
+      `--subresource=portforward` répond `yes` sur le même droit. Une précondition écrite avec
+      la forme à slash déclarerait un No-Go sur un droit qui est là.
+      À rejouer à chaque recette — c'est une précondition, pas un acquis : elle vérifie l'état
+      d'un cluster à un instant donné, et le seul trou que les tests Go ne peuvent pas fermer par
+      construction reste un cluster où le manifeste n'a pas été réappliqué.
       ⚠️ **Piège mesuré le 2026-08-08 sur le cluster de recette** (kubectl v1.35.2) : la forme
       `kubectl auth can-i create pods/portforward` répond **`no`** alors que le droit est bien
       accordé — `kubectl auth can-i create pods --subresource=portforward` répond `yes`, et
