@@ -82,6 +82,7 @@ linters:
         - davantage
         - combinaison
         - confortable
+        - trafic
         - terminaison
         - portait
         - demandes

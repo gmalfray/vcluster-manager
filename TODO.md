@@ -424,6 +424,43 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
       Rien de tout ça n'est testable par `go test` (CSS/attributs HTML) : vérifié par lecture
       exhaustive + calcul de contraste WCAG, pas par exécution automatisée.
 
+## Sécurité — l'adresse source n'est pas fiable derrière cet ingress
+
+- [ ] 🔴 **Le rate limiter par IP ne distingue pas les clients.** Trouvé en
+      recette le 2026-08-09, en cherchant pourquoi `/metrics` répondait 200 depuis
+      Internet. La cause est commune aux deux : **nginx voit `127.0.0.1` comme
+      adresse source pour le trafic venu d'Internet** — 91 des 100 dernières lignes
+      de son access log sur la plateforme de recette, pour des requêtes émises
+      depuis une machine externe. Il propage ensuite cette adresse à l'application
+      (`proxy_set_header X-Forwarded-For $remote_addr`, lu dans la conf générée),
+      et `clientIP` (`internal/auth/ratelimit.go`) buckete dessus.
+      Conséquence : **tous les clients partagent un seul seau**. Le limiteur de
+      login (1 req/s, burst 5) devient global — quelqu'un qui émet 6 req/s sur
+      `/auth/login` consomme le quota de tout le monde, et la protection
+      anti-brute-force ne cible plus l'attaquant puisqu'elle ne peut pas le
+      distinguer.
+      ⚠️ **Ce qui est établi et ce qui ne l'est pas** : la propagation de
+      `127.0.0.1` est mesurée (logs nginx + `proxy_set_header` dans la conf).
+      Le partage effectif du seau n'a PAS été démontré empiriquement — le test
+      tenté saturait le seau puis interrogeait après rechargement, donc il ne
+      prouvait rien. À refaire proprement avant de conclure sur l'exploitabilité.
+      La mécanique du masquage n'est pas non plus élucidée : le contrôleur nginx
+      est en `hostPort` sans `hostNetwork`, aucun processus n'écoute sur 443 côté
+      hôte (`ss -tlnp` vide), et les règles CNI-HOSTPORT n'expliquent pas à elles
+      seules le `127.0.0.1`. Piste : passer le contrôleur en `hostNetwork` sur
+      cette plateforme mono-nœud, à valider côté infra.
+      Ce n'est pas un défaut de ce dépôt mais l'application en dépend, donc le
+      commentaire de `clientIP` — « that's a network-topology guarantee » — est
+      exactement l'hypothèse qui ne tient pas ici.
+
+- [ ] 🟠 **Servir `/metrics` sur un port séparé**, non exposé par le Service.
+      L'endpoint cesserait d'être exposable par erreur, au lieu de dépendre d'un
+      manifeste d'Ingress qu'on peut oublier ou mal écrire — ce qui vient
+      justement d'arriver. Le refus est maintenant inconditionnel
+      (`denylist-source-range: 0.0.0.0/0`) et verrouillé par un test, mais ça
+      reste une protection périmétrique sur un endpoint qui n'aurait pas dû être
+      joignable.
+
 ## Améliorations Go (issu de l'audit skills)
 
 - [x] ~~**Migration `log` → `slog` (phase 1)** : init JSON handler dans
