@@ -74,13 +74,20 @@ type TemplateData struct {
 	ArgoCDClientID string // precomputed from name+env
 	ArgoCDURL      string // precomputed from name+env (with trailing slash)
 	ArgoCDHost     string // precomputed from name+env (without trailing slash)
-	TargetRevision string // "preprod" or "master"
-	TLSSecret      string // precomputed from env
-	EnvLabel       string // "preprod" or "prod"
-	PolicyLines    string // precomputed RBAC lines (4-space indented)
-	OIDCIssuer     string // OIDC issuer URL for ArgoCD ConfigMap
-	GitLabSSHBase  string // SSH base URL for app-manifests repos, e.g. "ssh://git@.../ops/argocd"
-	DefaultPolicy  string // default ArgoCD RBAC policy
+	// ArgoCDNavlinkLabel is the label shown in Rancher's nav shortcut.
+	//
+	// Ici plutôt qu'inline chez ses deux consommateurs : la Kustomization du
+	// navlink le rend en substitution directe, et Substitutions le met dans le
+	// ConfigMap de l'opérateur. Deux expressions séparées finiraient par
+	// diverger, et le libellé dépendrait alors du chemin de création.
+	ArgoCDNavlinkLabel string
+	TargetRevision     string // "preprod" or "master"
+	TLSSecret          string // precomputed from env
+	EnvLabel           string // "preprod" or "prod"
+	PolicyLines        string // precomputed RBAC lines (4-space indented)
+	OIDCIssuer         string // OIDC issuer URL for ArgoCD ConfigMap
+	GitLabSSHBase      string // SSH base URL for app-manifests repos, e.g. "ssh://git@.../ops/argocd"
+	DefaultPolicy      string // default ArgoCD RBAC policy
 
 	// FluxCD
 	FluxCD        bool
@@ -261,15 +268,17 @@ func (g *Generator) buildData(name, env string, req *models.CreateRequest, k8sVe
 		TargetRevision: targetRevision,
 		TLSSecret:      tlsSecret,
 		EnvLabel:       envLabel,
-		PolicyLines:    policyLines.String(),
-		OIDCIssuer:     g.cfg.OIDCIssuer,
-		GitLabSSHBase:  gitlabSSHBase,
-		DefaultPolicy:  g.cfg.ArgoCDDefaultPolicy,
-		PodSecurity:    g.cfg.VClusterPodSecurity,
-		FluxCD:         req.FluxCDEnabled,
-		FluxCDRepoURL:  req.FluxCDRepoURL,
-		FluxCDBranch:   req.FluxCDBranch,
-		FluxCDPath:     req.FluxCDPath,
+
+		ArgoCDNavlinkLabel: "ArgoCD " + name + " " + envLabel,
+		PolicyLines:        policyLines.String(),
+		OIDCIssuer:         g.cfg.OIDCIssuer,
+		GitLabSSHBase:      gitlabSSHBase,
+		DefaultPolicy:      g.cfg.ArgoCDDefaultPolicy,
+		PodSecurity:        g.cfg.VClusterPodSecurity,
+		FluxCD:             req.FluxCDEnabled,
+		FluxCDRepoURL:      req.FluxCDRepoURL,
+		FluxCDBranch:       req.FluxCDBranch,
+		FluxCDPath:         req.FluxCDPath,
 	}
 }
 

@@ -426,34 +426,59 @@ Backlog des évolutions à venir. Les items terminés sont archivés dans
 
 ## Recette du 2026-08-09 — findings ouverts
 
-- [ ] 🟠 **Le navlink ArgoCD ne se déploie jamais sur un vcluster créé par la
-      voie GitOps.** Constaté sur `recette-restore-a` :
+### Navlink ArgoCD — trois défauts empilés, deux corrigés
 
-      post build failed for 'link-argocd': substitute from
-      'ConfigMap/vcluster-recette-restore-a-substitutions' error: not found
+Le design attendu : un navlink **générique** côté hôte
+(`lib/tenant-template/argocd/base/`) et un **overlay par vcluster**
+(`lib/tenant-template/argocd/navlink/`) qui pointe vers l'ArgoCD **du vcluster**.
+Aucun des trois défauts ci-dessous ne se voyait depuis l'application.
 
-      Le template généré (`navlink_kustomization.yaml.tmpl`) déclare un
-      `substituteFrom` sur `vcluster-<nom>-substitutions`. Or ce ConfigMap est
-      produit par l'**opérateur** à partir du CR — `SubstitutionConfigMap`
-      (`internal/gitops/objects.go`) le dit explicitement : « the single object
-      **the operator** owns on the host cluster ». Sur cette plateforme il n'y a
-      aucun CR `VCluster` (les vclusters viennent de la voie app→GitOps), donc
-      aucun ConfigMap, donc la Kustomization échoue en boucle.
-      **`navlink` est le seul template dans ce cas** : `cert-manager-config`,
-      qui suit le même patron, fournit ses valeurs en `substitute:` direct dans
-      le template généré et fonctionne. La migration du navlink vers le modèle
-      opérateur a donc cassé le chemin GitOps sans que rien ne le signale côté
-      application — l'échec ne se voit que dans Flux.
-      **Aggravant** : le fichier ciblé (`lib/tenant-template/argocd/navlink/`)
-      ne contient **aucun** `${...}` — ni dans le seed de recette, ni dans le
-      dépôt de production, où l'URL est en dur (`argocd.base.rancher.kosmos.fr`).
-      La substitution qui fait échouer la Kustomization ne servirait donc à rien
-      même si le ConfigMap existait.
-      Correctif le plus simple : `optional: true` sur ce `substituteFrom`, qui
-      répare la voie GitOps sans rien retirer à la voie opérateur. À trancher
-      avec la question de fond : ce navlink doit-il pointer vers l'ArgoCD du
-      vcluster (et donc être paramétré) ou rester un lien fixe vers l'ArgoCD
-      central ?
+- [x] ~~🟠 **(1) La Kustomization échouait en boucle sur la voie app→GitOps.**~~
+      `post build failed for 'link-argocd': substitute from
+      'ConfigMap/vcluster-<nom>-substitutions' error: not found`. Ce ConfigMap
+      n'est produit que par l'**opérateur** — `SubstitutionConfigMap` le
+      revendique : « the single object the operator owns on the host cluster ».
+      Sans CR `VCluster`, pas de ConfigMap. `navlink` était le seul template dans
+      ce cas ; `cert-manager-config`, même patron, fournit ses valeurs en
+      `substitute:` direct et fonctionne. Corrigé de la même façon, + `optional:
+      true` sur le ConfigMap de l'opérateur.
+
+- [x] ~~🟠 **(2) Le lien visait l'ArgoCD central, pas celui du vcluster.**~~
+      L'overlay portait des valeurs EN DUR recopiées du générique de `../base/`
+      (« ArgoCD cluster base », `argocd.base.<domaine>`), alors que le générateur
+      fournit déjà `${ARGOCD_URL}` et `${ARGOCD_NAVLINK_LABEL}`. Tous les
+      vclusters auraient affiché le même lien : un lien qui marche, qui ne mène à
+      aucune erreur, et qui pointe au mauvais endroit — le pire des cas, celui
+      qu'on ne remarque pas. Corrigé côté dépôt GitOps.
+      ⚠️ **Le même écart existe dans le dépôt de production** (`gitlab.kosmos.fr`),
+      où les deux fichiers navlink sont identiques à l'icône près. Hors périmètre
+      de ce dépôt, à corriger là-bas.
+
+- [ ] 🔴 **(3) Le NavLink est déployé DANS le vcluster, où son type n'existe
+      pas.** C'est celui qui l'empêche réellement d'exister, et il n'apparaît
+      qu'une fois les deux premiers corrigés — l'erreur change alors de nature :
+
+      NavLink/argocd/link-argocd dry-run failed:
+      no matches for kind "NavLink" in version "ui.cattle.io/v1"
+
+      La Kustomization du navlink porte un `kubeConfig.secretRef` sur
+      `vc-vcluster-<nom>-int`, donc elle applique **dans le vcluster**. Or
+      `ui.cattle.io/v1 NavLink` est une CRD de l'extension dashboard de Rancher,
+      qui tourne sur le cluster **hôte** — un raccourci de navigation dans l'UI
+      Rancher n'a d'ailleurs aucun sens à l'intérieur d'un vcluster.
+      Le commentaire du fichier partagé le disait déjà sans en tirer la
+      conséquence : « Only useful if the **host cluster** runs Rancher with the
+      dashboard extension that understands this CRD ».
+      Correctif : retirer le `kubeConfig` de `navlink_kustomization.yaml.tmpl`
+      pour que l'objet aille sur l'hôte, et vérifier que le namespace visé y est
+      correct (`argocd` n'existe pas côté hôte). À valider sur un cluster avec
+      l'extension Rancher installée — la CRD absente, rien ne se déploiera de
+      toute façon, ce qui est le comportement acceptable pour un hôte sans
+      Rancher.
+      Mesuré le 2026-08-09 sur `recette-restore-a`, en appliquant à la main le
+      format corrigé au fichier déjà commité (le correctif du générateur ne
+      rétroagit pas sur les vclusters existants — leurs fichiers portent le
+      template d'origine).
 
 - [ ] 🔵 **`wildcard-rebuild-it-fr` n'est pas émis** (infra, hors de ce dépôt).
       `Issuing certificate as Secret does not exist` depuis 111 min, deux
