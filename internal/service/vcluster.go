@@ -416,6 +416,18 @@ func (s *Service) Create(ctx context.Context, actor models.Actor, req *models.Cr
 	if scope == "prod" {
 		checkEnv = "prod"
 	}
+
+	// Le quota demandé doit pouvoir héberger les options demandées. Les quotas
+	// EFFECTIFS, pas les champs bruts : vide veut dire « défaut du générateur »,
+	// qui doit être confronté au plancher comme une valeur saisie.
+	effCPU, effMemory, _, _, err := s.EffectiveQuotas(req, checkEnv)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	if err := ValidateQuotaFitsOptions(req, effCPU, effMemory); err != nil {
+		return CreateResult{}, err
+	}
+
 	if s.parser.Exists(ctx, checkEnv, req.Name) {
 		return CreateResult{}, &ExistsError{Name: req.Name, Env: checkEnv}
 	}
