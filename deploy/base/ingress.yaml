@@ -38,8 +38,29 @@ spec:
 #
 # Cet Ingress-ci existe uniquement pour REPRENDRE ce chemin à celui du dessus :
 # nginx choisit le path le plus spécifique, donc `/metrics` en Exact l'emporte sur
-# `/` en Prefix. La whitelist réduite au loopback fait rendre 403 à tout ce qui
-# vient de l'extérieur.
+# `/` en Prefix, et ce chemin rend 403 à tout le monde.
+#
+# Le refus ne s'appuie sur AUCUNE adresse source, et c'est délibéré. La version
+# précédente utilisait `whitelist-source-range: 127.0.0.1/32` avec le
+# raisonnement « le loopback, donc personne ». Mesuré le 2026-08-09 sur la
+# plateforme de recette : nginx voit `127.0.0.1` comme adresse source pour le
+# trafic venu d'Internet (91 des 100 dernières lignes de son access log), si
+# bien que cette whitelist n'autorisait pas personne — elle autorisait tout le
+# monde. `/metrics` a répondu 200 depuis Internet, 183 lignes, sans
+# authentification.
+#
+# La règle `allow 127.0.0.1/32; deny all;` était pourtant bien présente dans la
+# configuration générée : le défaut n'était pas dans le manifeste mais dans
+# l'hypothèse qu'il faisait sur ce que le proxy observe. Une protection qui
+# dépend d'une adresse source qu'on ne maîtrise pas ne se contente pas
+# d'échouer — elle donne l'illusion d'exister, ce qui est pire que rien.
+#
+# ⚠️ Cette même cause a une portée qui dépasse ce fichier : nginx propage
+# l'adresse qu'il observe à l'application (`proxy_set_header X-Forwarded-For
+# $remote_addr`), donc le rate limiter par IP — y compris celui de
+# `/auth/login`, 1 req/s burst 5 — ne peut pas distinguer les clients tant que
+# cette infrastructure renvoie la même adresse pour tous. À traiter côté
+# plateforme, hors de ce dépôt.
 #
 # Prometheus n'est pas concerné : il scrape le Service, dans le cluster, et ne
 # traverse jamais l'Ingress. Un `server-snippet` aurait été plus direct, mais
@@ -57,9 +78,11 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     cert-manager.io/cluster-issuer: "__CLUSTER_ISSUER__"
-    # 127.0.0.1/32 : personne. L'Ingress ne sert à rien d'autre qu'à intercepter
-    # ce chemin pour que l'Ingress principal ne le serve pas.
-    nginx.ingress.kubernetes.io/whitelist-source-range: "127.0.0.1/32"
+    # Refus inconditionnel : `deny 0.0.0.0/0; deny ::/0;` ne dépend d'aucune
+    # adresse observée, donc aucune erreur de topologie réseau ne peut le
+    # transformer en autorisation. L'Ingress ne sert à rien d'autre qu'à
+    # intercepter ce chemin pour que l'Ingress principal ne le serve pas.
+    nginx.ingress.kubernetes.io/denylist-source-range: "0.0.0.0/0,::/0"
 spec:
   ingressClassName: nginx
   rules:
