@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/gmalfray/vcluster-manager/internal/models"
 )
 
@@ -195,5 +197,81 @@ func TestVeleroTTLFromShort(t *testing.T) {
 		if got := VeleroTTLFromShort(in); got != want {
 			t.Errorf("VeleroTTLFromShort(%q) = %q, attendu %q", in, got, want)
 		}
+	}
+}
+
+// TestNavlinkIsSelfSufficientOnTheGitOpsPath verrouille ce qui rend le navlink
+// déployable sans opérateur.
+//
+// Ce test existe parce que le cas s'est produit et n'a été vu qu'en recette, le
+// 2026-08-09, dans les logs de Flux : la Kustomization du navlink déclarait un
+// `substituteFrom` NON optionnel sur `vcluster-<nom>-substitutions`, un
+// ConfigMap que seul l'opérateur produit (SubstitutionConfigMap : « the single
+// object the operator owns on the host cluster »). Sur un vcluster créé par le
+// chemin app→GitOps il n'y a pas de CR, donc pas de ConfigMap, donc :
+//
+//	post build failed for 'link-argocd': substitute from
+//	'ConfigMap/vcluster-recette-restore-a-substitutions' error: not found
+//
+// en boucle, et le lien n'apparaissait jamais dans Rancher. Côté application,
+// rien ne le signalait : la création réussissait, les fichiers étaient commités.
+//
+// Deux propriétés sont donc exigées ici, et il faut les deux : le ConfigMap de
+// l'opérateur doit être `optional` (sinon le chemin GitOps échoue), et les
+// valeurs doivent être substituées en direct (sinon `${ARGOCD_URL}` partirait
+// littéralement dans l'objet NavLink, ce que le commentaire de Substitutions
+// désigne déjà comme le résultat à éviter).
+func TestNavlinkIsSelfSufficientOnTheGitOpsPath(t *testing.T) {
+	g := NewGenerator(testConfig())
+	req := &models.CreateRequest{Name: "myvc", ArgoCD: true}
+
+	var navlink string
+	for _, f := range g.GenerateVCluster(req, "preprod") {
+		if strings.HasSuffix(f.Path, "navlink_kustomization.yaml") {
+			navlink = f.Content
+		}
+	}
+	if navlink == "" {
+		t.Fatal("aucun navlink_kustomization.yaml généré alors qu'ArgoCD est activé")
+	}
+
+	var k struct {
+		Spec struct {
+			PostBuild struct {
+				SubstituteFrom []struct {
+					Name     string `yaml:"name"`
+					Optional bool   `yaml:"optional"`
+				} `yaml:"substituteFrom"`
+				Substitute map[string]string `yaml:"substitute"`
+			} `yaml:"postBuild"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(navlink), &k); err != nil {
+		t.Fatalf("parsing du navlink généré : %v", err)
+	}
+
+	for _, sf := range k.Spec.PostBuild.SubstituteFrom {
+		if strings.HasSuffix(sf.Name, "-substitutions") && !sf.Optional {
+			t.Errorf("le navlink dépend de %q sans `optional: true` : ce ConfigMap n'existe "+
+				"que sur le chemin opérateur, donc la Kustomization échoue en boucle pour tout "+
+				"vcluster créé par le chemin app→GitOps", sf.Name)
+		}
+	}
+
+	// Les valeurs doivent venir du fichier généré, pas d'un objet que seul
+	// l'opérateur pose.
+	for _, key := range []string{"ARGOCD_URL", "ARGOCD_NAVLINK_LABEL"} {
+		v, ok := k.Spec.PostBuild.Substitute[key]
+		if !ok || v == "" {
+			t.Errorf("%s n'est pas substitué en direct dans le navlink : sans lui le chemin "+
+				"GitOps rendrait un NavLink portant le placeholder littéral", key)
+		}
+	}
+
+	// Le lien doit viser l'ArgoCD DU vcluster, pas l'ArgoCD central : c'est
+	// toute la raison d'être de cet overlay par rapport au navlink générique.
+	if url := k.Spec.PostBuild.Substitute["ARGOCD_URL"]; !strings.Contains(url, "myvc") {
+		t.Errorf("ARGOCD_URL = %q ne porte pas le nom du vcluster : le lien pointerait vers "+
+			"un autre ArgoCD que celui du tenant", url)
 	}
 }

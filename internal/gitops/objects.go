@@ -180,7 +180,7 @@ func (g *Generator) Substitutions(req *models.CreateRequest, env, k8sVersion str
 		"ARGOCD_HOST":               onlyIf(d.ArgoCD, d.ArgoCDHost),
 		"ARGOCD_OIDC_ISSUER":        onlyIf(d.ArgoCD, d.OIDCIssuer),
 		"ARGOCD_DEFAULT_POLICY":     onlyIf(d.ArgoCD, d.DefaultPolicy),
-		"ARGOCD_NAVLINK_LABEL":      onlyIf(d.ArgoCD, "ArgoCD "+d.Name+" "+d.EnvLabel),
+		"ARGOCD_NAVLINK_LABEL":      onlyIf(d.ArgoCD, d.ArgoCDNavlinkLabel),
 		"ARGOCD_APP_MANIFESTS_REPO": onlyIf(d.ArgoCD, d.GitLabSSHBase+"/app-manifests-"+d.Name+".git"),
 
 		// The one multi-line value in the set, and envsubst is a plain string

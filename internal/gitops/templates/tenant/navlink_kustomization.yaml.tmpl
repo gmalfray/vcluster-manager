@@ -22,8 +22,22 @@ spec:
     substituteFrom:
       - kind: ConfigMap
         name: cluster-vars
+      # `optional` parce que ce ConfigMap n'existe que sur le chemin opérateur :
+      # SubstitutionConfigMap est « the single object the operator owns on the
+      # host cluster ». Un vcluster créé par le chemin app→GitOps n'a pas de CR,
+      # donc pas de ConfigMap — et Flux échouait alors en boucle sur
+      # « configmaps "vcluster-<nom>-substitutions" not found », sans que rien ne
+      # le signale côté application. Le navlink n'apparaissait jamais.
       - kind: ConfigMap
         name: vcluster-{{.Name}}-substitutions
+        optional: true
+    # Les mêmes valeurs en substitution directe, comme le fait déjà
+    # cert-manager-config. C'est ce qui rend le chemin GitOps autonome : un
+    # `substitute` inline l'emporte sur `substituteFrom`, donc le chemin
+    # opérateur rend exactement la même chose, que son ConfigMap soit là ou non.
+    substitute:
+      ARGOCD_URL: "{{.ArgoCDURL}}"
+      ARGOCD_NAVLINK_LABEL: "{{.ArgoCDNavlinkLabel}}"
   kubeConfig:
     secretRef:
       name: vc-vcluster-{{.Name}}-int
